@@ -1,0 +1,128 @@
+/**
+ * Youmi Lens  -  design tokens as CSS variables.
+ * Scope under .ds-root to avoid affecting legacy App until opt-in.
+ */
+
+.ds-root {
+  color-scheme: light;
+  --ds-color-primary: #0b1f3b;
+  --ds-color-secondary: #1e3a5f;
+  --ds-color-bg-page: #f5f7fa;
+  --ds-color-surface: #ffffff;
+  --ds-color-highlight: #c8d7e8;
+  --ds-color-accent: #3d6a9e;
+  --ds-color-text: #0f172a;
+  --ds-color-text-muted: #64748b;
+  --ds-color-border: #e2e8f0;
+  --ds-color-danger: #b91c1c;
+  --ds-color-success: #0f766e;
+
+  --ds-space-0: 0;
+  --ds-space-1: 0.25rem;
+  --ds-space-2: 0.5rem;
+  --ds-space-3: 0.75rem;
+  --ds-space-4: 1rem;
+  --ds-space-5: 1.25rem;
+  --ds-space-6: 1.5rem;
+  --ds-space-8: 2rem;
+  --ds-space-10: 2.5rem;
+  --ds-space-12: 3rem;
+
+  --ds-radius-sm: 6px;
+  --ds-radius-md: 8px;
+  --ds-radius-lg: 10px;
+  --ds-radius-xl: 12px;
+  --ds-radius-2xl: 16px;
+  --ds-radius-full: 9999px;
+
+  --ds-font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'PingFang SC', sans-serif;
+  --ds-text-xs: 0.7rem;
+  --ds-text-sm: 0.8rem;
+  --ds-text-base: 0.9375rem;
+  --ds-text-lg: 1.125rem;
+  --ds-text-xl: 1.25rem;
+  --ds-text-2xl: 1.5rem;
+
+  --ds-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --ds-shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --ds-shadow-lg: 0 10px 24px rgba(15, 23, 42, 0.1);
+}
+
+/* Buttons */
+.ds-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ds-space-2);
+  font-family: var(--ds-font-sans);
+  font-size: var(--ds-text-base);
+  font-weight: 600;
+  line-height: 1.2;
+  border-radius: var(--ds-radius-lg);
+  padding: var(--ds-space-2) var(--ds-space-4);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.ds-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ds-color-surface), 0 0 0 4px var(--ds-color-accent);
+}
+
+.ds-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ds-btn[aria-busy='true']:disabled {
+  opacity: 0.72;
+  cursor: wait;
+}
+
+.ds-btn--primary {
+  background: var(--ds-color-primary);
+  color: #f8fafc;
+}
+
+.ds-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.ds-btn--primary:active:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.ds-btn--secondary {
+  background: var(--ds-color-surface);
+  color: var(--ds-color-text);
+  border-color: var(--ds-color-border);
+}
+
+.ds-btn--secondary:hover:not(:disabled) {
+  background: #eef2f7;
+}
+
+.ds-btn--secondary:active:not(:disabled) {
+  background: #e2e8f0;
+}
+
+.ds-btn--ghost {
+  background: transparent;
+  color: var(--ds-color-accent);
+}
+
+.ds-btn--ghost:hover:not(:disabled) {
+  background: rgba(61, 106, 158, 0.08);
+}
+
+.ds-card {
+  background: var(--ds-color-surface);
+  border: 1px solid var(--ds-color-border);
+  border-radius: var(--ds-radius-xl);
+  box-shadow: var(--ds-shadow-sm);
+}
