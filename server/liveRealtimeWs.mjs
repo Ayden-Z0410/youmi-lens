@@ -1,6 +1,7 @@
 import { WebSocketServer } from 'ws'
 import { createClient } from '@supabase/supabase-js'
 import * as youmiHosted from './ai/hosted/youmiHosted.mjs'
+import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
 
 function safeSend(ws, payload) {
   try {
@@ -78,12 +79,61 @@ export function attachLiveRealtimeWs(server) {
     console.log('[YoumiLive][srv] realtime session created', JSON.stringify({ wsSessionId }))
     safeSend(ws, { type: 'ready' })
 
-    ws.on('message', async (raw) => {
+    // Active DashScope streaming session for this connection (one per client WS).
+    let streamingSession = null
+
+    ws.on('message', async (raw, isBinary) => {
+      // Binary frame = PCM audio from the client → forward directly to DashScope streaming.
+      if (isBinary) {
+        if (streamingSession) streamingSession.sendPcm(raw)
+        return
+      }
+
       let msg = null
       try {
         msg = JSON.parse(String(raw))
       } catch {
         safeSend(ws, { type: 'error', error: 'bad_json' })
+        return
+      }
+
+      // --- Streaming session control ---
+      if (msg?.type === 'stream_start') {
+        if (streamingSession) {
+          streamingSession.destroy()
+          streamingSession = null
+        }
+        const apiKey = process.env.DASHSCOPE_API_KEY?.trim()
+        if (!apiKey) {
+          safeSend(ws, { type: 'stream_error', message: 'DASHSCOPE_API_KEY_MISSING' })
+          return
+        }
+        const sampleRate = typeof msg.sampleRate === 'number' ? msg.sampleRate : 48000
+        console.log('[YoumiLive][srv] stream_start', JSON.stringify({ wsSessionId, sampleRate }))
+        streamingSession = createDashscopeStreamingSession(apiKey, {
+          sampleRate,
+          onReady: () => {
+            // DashScope task-started — relay to client so App Console can confirm connectivity
+            console.log('[YoumiLive][srv] DashScope task-started → relay stream_ready', JSON.stringify({ wsSessionId }))
+            safeSend(ws, { type: 'stream_ready' })
+          },
+          onInterim: (text) => safeSend(ws, { type: 'stream_interim', text }),
+          onFinal: (text) => safeSend(ws, { type: 'stream_final', text }),
+          onError: (err) => {
+            console.log('[YoumiLive][srv] DashScope error', JSON.stringify({ message: err.message, wsSessionId }))
+            safeSend(ws, { type: 'stream_error', message: err.message })
+          },
+          onClose: () => {
+            console.log('[YoumiLive][srv] DashScope session closed', JSON.stringify({ wsSessionId }))
+            streamingSession = null
+          },
+        })
+        return
+      }
+
+      if (msg?.type === 'stream_stop') {
+        console.log('[YoumiLive][srv] stream_stop', JSON.stringify({ wsSessionId }))
+        streamingSession?.finish()
         return
       }
 
@@ -172,6 +222,8 @@ export function attachLiveRealtimeWs(server) {
     })
     ws.on('close', () => {
       console.log('[YoumiLive][srv] realtime ws closed')
+      streamingSession?.destroy()
+      streamingSession = null
     })
   })
 
