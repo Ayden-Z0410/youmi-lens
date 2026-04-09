@@ -48,6 +48,14 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
   let diagLogged = false
   const pcmQueue = []  // buffers received before task-started handshake completes
 
+  // Latency instrumentation
+  const T_create = Date.now()
+  let T_ws_open = 0
+  let T_task_started = 0
+  let T_first_interim = 0
+  let T_first_final = 0
+  let interimCount = 0
+
   const tag = taskId.slice(-8)
   const L = (msg, data) =>
     console.log(`[DashscopeStream][${tag}] ${msg}`, data ? JSON.stringify(data) : '')
@@ -114,7 +122,8 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
   })
 
   ws.on('open', () => {
-    L('ws open', { sampleRate })
+    T_ws_open = Date.now()
+    L('ws open', { sampleRate, wsConnectMs: T_ws_open - T_create })
     const runTask = {
       header: { action: 'run-task', task_id: taskId, streaming: 'duplex' },
       payload: {
@@ -125,7 +134,9 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
         parameters: {
           format: 'pcm',
           sample_rate: sampleRate,
-          language_hints: ['zh', 'en'],
+          // en first: Paraformer tunes phoneme priors to the first hint; listing zh first
+          // delays English output by ~500-1500ms while the model re-scores Chinese hypotheses.
+          language_hints: ['en', 'zh'],
           disfluency_removal_enabled: false,
         },
         input: {},
@@ -142,8 +153,13 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
     if (!action) return
 
     if (action === 'task-started') {
+      T_task_started = Date.now()
       started = true
-      L('task-started -> drain queue', { queued: pcmQueue.length })
+      L('task-started -> drain queue', {
+        queued: pcmQueue.length,
+        wsConnectMs: T_ws_open - T_create,
+        taskStartedMs: T_task_started - T_create,
+      })
       if (taskStartedTimer) { clearTimeout(taskStartedTimer); taskStartedTimer = null }
       drainQueue()
       onReady?.()
@@ -162,11 +178,29 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
       }
       // DashScope uses sentence_end (v2) or is_sentence_end (some variants)
       const isFinal = sentence.sentence_end === true || sentence.is_sentence_end === true
+      const now = Date.now()
       if (isFinal) {
-        L('final', { len: text.length })
+        if (!T_first_final) {
+          T_first_final = now
+          L('TIMING first-final', {
+            totalMs: T_first_final - T_create,
+            sinceTaskStarted: T_first_final - T_task_started,
+          })
+        }
+        L('final', { len: text.length, sinceStartMs: now - T_create })
         onFinal?.(text)
       } else {
-        L('interim', { len: text.length })
+        interimCount++
+        if (!T_first_interim) {
+          T_first_interim = now
+          L('TIMING first-interim', {
+            totalMs: T_first_interim - T_create,         // create?first interim
+            sinceTaskStarted: T_first_interim - T_task_started,  // task-started?first interim
+            wsConnectMs: T_ws_open - T_create,
+            taskStartedMs: T_task_started - T_create,
+          })
+        }
+        L('interim', { n: interimCount, len: text.length, sinceStartMs: now - T_create })
         onInterim?.(text)
       }
       return
