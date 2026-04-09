@@ -44,6 +44,7 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
   let ws = null
   let started = false
   let finished = false
+  let taskFinished = false   // set when DashScope sends task-finished (intentional close)
   let diagLogged = false
   const pcmQueue = []  // buffers received before task-started handshake completes
 
@@ -85,6 +86,7 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
 
   const destroy = () => {
     finished = true
+    taskFinished = true  // treat explicit destroy as intentional so onClose doesn't alert client
     if (taskStartedTimer) { clearTimeout(taskStartedTimer); taskStartedTimer = null }
     pcmQueue.length = 0
     if (ws) {
@@ -98,7 +100,7 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
   let taskStartedTimer = setTimeout(() => {
     taskStartedTimer = null
     if (!started) {
-      const msg = `DashScope task-started timeout after ${TASK_STARTED_TIMEOUT_MS}ms â€” WS connected but ASR session never confirmed`
+      const msg = `DashScope task-started timeout after ${TASK_STARTED_TIMEOUT_MS}ms  WS connected but ASR session never confirmed`
       L('task-started TIMEOUT', { sampleRate })
       onError?.(new Error(msg))
     }
@@ -171,6 +173,7 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
     }
 
     if (action === 'task-finished') {
+      taskFinished = true
       L('task-finished')
       return
     }
@@ -188,8 +191,10 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
   })
 
   ws.on('close', () => {
-    L('ws closed')
-    onClose?.()
+    // intentional = finished via finish-task (task-finished received) or explicitly destroyed
+    const intentional = taskFinished || finished
+    L('ws closed', { intentional })
+    onClose?.(intentional)
   })
 
   return { sendPcm, finish, destroy }

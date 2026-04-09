@@ -123,9 +123,16 @@ export function attachLiveRealtimeWs(server) {
             console.log('[YoumiLive][srv] DashScope error', JSON.stringify({ message: err.message, wsSessionId }))
             safeSend(ws, { type: 'stream_error', message: err.message })
           },
-          onClose: () => {
-            console.log('[YoumiLive][srv] DashScope session closed', JSON.stringify({ wsSessionId }))
+          onClose: (intentional) => {
+            console.log('[YoumiLive][srv] DashScope session closed', JSON.stringify({ wsSessionId, intentional }))
             streamingSession = null
+            if (!intentional) {
+              // DashScope WS closed unexpectedly (network hiccup, idle timeout, etc.).
+              // Close the client WS so the adapter detects the failure and auto-reconnects
+              // via its onClose handler (sets session=null, next pushPcm calls initSession).
+              console.log('[YoumiLive][srv] unexpected DashScope close — closing client WS to trigger reconnect', JSON.stringify({ wsSessionId }))
+              try { ws.close() } catch { /* ignore */ }
+            }
           },
         })
         return
