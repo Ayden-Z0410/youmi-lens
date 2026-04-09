@@ -44,6 +44,7 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
   let ws = null
   let started = false
   let finished = false
+  let diagLogged = false
   const pcmQueue = []  // buffers received before task-started handshake completes
 
   const tag = taskId.slice(-8)
@@ -152,7 +153,14 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
       if (!sentence?.text) return
       const text = sentence.text.trim()
       if (!text) return
-      if (sentence.sentence_end) {
+      // Log the raw sentence object once to confirm field names in Railway logs
+      if (!diagLogged) {
+        L('sentence-diag (first result)', { keys: Object.keys(sentence), sentence_end: sentence.sentence_end, is_sentence_end: sentence.is_sentence_end })
+        diagLogged = true
+      }
+      // DashScope uses sentence_end (v2) or is_sentence_end (some variants)
+      const isFinal = sentence.sentence_end === true || sentence.is_sentence_end === true
+      if (isFinal) {
         L('final', { len: text.length })
         onFinal?.(text)
       } else {
