@@ -184,7 +184,7 @@ const LIVE_ROUTE_DIAG_ENABLED =
 const SHOW_LIVE_ROUTE_DEBUG_UI = LIVE_ROUTE_DIAG_ENABLED
 
 const LIVE_CAPTIONS_USER_EXPECTATION_EN =
-  'Original captions appear first, followed shortly by translation. Captions update progressively during recording.'
+  'Original captions appear first, followed by translation. Captions are generated in segments as you record.'
 
 type LiveRouteState =
   | 'legacy'
@@ -214,7 +214,8 @@ function formatDate(ts: number): string {
 }
 
 function segmentSeq(segmentId: string): number {
-  const m = /^seg-(\d+)$/.exec(segmentId)
+  // Matches both legacy "seg-N" (batch path) and "stream-N" (DashScope streaming path).
+  const m = /^(?:seg|stream)-(\d+)$/.exec(segmentId)
   if (!m) return Number.MAX_SAFE_INTEGER
   return Number(m[1])
 }
@@ -884,6 +885,7 @@ function RecordingWorkspace({
   }, [localOnly, aiStoreTick])
 
   const onLiveAudioChunkRef = useRef<((blob: Blob, mime: string) => void) | null>(null)
+  const onLivePcmChunkRef = useRef<((buffer: ArrayBuffer, sampleRate: number) => void) | null>(null)
   /** Cloud live captions: one Storage prefix per recording session (before recording row exists). */
   const liveCaptionSessionIdRef = useRef<string | null>(null)
   const liveChunkIndexRef = useRef(0)
@@ -918,7 +920,9 @@ function RecordingWorkspace({
     import.meta.env.VITE_EXPERIMENT_SKIP_YOUMI_LIVE_SLICE === 'true'
   const recorder = useRecorder({
     onLiveAudioChunkRef,
-    experimentalSkipLiveSlice: experimentSkipYoumiLiveSlice && usesHosted,
+    onPcmChunkRef: onLivePcmChunkRef,
+    // Skip the MediaRecorder blob-slice cycle when PCM streaming drives the live engine (v2 path).
+    experimentalSkipLiveSlice: (USE_LIVE_ENGINE_V2 && usesHosted) || (experimentSkipYoumiLiveSlice && usesHosted),
   })
 
   const [flow, dispatchFlow] = useReducer(recordingFlowReducer, initialRecordingFlow)
@@ -998,6 +1002,12 @@ function RecordingWorkspace({
   const v2LatestInterimEnSeqRef = useRef(-1)
   const v2FinalZhBySeqRef = useRef(new Map<number, string>())
   const v2NextZhSeqRef = useRef(0)
+  // Tracks segments whose zh_final has already committed. Used to discard in-flight
+  // stale zh_interim translations that resolve after zh_final for the same segment.
+  const v2FinalizedZhSegIds = useRef(new Set<string>())
+
+  // Retained for future use (paragraph block separation, currently disabled).
+  const lastFinalTimestampRef = useRef(0)
 
   const [primaryCaption, setPrimaryCaption] = useState('')
   const [primaryCaptionDraft, setPrimaryCaptionDraft] = useState('')
@@ -1025,27 +1035,26 @@ function RecordingWorkspace({
     ;(window as unknown as { __YL_LIVE_ROUTE__?: unknown }).__YL_LIVE_ROUTE__ = snapshot
   }, [useLiveEngineV2, usesHosted, liveCaptionsPipelineEnabled, recorder.status])
 
-  /** LiveEngine v2 only: hearing / drafting / refining so the panel never feels “stuck on spinner”. */
+  /** LiveEngine v2 only: hearing / drafting / refining so the panel never feels "stuck on spinner". */
   const liveV2CaptionPhase = useMemo(() => {
     if (!useLiveEngineV2) return null
     if (recorder.status === 'paused') return 'paused' as const
     if (recorder.status !== 'recording') return null
-    const pending = liveCaptionPendingSlices
     const hasDraft = Boolean(primaryCaptionDraft.trim())
     const hasFinal = Boolean(primaryCaption.trim())
-    if (pending > 0 && !hasDraft && !hasFinal) return 'hearing' as const
-    if (hasDraft && pending > 0) return 'refining' as const
+    // Streaming mode: derive phase from caption text state (no pending-slice counter needed).
+    // "hearing"  = recording active, nothing shown yet — first words in flight
+    // "drafting" = interim text visible and updating in real-time
+    // "refining" = sentence finalized, waiting for next sentence
+    if (!hasDraft && !hasFinal) return 'hearing' as const
     if (hasDraft) return 'drafting' as const
-    if (pending > 0) return 'refining' as const
-    return null
+    return 'refining' as const
   }, [
     useLiveEngineV2,
     recorder.status,
-    liveCaptionPendingSlices,
     primaryCaptionDraft,
     primaryCaption,
   ])
-
   const persistTranslateTarget = useCallback((value: LiveTranslateTarget) => {
     setTranslateTarget(value)
     localStorage.setItem(KEY_TRANSLATE, value)
@@ -1583,6 +1592,7 @@ function RecordingWorkspace({
     if (!liveCaptionSessionActive) {
       setLiveRouteState('v2_waiting_session')
       onLiveAudioChunkRef.current = null
+      onLivePcmChunkRef.current = null
       if (liveEngineRef.current) {
         console.info('[LiveEngine][diag] stopping v2 engine because session is inactive')
         liveEngineRef.current.stop()
@@ -1597,6 +1607,7 @@ function RecordingWorkspace({
         JSON.stringify({ liveCaptionsPipelineEnabled, usesHosted }),
       )
       onLiveAudioChunkRef.current = null
+      onLivePcmChunkRef.current = null
       return
     }
 
@@ -1610,6 +1621,8 @@ function RecordingWorkspace({
     v2LatestInterimEnSeqRef.current = -1
     v2NextZhSeqRef.current = 0
     v2FinalZhBySeqRef.current.clear()
+    v2FinalizedZhSegIds.current.clear()
+    lastFinalTimestampRef.current = 0
 
     engine.onEvent((ev) => {
       if (ev.type === 'status') {
@@ -1665,11 +1678,14 @@ function RecordingWorkspace({
         }
         if (seq >= v2LatestInterimEnSeqRef.current) setPrimaryCaptionDraft('')
         if (appendText) {
-          setPrimaryCaption((prev) => {
-            const next = prev ? `${prev} ${appendText}` : appendText
-            primaryCaptionRef.current = next
-            return next
-          })
+          // Full transcript in ref — NEVER windowed (used for post-class saving)
+          primaryCaptionRef.current = primaryCaptionRef.current
+            ? `${primaryCaptionRef.current} ${appendText}`
+            : appendText
+
+          // Display state: last 150 words — React renders stay O(1) at any session length
+          const words = primaryCaptionRef.current.split(' ')
+          setPrimaryCaption(words.length > 150 ? words.slice(-150).join(' ') : primaryCaptionRef.current)
         }
         if (appendedCount > 0) {
           setLiveCaptionPendingSlices((n) => Math.max(0, n - appendedCount))
@@ -1677,12 +1693,16 @@ function RecordingWorkspace({
         return
       }
       if (ev.type === 'zh_interim') {
+        // Discard stale in-flight interim translation that resolved after zh_final for this segment.
+        // Log is intentionally AFTER the guard so Console only shows interims that reach the UI.
+        if (v2FinalizedZhSegIds.current.has(ev.segmentId)) return
         console.info('[LiveEngine][App] zh_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
         setSecondaryCaptionDraft(ev.text)
         return
       }
       if (ev.type === 'zh_final') {
         console.info('[LiveEngine][App] zh_final', JSON.stringify({ segmentId: ev.segmentId }))
+        v2FinalizedZhSegIds.current.add(ev.segmentId)
         const seq = segmentSeq(ev.segmentId)
         v2FinalZhBySeqRef.current.set(seq, ev.text)
         let appendZh = ''
@@ -1694,27 +1714,29 @@ function RecordingWorkspace({
         }
         setSecondaryCaptionDraft('')
         if (appendZh) {
-          setSecondaryCaption((prev) => (prev ? `${prev} ${appendZh}` : appendZh))
+          setSecondaryCaption((prev) => {
+            const next = prev ? `${prev} ${appendZh}` : appendZh
+            const words = next.split(' ')
+            return words.length > 150 ? words.slice(-150).join(' ') : next
+          })
+        }
+        // Trim stale finalized-seg tracker to prevent unbounded growth over long sessions
+        if (v2FinalizedZhSegIds.current.size > 80) {
+          const entries = [...v2FinalizedZhSegIds.current]
+          v2FinalizedZhSegIds.current = new Set(entries.slice(-40))
         }
       }
     })
 
     engine.start({ translateTarget })
-    onLiveAudioChunkRef.current = (blob, mime) => {
-      v2PushCountRef.current += 1
-      console.info(
-        '[LiveEngine][App] pushAudioChunk',
-        JSON.stringify({
-          count: v2PushCountRef.current,
-          bytes: blob.size,
-          mime,
-        }),
-      )
-      setLiveCaptionPendingSlices((n) => n + 1)
-      engine.pushAudioChunk(blob, mime)
+    // PCM streaming path: AudioContext frames drive the engine directly (no blob slices needed).
+    onLivePcmChunkRef.current = (buffer, sampleRate) => {
+      engine.pushPcmChunk(buffer, sampleRate)
     }
+    onLiveAudioChunkRef.current = null
 
     return () => {
+      onLivePcmChunkRef.current = null
       onLiveAudioChunkRef.current = null
       engine.stop()
       if (liveEngineRef.current === engine) liveEngineRef.current = null
@@ -1772,6 +1794,7 @@ function RecordingWorkspace({
     setTranscribeSubmitPending(false)
     if (recorder.status === 'idle') {
       primaryCaptionRef.current = ''
+      lastFinalTimestampRef.current = 0
       setPrimaryCaption('')
       setPrimaryCaptionDraft('')
       setSecondaryCaption('')
@@ -1873,6 +1896,8 @@ function RecordingWorkspace({
   const [libraryCollapsedByFolderId, setLibraryCollapsedByFolderId] = useState<Record<string, boolean>>(
     {},
   )
+  const [newFolderInputVisible, setNewFolderInputVisible] = useState(false)
+  const [newFolderInputValue, setNewFolderInputValue] = useState('')
 
   useEffect(() => {
     try {
@@ -2020,6 +2045,7 @@ function RecordingWorkspace({
     }
     resetLiveTranscribeRuntime()
     primaryCaptionRef.current = ''
+    lastFinalTimestampRef.current = 0
     setPrimaryCaption('')
     setPrimaryCaptionDraft('')
     setLiveCaptionChunkNotice(null)
@@ -2051,6 +2077,7 @@ function RecordingWorkspace({
     recorder.cancel()
     resetLiveTranscribeRuntime()
     primaryCaptionRef.current = ''
+    lastFinalTimestampRef.current = 0
     setPrimaryCaption('')
     setPrimaryCaptionDraft('')
     setLiveCaptionChunkNotice(null)
@@ -2332,6 +2359,7 @@ function RecordingWorkspace({
       }
 
       primaryCaptionRef.current = ''
+      lastFinalTimestampRef.current = 0
       setPrimaryCaption('')
       setPrimaryCaptionDraft('')
       setLiveCaptionChunkNotice(null)
@@ -2667,14 +2695,20 @@ function RecordingWorkspace({
     }
   }
 
-  const createFolder = (): string | null => {
-    const name = (window.prompt('New folder name') || '').trim()
-    if (!name) return null
+  const createFolder = () => {
+    setNewFolderInputValue('')
+    setNewFolderInputVisible(true)
+  }
+
+  const confirmNewFolder = () => {
+    const name = newFolderInputValue.trim()
+    setNewFolderInputVisible(false)
+    setNewFolderInputValue('')
+    if (!name) return
     const id =
       typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `f-${Date.now()}`
     const folder: LibraryFolder = { id, name, createdAt: Date.now() }
     setLibraryFolders((prev) => [folder, ...prev])
-    return id
   }
 
   const renameFolder = (folderId: string) => {
@@ -2888,10 +2922,37 @@ function RecordingWorkspace({
           <div id="yl-library" className="yl-history-section list-panel">
             <div className="yl-nav-section-label yl-nav-section-label--secondary yl-library-head">
               <span>Lectures</span>
-              <button type="button" className="btn ghost small" onClick={createFolder}>
-                New folder
-              </button>
+              {!newFolderInputVisible && (
+                <button type="button" className="btn ghost small" onClick={createFolder}>
+                  New folder
+                </button>
+              )}
             </div>
+            {newFolderInputVisible && (
+              <div style={{ padding: '4px 8px 6px' }}>
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="Folder name"
+                  value={newFolderInputValue}
+                  onChange={(e) => setNewFolderInputValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') confirmNewFolder()
+                    if (e.key === 'Escape') { setNewFolderInputVisible(false); setNewFolderInputValue('') }
+                  }}
+                  onBlur={confirmNewFolder}
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    fontSize: '13px',
+                    padding: '4px 8px',
+                    borderRadius: '6px',
+                    border: '1px solid var(--yl-border, #e2e8f0)',
+                    outline: 'none',
+                  }}
+                />
+              </div>
+            )}
 
             <DndContext
               sensors={sensors}
@@ -3307,13 +3368,13 @@ function RecordingWorkspace({
                       {liveV2CaptionPhase === 'refining' ? 'Refining' : null}
                     </span>
                     {liveV2CaptionPhase === 'hearing'
-                      ? 'Capturing audio and waiting for first text…'
+                      ? 'Listening — first words appear within a second.'
                       : null}
                     {liveV2CaptionPhase === 'drafting'
-                      ? 'Preview text; a fuller line follows when ready.'
+                      ? 'Live — text updates as you speak.'
                       : null}
                     {liveV2CaptionPhase === 'refining'
-                      ? 'Stabilizing this slice — small updates may follow.'
+                      ? 'Processing — next caption will follow shortly.'
                       : null}
                   </>
                 ) : (

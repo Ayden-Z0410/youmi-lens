@@ -33,6 +33,12 @@ export function useRecorder(opts?: {
   /** Receives each timed audio slice while recording (cloned track; same mic as main file). */
   onLiveAudioChunkRef?: RefObject<((blob: Blob, mime: string) => void) | null>
   /**
+   * PCM streaming path: receives raw Int16 PCM frames (~90ms each) from an AudioContext
+   * ScriptProcessor. Used by the DashScope Paraformer real-time streaming ASR path.
+   * When provided, the blob-slice MediaRecorder cycle should be disabled via experimentalSkipLiveSlice.
+   */
+  onPcmChunkRef?: RefObject<((buffer: ArrayBuffer, sampleRate: number) => void) | null>
+  /**
    * Local A/B only: when true, do not clone the mic or run the live slice MediaRecorder cycle.
    * Main track is unchanged. Used to test whether the Youmi live chain interferes with main recording.
    */
@@ -48,6 +54,12 @@ export function useRecorder(opts?: {
   const liveStreamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<BlobPart[]>([])
   const mimeRef = useRef<string>('audio/webm')
+  // PCM streaming capture (AudioContext path)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const scriptProcessorRef = useRef<any>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const audioSourceRef = useRef<any>(null)
   /** One id per main MediaRecorder session — correlates [MainRec] lines in console. */
   const mainRecSessionIdRef = useRef<string>('')
   const mainDataChunkIndexRef = useRef(0)
@@ -86,16 +98,32 @@ export function useRecorder(opts?: {
     startLiveSliceCycleRef.current = null
   }, [haltLiveSliceCycle])
 
+  const teardownPcmCapture = useCallback(() => {
+    try {
+      audioSourceRef.current?.disconnect()
+    } catch { /* ignore */ }
+    try {
+      scriptProcessorRef.current?.disconnect()
+    } catch { /* ignore */ }
+    audioSourceRef.current = null
+    scriptProcessorRef.current = null
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => { /* ignore */ })
+      audioContextRef.current = null
+    }
+  }, [])
+
   const stopStream = useCallback(() => {
     if (mainRequestDataTimerRef.current) {
       clearInterval(mainRequestDataTimerRef.current)
       mainRequestDataTimerRef.current = null
     }
+    teardownPcmCapture()
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
     liveStreamRef.current?.getTracks().forEach((t) => t.stop())
     liveStreamRef.current = null
-  }, [])
+  }, [teardownPcmCapture])
 
   const start = useCallback(async () => {
     setError(null)
@@ -191,12 +219,65 @@ export function useRecorder(opts?: {
         }, 5000)
       }
 
+      // PCM streaming capture via AudioContext ScriptProcessor.
+      // Runs alongside the main MediaRecorder — does not affect the lecture recording.
+      // Provides ~90ms Int16 PCM frames at the device sample rate for DashScope realtime ASR.
+      const pcmChunkRef = opts?.onPcmChunkRef
+      // Check the ref object exists (not .current) — .current is set by a useEffect that runs
+      // after this recorder.start() call; reading it here would always be null.
+      if (pcmChunkRef) {
+        try {
+          // Avoid TS complaining about AudioContext; cast through unknown
+          const ACtx = (window.AudioContext ||
+            (window as unknown as Record<string, unknown>).webkitAudioContext) as typeof AudioContext
+          const ctx = new ACtx()
+          audioContextRef.current = ctx
+          const sampleRate = ctx.sampleRate
+
+          const source = ctx.createMediaStreamSource(stream)
+          audioSourceRef.current = source
+
+          // 2048-sample buffer ≈ 43–46ms at 44.1–48kHz.
+          // Smaller than 4096 so DashScope receives audio in shorter bursts, reducing
+          // the silence gap at the start of a new session and improving first-word latency.
+          // 2048 is the minimum Web Audio spec guarantees; 1024 can cause audio glitches.
+          // eslint-disable-next-line @typescript-eslint/no-deprecated
+          const processor = ctx.createScriptProcessor(2048, 1, 1)
+          scriptProcessorRef.current = processor
+
+          processor.onaudioprocess = (event: AudioProcessingEvent) => {
+            const send = pcmChunkRef.current
+            if (!send) return
+            const float32 = event.inputBuffer.getChannelData(0)
+            const int16 = new Int16Array(float32.length)
+            for (let i = 0; i < float32.length; i++) {
+              const s = float32[i]
+              int16[i] = s > 1 ? 32767 : s < -1 ? -32768 : Math.round(s * 32767)
+            }
+            // Transfer ownership to avoid copy
+            send(int16.buffer, sampleRate)
+          }
+
+          // Route through a silent GainNode to keep the processor active without speaker output
+          const silentGain = ctx.createGain()
+          silentGain.gain.value = 0
+          source.connect(processor)
+          processor.connect(silentGain)
+          silentGain.connect(ctx.destination)
+
+          console.info('[useRecorder] PCM capture started', JSON.stringify({ sampleRate, bufferSize: 2048 }))
+        } catch (pcmErr) {
+          console.warn('[useRecorder] PCM capture setup failed', pcmErr)
+          // Non-fatal: fall through; live captions unavailable in streaming mode
+        }
+      }
+
       const chunkRef = opts?.onLiveAudioChunkRef
       const runLiveSlice = Boolean(chunkRef) && !opts?.experimentalSkipLiveSlice
       if (chunkRef && opts?.experimentalSkipLiveSlice) {
-        console.warn(
-          '[experiment][YoumiLiveSlice] skipped — main MediaRecorder only (VITE_EXPERIMENT_SKIP_YOUMI_LIVE_SLICE)',
-        )
+        // In LiveEngine v2 mode, blob-slices are intentionally disabled; PCM streaming replaces them.
+        // This is NOT triggered by VITE_EXPERIMENT_SKIP_YOUMI_LIVE_SLICE env var in v2 builds.
+        console.info('[useRecorder] blob-slice disabled (v2 PCM streaming path is active)')
       }
       if (runLiveSlice && chunkRef) {
         const liveStream = stream.clone()
@@ -293,6 +374,7 @@ export function useRecorder(opts?: {
     const mr = mediaRecorderRef.current
     if (!mr || mr.state !== 'recording') return
     haltLiveSliceCycle()
+    audioContextRef.current?.suspend().catch(() => { /* ignore */ })
     const liveMr = liveSliceRecorderRef.current
     if (liveMr && liveMr.state !== 'inactive') {
       try {
@@ -312,6 +394,7 @@ export function useRecorder(opts?: {
     const mr = mediaRecorderRef.current
     if (!mr || mr.state !== 'paused') return
     mr.resume()
+    audioContextRef.current?.resume().catch(() => { /* ignore */ })
     liveCyclingRef.current = true
     startLiveSliceCycleRef.current?.()
     setStatus('recording')

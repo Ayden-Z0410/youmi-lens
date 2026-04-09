@@ -94,7 +94,7 @@ class LiveCaptionRealtimeClient {
         if (!p) return
         this.pending.delete(id)
         reject(new Error('live_ws_timeout'))
-      }, pass === 'draft' ? 3500 : 7000)
+      }, pass === 'draft' ? 12000 : 30000)
     })
     this.ws.send(JSON.stringify(payload))
     return result

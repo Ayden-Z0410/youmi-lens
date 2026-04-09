@@ -55,35 +55,24 @@ async function transcribeViaSignedUrlFallback({ wsSessionId, id, pass, arrayBuff
   }
 }
 
-/**
- * Realtime-ish socket for live captions:
- * - `draft`: shorter audio slice for fast first text
- * - `final`: full slice for stable text
- */
 // ---------------------------------------------------------------------------
 // Server-side DashScope session pool
 //
-// Problem: DashScope's task-started handshake from Railway (US/EU) to Alibaba
-// Cloud (China) takes 3-6 seconds due to cross-region TCP + TLS round trips.
-// Every lecture session pays this cost as "first-interim latency."
+// DashScope task-started handshake from Railway (US/EU) to Alibaba Cloud (China)
+// takes 3-6s due to cross-region TCP + TLS. Pre-warming at server startup means
+// clients claim a ready session with near-zero first-interim latency.
 //
-// Solution: pre-warm DashScope sessions at server startup (and auto-replenish).
-// When a client sends stream_start, we immediately claim a ready session with
-// task-started already acknowledged — saving 3-6 seconds of first-word latency.
-//
-// The pool stores one session per sample rate (44100 and 48000 cover all Macs).
-// Callbacks use a `clientRef` indirection so they can be re-pointed to whichever
-// client claims the session.
+// Pool stores one entry per sample rate (44100 and 48000 cover all Mac clients).
+// Callbacks use a clientRef indirection to wire pool sessions to claiming clients.
 // ---------------------------------------------------------------------------
 const PREWARM_RATES = [44100, 48000]
-const pool = new Map()  // sampleRate -> { session, ready, clientRef }
+const pool = new Map()  // sampleRate → { session, ready, clientRef }
 
 function poolBuild(apiKey, sampleRate) {
-  if (pool.has(sampleRate)) return  // already being built or ready
-  console.log('[YoumiLive][pool] building standby', JSON.stringify({ sampleRate }))
-
+  if (pool.has(sampleRate)) return
   const T_build = Date.now()
   const clientRef = { ws: null }
+  console.log('[YoumiLive][pool] building standby', JSON.stringify({ sampleRate }))
 
   const session = createDashscopeStreamingSession(apiKey, {
     sampleRate,
@@ -93,14 +82,14 @@ function poolBuild(apiKey, sampleRate) {
         entry.ready = true
         console.log('[YoumiLive][pool] standby READY', JSON.stringify({ sampleRate, buildMs: Date.now() - T_build }))
       }
-      // If a client already claimed this entry and is waiting, notify them now
       if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_ready' })
     },
     onInterim: (text) => { if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text }) },
     onFinal:   (text) => { if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final',   text }) },
     onError: (err) => {
-      console.log('[YoumiLive][pool] standby error', JSON.stringify({ sampleRate, message: err.message }))
-      if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: err.message })
+      const msg = err instanceof Error ? err.message : String(err)
+      console.log('[YoumiLive][pool] standby error', JSON.stringify({ sampleRate, message: msg }))
+      if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: msg })
       if (pool.get(sampleRate)?.session === session) pool.delete(sampleRate)
     },
     onClose: (intentional) => {
@@ -108,10 +97,9 @@ function poolBuild(apiKey, sampleRate) {
       if (pool.get(sampleRate)?.session === session) pool.delete(sampleRate)
       console.log('[YoumiLive][pool] standby closed', JSON.stringify({ sampleRate, intentional, isUnclaimed }))
       if (clientRef.ws && !intentional) {
-        // Session died while serving a client — trigger client reconnect
         try { clientRef.ws.close() } catch { /* ignore */ }
       }
-      // If the standby closed before any client claimed it, rebuild automatically
+      // Unclaimed session closed (DashScope timeout) — rebuild automatically.
       if (isUnclaimed) setTimeout(() => poolBuild(apiKey, sampleRate), 2000)
     },
   })
@@ -119,12 +107,11 @@ function poolBuild(apiKey, sampleRate) {
   pool.set(sampleRate, { session, ready: false, clientRef })
 }
 
-/** Claim a pre-warmed session from the pool and wire it to `ws`. Returns the entry or null. */
 function poolClaim(sampleRate, ws) {
   const entry = pool.get(sampleRate)
   if (!entry) return null
   pool.delete(sampleRate)
-  entry.clientRef.ws = ws  // future interim/final/error callbacks go to this client
+  entry.clientRef.ws = ws
   return entry
 }
 
@@ -134,14 +121,16 @@ export function attachLiveRealtimeWs(server) {
   console.log(
     '[YoumiLive][srv] realtime ws build marker',
     JSON.stringify({
-      fallbackVersion: '2026-04-09-prewarm-v1',
+      provider: 'dashscope-paraformer-realtime-v2',
+      version: '2026-04-09-continuity-first-v1',
       hasSupabaseUrl: Boolean(SUPABASE_URL),
       hasServiceRole: Boolean(SUPABASE_SERVICE_ROLE_KEY),
+      hasDashscopeKey: Boolean(process.env.DASHSCOPE_API_KEY?.trim()),
     }),
   )
 
-  // Kick off standby sessions immediately at server startup.
-  // By the time the first user presses Record, task-started is already done.
+  // Pre-warm DashScope sessions at server startup so the first user gets stream_ready
+  // without the 3-6s cross-Pacific handshake cost.
   const startupApiKey = process.env.DASHSCOPE_API_KEY?.trim()
   if (startupApiKey) {
     for (const sr of PREWARM_RATES) poolBuild(startupApiKey, sr)
@@ -157,10 +146,11 @@ export function attachLiveRealtimeWs(server) {
     safeSend(ws, { type: 'ready' })
 
     // Active DashScope streaming session for this connection (one per client WS).
+    // Session persists for the entire recording — continuity-first design.
     let streamingSession = null
 
     ws.on('message', async (raw, isBinary) => {
-      // Binary frame = PCM audio from the client → forward directly to DashScope streaming.
+      // Binary frame = PCM audio → forward directly to DashScope.
       if (isBinary) {
         if (streamingSession) streamingSession.sendPcm(raw)
         return
@@ -182,43 +172,43 @@ export function attachLiveRealtimeWs(server) {
         }
         const apiKey = process.env.DASHSCOPE_API_KEY?.trim()
         if (!apiKey) {
+          console.warn('[YoumiLive][srv] DASHSCOPE_API_KEY not set')
           safeSend(ws, { type: 'stream_error', message: 'DASHSCOPE_API_KEY_MISSING' })
           return
         }
         const sampleRate = typeof msg.sampleRate === 'number' ? msg.sampleRate : 48000
         console.log('[YoumiLive][srv] stream_start', JSON.stringify({ wsSessionId, sampleRate, poolReady: pool.get(sampleRate)?.ready ?? false }))
 
-        // -- Try to claim a pre-warmed session from the pool --
+        // Try to claim a pre-warmed session.
         const poolEntry = poolClaim(sampleRate, ws)
         if (poolEntry) {
           streamingSession = poolEntry.session
           if (poolEntry.ready) {
-            // task-started already done — client gets stream_ready with near-zero delay
-            console.log('[YoumiLive][srv] stream_start — pre-warmed session claimed (instant ready)', JSON.stringify({ wsSessionId, sampleRate }))
+            console.log('[YoumiLive][srv] pool claim — instant stream_ready', JSON.stringify({ wsSessionId, sampleRate }))
             safeSend(ws, { type: 'stream_ready' })
           } else {
-            // Session is still handshaking; onReady will fire and send stream_ready
-            console.log('[YoumiLive][srv] stream_start — pre-warming in progress, awaiting task-started', JSON.stringify({ wsSessionId, sampleRate }))
+            console.log('[YoumiLive][srv] pool claim — still warming, onReady will fire', JSON.stringify({ wsSessionId, sampleRate }))
           }
-          // Rebuild standby for the next lecture / next client
+          // Rebuild standby for the next client.
           setTimeout(() => poolBuild(apiKey, sampleRate), 0)
           return
         }
 
-        // -- Fallback: create a new session (pool miss — server restart or wrong sample rate) --
-        console.log('[YoumiLive][srv] stream_start — pool miss, creating new session', JSON.stringify({ wsSessionId, sampleRate }))
+        // Pool miss (server restart or unexpected sample rate) — create fresh session.
+        console.log('[YoumiLive][srv] pool miss — creating new DashScope session', JSON.stringify({ wsSessionId, sampleRate }))
         const clientRef = { ws }
         streamingSession = createDashscopeStreamingSession(apiKey, {
           sampleRate,
           onReady: () => {
-            console.log('[YoumiLive][srv] DashScope task-started -> stream_ready', JSON.stringify({ wsSessionId }))
+            console.log('[YoumiLive][srv] DashScope task-started → stream_ready', JSON.stringify({ wsSessionId }))
             safeSend(ws, { type: 'stream_ready' })
           },
           onInterim: (text) => { if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text }) },
           onFinal:   (text) => { if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final',   text }) },
           onError: (err) => {
-            console.log('[YoumiLive][srv] DashScope error', JSON.stringify({ message: err.message, wsSessionId }))
-            if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: err.message })
+            const errMsg = err instanceof Error ? err.message : String(err)
+            console.log('[YoumiLive][srv] DashScope error', JSON.stringify({ message: errMsg, wsSessionId }))
+            if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: errMsg })
           },
           onClose: (intentional) => {
             console.log('[YoumiLive][srv] DashScope session closed', JSON.stringify({ wsSessionId, intentional }))

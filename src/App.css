@@ -293,6 +293,14 @@ select.input {
   min-height: 3rem;
 }
 
+.live-block {
+  margin: 0 0 0.6rem;
+  padding: 0;
+}
+.live-block:last-child {
+  margin-bottom: 0;
+}
+
 .live-final {
   color: var(--text-h);
   white-space: pre-wrap;
