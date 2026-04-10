@@ -85,14 +85,31 @@ async function transcribeViaSignedUrlFallback({ wsSessionId, id, pass, arrayBuff
   }
 }
 
+function liveAsrRoutingReason(activeProvider) {
+  const ex = (process.env.LIVE_ASR_PROVIDER || '').trim().toLowerCase()
+  if (ex === 'dashscope' || ex === 'dash') return 'forced_dashscope_via_LIVE_ASR_PROVIDER'
+  if (ex === 'volcengine' || ex === 'volc') return 'forced_volc_via_LIVE_ASR_PROVIDER'
+  const app = Boolean(process.env.VOLCENGINE_ASR_APP_KEY?.trim())
+  const acc = Boolean(process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim())
+  if (app && acc) return 'volc_keys_present'
+  if (!app && !acc) return 'volc_keys_missing_both'
+  if (!app) return 'volc_missing_APP_KEY'
+  return 'volc_missing_ACCESS_KEY'
+}
+
 export function attachLiveRealtimeWs(server) {
   const wss = new WebSocketServer({ server, path: '/api/live-realtime-ws' })
   const activeProvider = resolveLiveAsrProvider()
+  const volcAppKeyPresent = Boolean(process.env.VOLCENGINE_ASR_APP_KEY?.trim())
+  const volcAccessKeyPresent = Boolean(process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim())
   console.info(
     JSON.stringify({
       event: 'live_realtime_ws_ready',
       liveAsrProvider: activeProvider,
-      hint: 'Volc when both VOLCENGINE_ASR_* keys set unless LIVE_ASR_PROVIDER=dashscope',
+      routingReason: liveAsrRoutingReason(activeProvider),
+      LIVE_ASR_PROVIDER_raw: (process.env.LIVE_ASR_PROVIDER || '').trim() || null,
+      volcAppKeyPresent,
+      volcAccessKeyPresent,
     }),
   )
   console.info(
