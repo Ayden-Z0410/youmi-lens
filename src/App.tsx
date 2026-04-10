@@ -227,6 +227,35 @@ function segmentSeq(segmentId: string): number {
   return Number(m[1])
 }
 
+/**
+ * Streaming ASR sends full-sentence snapshots per segment. Pause-commit (and VAD) can emit
+ * several finals whose text is a longer extension of the same utterance, each as a new
+ * stream-N segment. Appending each snapshot duplicates the prefix — replace the last segment
+ * when the new piece extends (or revises shorter) the previous final instead.
+ */
+function mergeStreamingFinalIntoTranscript(
+  full: string,
+  lastSegRef: { current: string },
+  piece: string,
+): string {
+  const seg = piece.trim()
+  if (!seg) return full
+  const last = lastSegRef.current.trim()
+  if (last) {
+    if (seg === last) return full
+    if (seg.startsWith(last) || (last.startsWith(seg) && seg.length <= last.length)) {
+      const i = full.lastIndexOf(last)
+      if (i !== -1 && i + last.length === full.length) {
+        const base = full.slice(0, i).replace(/\s+$/u, '')
+        lastSegRef.current = seg
+        return base ? `${base} ${seg}` : seg
+      }
+    }
+  }
+  lastSegRef.current = seg
+  return full ? `${full} ${seg}` : seg
+}
+
 type LibraryDropId = string | 'unfiled'
 
 function toDragTranslate(transform: { x: number; y: number } | null | undefined): string | undefined {
@@ -956,6 +985,7 @@ function RecordingWorkspace({
   const liveEngineRef = useRef<LiveEngine | null>(null)
   const v2NextEnSeqRef = useRef(0)
   const v2FinalEnBySeqRef = useRef(new Map<number, string>())
+  const v2LastEnglishFinalSegRef = useRef('')
   const v2LatestInterimEnSeqRef = useRef(-1)
   /** Latest English draft + rAF id — coalesce many interims/sec to one React commit per frame. */
   const v2EnDraftTextRef = useRef('')
@@ -964,6 +994,7 @@ function RecordingWorkspace({
   const v2ZhDraftRafRef = useRef<number | null>(null)
   const v2FinalZhBySeqRef = useRef(new Map<number, string>())
   const v2NextZhSeqRef = useRef(0)
+  const v2LastZhFinalSegRef = useRef('')
   // Tracks segments whose zh_final has already committed. Used to discard in-flight
   // stale zh_interim translations that resolve after zh_final for the same segment.
   const v2FinalizedZhSegIds = useRef(new Set<string>())
@@ -974,6 +1005,8 @@ function RecordingWorkspace({
   const [primaryCaption, setPrimaryCaption] = useState('')
   const [primaryCaptionDraft, setPrimaryCaptionDraft] = useState('')
   const primaryCaptionRef = useRef('')
+  /** Full zh transcript for live v2 (state is windowed to 150 words). */
+  const secondaryCaptionFullRef = useRef('')
   /** Session-level banners are derived in `liveCaptionSessionSurface`; this is only for per-chunk issues. */
   const [liveCaptionChunkNotice, setLiveCaptionChunkNotice] = useState<{
     kind: 'soft' | 'fatal'
@@ -1038,6 +1071,8 @@ function RecordingWorkspace({
   useEffect(() => {
     setSecondaryCaption('')
     setSecondaryCaptionDraft('')
+    secondaryCaptionFullRef.current = ''
+    v2LastZhFinalSegRef.current = ''
   }, [translateTarget])
 
   useEffect(() => {
@@ -1582,9 +1617,11 @@ function RecordingWorkspace({
     v2PushCountRef.current = 0
     v2NextEnSeqRef.current = 0
     v2FinalEnBySeqRef.current.clear()
+    v2LastEnglishFinalSegRef.current = ''
     v2LatestInterimEnSeqRef.current = -1
     v2NextZhSeqRef.current = 0
     v2FinalZhBySeqRef.current.clear()
+    v2LastZhFinalSegRef.current = ''
     v2FinalizedZhSegIds.current.clear()
     lastFinalTimestampRef.current = 0
 
@@ -1641,26 +1678,24 @@ function RecordingWorkspace({
         const seq = segmentSeq(ev.segmentId)
         v2FinalEnBySeqRef.current.set(seq, ev.text)
         let appendedCount = 0
-        let appendText = ''
         while (v2FinalEnBySeqRef.current.has(v2NextEnSeqRef.current)) {
           const part = (v2FinalEnBySeqRef.current.get(v2NextEnSeqRef.current) || '').trim()
           v2FinalEnBySeqRef.current.delete(v2NextEnSeqRef.current)
           v2NextEnSeqRef.current += 1
           appendedCount += 1
-          if (part) appendText = appendText ? `${appendText} ${part}` : part
+          if (part) {
+            primaryCaptionRef.current = mergeStreamingFinalIntoTranscript(
+              primaryCaptionRef.current,
+              v2LastEnglishFinalSegRef,
+              part,
+            )
+          }
         }
         if (seq >= v2LatestInterimEnSeqRef.current) setPrimaryCaptionDraft('')
-        if (appendText) {
+        if (appendedCount > 0) {
           // Full transcript in ref — NEVER windowed (used for post-class saving)
-          primaryCaptionRef.current = primaryCaptionRef.current
-            ? `${primaryCaptionRef.current} ${appendText}`
-            : appendText
-
-          // Display state: last 150 words — React renders stay O(1) at any session length
           const words = primaryCaptionRef.current.split(' ')
           setPrimaryCaption(words.length > 150 ? words.slice(-150).join(' ') : primaryCaptionRef.current)
-        }
-        if (appendedCount > 0) {
           setLiveCaptionPendingSlices((n) => Math.max(0, n - appendedCount))
         }
         return
@@ -1688,20 +1723,26 @@ function RecordingWorkspace({
         v2FinalizedZhSegIds.current.add(ev.segmentId)
         const seq = segmentSeq(ev.segmentId)
         v2FinalZhBySeqRef.current.set(seq, ev.text)
-        let appendZh = ''
+        let zhMerged = false
         while (v2FinalZhBySeqRef.current.has(v2NextZhSeqRef.current)) {
           const part = (v2FinalZhBySeqRef.current.get(v2NextZhSeqRef.current) || '').trim()
           v2FinalZhBySeqRef.current.delete(v2NextZhSeqRef.current)
           v2NextZhSeqRef.current += 1
-          if (part) appendZh = appendZh ? `${appendZh} ${part}` : part
+          if (part) {
+            const before = secondaryCaptionFullRef.current
+            secondaryCaptionFullRef.current = mergeStreamingFinalIntoTranscript(
+              before,
+              v2LastZhFinalSegRef,
+              part,
+            )
+            if (secondaryCaptionFullRef.current !== before) zhMerged = true
+          }
         }
         setSecondaryCaptionDraft('')
-        if (appendZh) {
-          setSecondaryCaption((prev) => {
-            const next = prev ? `${prev} ${appendZh}` : appendZh
-            const words = next.split(' ')
-            return words.length > 150 ? words.slice(-150).join(' ') : next
-          })
+        if (zhMerged) {
+          const next = secondaryCaptionFullRef.current
+          const words = next.split(' ')
+          setSecondaryCaption(words.length > 150 ? words.slice(-150).join(' ') : next)
         }
         // Trim stale finalized-seg tracker to prevent unbounded growth over long sessions
         if (v2FinalizedZhSegIds.current.size > 80) {
@@ -1795,11 +1836,14 @@ function RecordingWorkspace({
       setPrimaryCaptionDraft('')
       setSecondaryCaption('')
       setSecondaryCaptionDraft('')
+      secondaryCaptionFullRef.current = ''
       v2NextEnSeqRef.current = 0
       v2FinalEnBySeqRef.current.clear()
+      v2LastEnglishFinalSegRef.current = ''
       v2LatestInterimEnSeqRef.current = -1
       v2NextZhSeqRef.current = 0
       v2FinalZhBySeqRef.current.clear()
+      v2LastZhFinalSegRef.current = ''
       liveCaptionSessionIdRef.current = null
       youmiLiveBatchPartsRef.current = []
       youmiLiveBatchBytesRef.current = 0
@@ -2104,11 +2148,14 @@ function RecordingWorkspace({
     setLiveCaptionChunkNotice(null)
     setSecondaryCaption('')
     setSecondaryCaptionDraft('')
+    secondaryCaptionFullRef.current = ''
     v2NextEnSeqRef.current = 0
     v2FinalEnBySeqRef.current.clear()
+    v2LastEnglishFinalSegRef.current = ''
     v2LatestInterimEnSeqRef.current = -1
     v2NextZhSeqRef.current = 0
     v2FinalZhBySeqRef.current.clear()
+    v2LastZhFinalSegRef.current = ''
     if (typeof document !== 'undefined') {
       document.documentElement.lang = liveLang
     }
@@ -2136,11 +2183,14 @@ function RecordingWorkspace({
     setLiveCaptionChunkNotice(null)
     setSecondaryCaption('')
     setSecondaryCaptionDraft('')
+    secondaryCaptionFullRef.current = ''
     v2NextEnSeqRef.current = 0
     v2FinalEnBySeqRef.current.clear()
+    v2LastEnglishFinalSegRef.current = ''
     v2LatestInterimEnSeqRef.current = -1
     v2NextZhSeqRef.current = 0
     v2FinalZhBySeqRef.current.clear()
+    v2LastZhFinalSegRef.current = ''
   }
 
   const pauseRecording = () => {
@@ -2420,11 +2470,14 @@ function RecordingWorkspace({
       setLiveCaptionChunkNotice(null)
       setSecondaryCaption('')
       setSecondaryCaptionDraft('')
+      secondaryCaptionFullRef.current = ''
       v2NextEnSeqRef.current = 0
       v2FinalEnBySeqRef.current.clear()
+      v2LastEnglishFinalSegRef.current = ''
       v2LatestInterimEnSeqRef.current = -1
       v2NextZhSeqRef.current = 0
       v2FinalZhBySeqRef.current.clear()
+      v2LastZhFinalSegRef.current = ''
       setSelectedId(recordingId)
       setTitle('')
     } catch (e) {
