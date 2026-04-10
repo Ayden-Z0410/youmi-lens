@@ -2,15 +2,85 @@
  * Volcengine / ByteDance streaming ASR (bigmodel v3 async).
  *
  * WebSocket: wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async (default)
- * Handshake headers (no Bearer; no AppID/Token/Cluster in JSON body):
- *   X-Api-App-Key, X-Api-Access-Key, X-Api-Resource-Id, X-Api-Connect-Id (UUID per session)
  *
- * After connect, uses the same binary framing as v2 ASR (FullClientRequest + AudioOnly).
- * Responses: gzip JSON binary frames; some builds may emit plain JSON strings (both handled).
+ * Auth (switch via VOLCENGINE_AUTH_MODE):
+ *   legacy_headers: X-Api-* four headers (APP ID + Access Token + Resource + Connect-Id)
+ *   api_key: experiment Authorization Bearer; token + X-Api-Resource-Id + X-Api-Connect-Id
+ *
+ * After connect: binary FullClientRequest + AudioOnly (gzip JSON / gzip PCM).
  */
 
 import { WebSocket } from 'ws'
 import zlib from 'zlib'
+
+/** @typedef {'legacy_headers' | 'api_key'} VolcAuthMode */
+
+export const AUTH_MODE_LEGACY = 'legacy_headers'
+export const AUTH_MODE_API_KEY = 'api_key'
+
+/** Normalize env VOLCENGINE_AUTH_MODE */
+export function normalizeVolcAuthMode(raw) {
+  const m = String(raw ?? '').trim().toLowerCase()
+  if (m === AUTH_MODE_API_KEY || m === 'apikey' || m === 'bearer' || m === 'bearer_token') return AUTH_MODE_API_KEY
+  return AUTH_MODE_LEGACY
+}
+
+/**
+ * Build WebSocket handshake headers + safe diagnostic (no secret values).
+ * @param {{
+ *   authMode: VolcAuthMode,
+ *   appKey?: string,
+ *   accessKey?: string,
+ *   apiKey?: string,
+ *   resourceId: string,
+ *   connectId: string,
+ *   wsUrl: string,
+ * }} opts
+ */
+export function buildVolcOpenspeechHandshake(opts) {
+  const { authMode, appKey = '', accessKey = '', apiKey = '', resourceId, connectId, wsUrl } = opts
+
+  const diag = {
+    authMode,
+    headerXApiAppKey: false,
+    headerXApiAccessKey: false,
+    headerAuthorization: false,
+    resourceId,
+    wsUrl,
+  }
+
+  const headers = {}
+
+  if (authMode === AUTH_MODE_API_KEY) {
+    const token = (apiKey || '').trim()
+    if (!token) {
+      const err = new Error('VOLCENGINE_API_KEY_MODE_MISSING_TOKEN')
+      err.code = 'VOLC_AUTH_CONFIG'
+      throw err
+    }
+    // Doubao / openspeech token form: "Bearer; " + token (semicolon)
+    headers.Authorization = `Bearer; ${token}`
+    diag.headerAuthorization = true
+    headers['X-Api-Resource-Id'] = resourceId
+    headers['X-Api-Connect-Id'] = connectId
+  } else {
+    const ak = (appKey || '').trim()
+    const sk = (accessKey || '').trim()
+    if (!ak || !sk) {
+      const err = new Error('VOLCENGINE_LEGACY_MODE_MISSING_APP_OR_ACCESS_KEY')
+      err.code = 'VOLC_AUTH_CONFIG'
+      throw err
+    }
+    headers['X-Api-App-Key'] = ak
+    headers['X-Api-Access-Key'] = sk
+    headers['X-Api-Resource-Id'] = resourceId
+    headers['X-Api-Connect-Id'] = connectId
+    diag.headerXApiAppKey = true
+    diag.headerXApiAccessKey = true
+  }
+
+  return { headers, diag }
+}
 
 const PROTO_VER    = 0x1
 const HDR_SIZE     = 0x1
@@ -105,10 +175,22 @@ function normalizeAsrPayload(raw) {
   return raw
 }
 
-function extractUtterances(result) {
-  const u = result?.result?.[0]?.utterances
-  if (Array.isArray(u) && u.length) return u
+/** bigmodel_async uses result.utterances; legacy v2 used result[0].utterances */
+function extractUtterances(payload) {
+  const r = payload?.result
+  if (!r) return null
+  if (Array.isArray(r) && r[0]?.utterances) return r[0].utterances
+  if (r.utterances && Array.isArray(r.utterances)) return r.utterances
   return null
+}
+
+function extractDisplayText(payload) {
+  const r = payload?.result
+  if (!r) return ''
+  if (typeof r.text === 'string' && r.text.trim()) return r.text.trim()
+  const u = extractUtterances(payload)
+  if (u?.length) return u.map((x) => x.text).join(' ').trim()
+  return ''
 }
 
 function resamplePcm(input, fromRate) {
@@ -130,16 +212,20 @@ function resamplePcm(input, fromRate) {
 
 /**
  * @param {{
- *   appKey: string,
- *   accessKey: string,
+ *   authMode?: VolcAuthMode,
+ *   appKey?: string,
+ *   accessKey?: string,
+ *   apiKey?: string,
  *   resourceId: string,
  *   wsUrl?: string,
  * }} credentials
  */
 export function createVolcengineStreamingSession(credentials, callbacks = {}) {
   const {
-    appKey,
-    accessKey,
+    authMode = AUTH_MODE_LEGACY,
+    appKey = '',
+    accessKey = '',
+    apiKey = '',
     resourceId,
     wsUrl = DEFAULT_VOLC_ASR_WS_URL,
   } = credentials
@@ -206,13 +292,14 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
       onReady?.()
     }
 
-    const utterances = extractUtterances(payload)
-    if (!utterances?.length) return
-
-    const text = utterances.map((u) => u.text).join(' ').trim()
+    const text = extractDisplayText(payload)
     if (!text) return
 
-    const isFinal = utterances.every((u) => u.definite === true)
+    const utterances = extractUtterances(payload)
+    const isFinal =
+      utterances?.length
+        ? utterances.every((u) => u.definite === true)
+        : Boolean(payload.result?.is_final ?? payload.is_final)
 
     if (isFinal) {
       L('FINAL', { text: text.slice(0, 80), ms: Date.now() - T0 })
@@ -226,38 +313,64 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
     }
   }
 
-  L('connecting', { wsUrl, sampleRate, resourceId, connectId })
+  let handshakeHeaders
+  let handshakeDiag
+  try {
+    const built = buildVolcOpenspeechHandshake({
+      authMode,
+      appKey,
+      accessKey,
+      apiKey,
+      resourceId,
+      connectId,
+      wsUrl,
+    })
+    handshakeHeaders = built.headers
+    handshakeDiag = built.diag
+  } catch (err) {
+    L('handshake config error', { message: err.message, code: err.code })
+    throw err
+  }
 
-  ws = new WebSocket(wsUrl, {
-    headers: {
-      'X-Api-App-Key':     appKey,
-      'X-Api-Access-Key':  accessKey,
-      'X-Api-Resource-Id': resourceId,
-      'X-Api-Connect-Id':  connectId,
-    },
+  L('auth handshake plan', handshakeDiag)
+
+  L('connecting', { wsUrl, sampleRate, resourceId, connectId, authMode })
+
+  ws = new WebSocket(wsUrl, { headers: handshakeHeaders })
+
+  ws.on('unexpected-response', (_req, res) => {
+    L('WS handshake rejected', {
+      statusCode: res.statusCode,
+      statusMessage: res.statusMessage,
+      authMode,
+      hint:
+        authMode === AUTH_MODE_API_KEY
+          ? 'api_key mode: verify VOLCENGINE_ASR_API_KEY (or ACCESS_KEY as sole token) and Resource-Id; try legacy_headers if 401 persists'
+          : 'legacy_headers: X-Api-App-Key = speech APPID, X-Api-Access-Key = Access Token for that app',
+    })
   })
 
   ws.on('open', () => {
-    L('open - sending FullClientRequest (auth via headers only)')
+    L('open - sending FullClientRequest (bigmodel_async JSON)', { authMode })
     try {
-      // Auth is in WS headers; body matches v2-style streaming config (no app.token / cluster).
+      // Payload aligned with openspeech bigmodel_async (see volcengine koe-asr doubao.rs).
       const frame = buildFullClientRequest({
         user: { uid: `youmi-${Date.now()}` },
         audio: {
-          format:   'raw',
-          codec:    'raw',
-          rate:     TARGET_RATE,
-          bits:     16,
-          channel:  1,
-          language: 'en-US',
+          format: 'pcm',
+          codec:  'raw',
+          rate:   TARGET_RATE,
+          bits:   16,
+          channel: 1,
         },
         request: {
-          reqid:           reqId,
-          sequence:        1,
-          nbest:           1,
-          show_utterances: true,
-          result_type:     'single',
-          workflow:        'audio_in,resample,partition,vad,fe,decode,itn,nlu_punctuate',
+          model_name:       'bigmodel',
+          enable_itn:       true,
+          enable_punc:      true,
+          enable_ddc:       true,
+          enable_nonstream: true,
+          result_type:      'full',
+          show_utterances:  true,
         },
       })
       ws.send(frame)
@@ -303,7 +416,7 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
       pcmAccum = Buffer.concat([pcmAccum, chunk])
       const maxBytes = Math.ceil(sampleRate * 3 * 2)
       if (pcmAccum.length > maxBytes) {
-        L('pcmAccum overflow � dropping oldest audio', { droppedBytes: pcmAccum.length - maxBytes })
+        L('pcmAccum overflow - dropping oldest audio', { droppedBytes: pcmAccum.length - maxBytes })
         pcmAccum = pcmAccum.slice(pcmAccum.length - maxBytes)
       }
     },
@@ -314,7 +427,7 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
       intentional = true
       if (chunkTimer) { clearTimeout(chunkTimer); chunkTimer = null }
       drainChunk(true)
-      L('stop � last audio frame sent')
+      L('stop - last audio frame sent')
     },
 
     destroy() {
