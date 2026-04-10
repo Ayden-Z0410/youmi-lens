@@ -56,9 +56,57 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
   let T_first_final = 0
   let interimCount = 0
 
+  /** When DashScope rarely sets sentence_end, interims never become finals — UI stuck in gray. Commit after brief audio pause. */
+  const PAUSE_COMMIT_MS = Number(process.env.YOUMI_LIVE_PAUSE_COMMIT_MS || 580)
+  let pauseCommitTimer = null
+  let latestInterimText = ''
+  let lastEmittedFinalText = ''
+  let lastEmittedFinalAt = 0
+
   const tag = taskId.slice(-8)
   const L = (msg, data) =>
     console.log(`[DashscopeStream][${tag}] ${msg}`, data ? JSON.stringify(data) : '')
+
+  function truthySentenceEnd(v) {
+    return v === true || v === 'true' || v === 1 || v === '1'
+  }
+
+  function clearPauseCommitTimer() {
+    if (pauseCommitTimer) {
+      clearTimeout(pauseCommitTimer)
+      pauseCommitTimer = null
+    }
+  }
+
+  function emitFinalDeduped(text, reason) {
+    const t = (text || '').trim()
+    if (!t) return
+    const now = Date.now()
+    if (t === lastEmittedFinalText && now - lastEmittedFinalAt < 2000) {
+      L('final deduped (same text)', { reason, len: t.length })
+      return
+    }
+    lastEmittedFinalText = t
+    lastEmittedFinalAt = now
+    if (!T_first_final) {
+      T_first_final = now
+      L('TIMING first-final', {
+        reason,
+        totalMs: T_first_final - T_create,
+        sinceTaskStarted: T_task_started ? T_first_final - T_task_started : -1,
+      })
+    }
+    L('final', { reason, len: t.length, sinceStartMs: now - T_create })
+    onFinal?.(t)
+  }
+
+  function schedulePauseCommitFinal() {
+    clearPauseCommitTimer()
+    pauseCommitTimer = setTimeout(() => {
+      pauseCommitTimer = null
+      emitFinalDeduped(latestInterimText, 'pause_commit')
+    }, PAUSE_COMMIT_MS)
+  }
 
   const drainQueue = () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return
@@ -82,6 +130,11 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
 
   const finish = () => {
     if (finished || !started || !ws || ws.readyState !== WebSocket.OPEN) return
+    clearPauseCommitTimer()
+    if (latestInterimText.trim()) {
+      emitFinalDeduped(latestInterimText, 'flush_on_finish_task')
+      latestInterimText = ''
+    }
     finished = true
     try {
       ws.send(JSON.stringify({
@@ -93,6 +146,7 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
   }
 
   const destroy = () => {
+    clearPauseCommitTimer()
     finished = true
     taskFinished = true  // treat explicit destroy as intentional so onClose doesn't alert client
     if (taskStartedTimer) { clearTimeout(taskStartedTimer); taskStartedTimer = null }
@@ -182,38 +236,33 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
         L('sentence-diag (first result)', { keys: Object.keys(sentence), sentence_end: sentence.sentence_end, is_sentence_end: sentence.is_sentence_end })
         diagLogged = true
       }
-      // DashScope uses sentence_end (v2) or is_sentence_end; some payloads use string "true".
+      // DashScope uses sentence_end / is_sentence_end; payloads may use bool, string, or 1.
       const endFlag = sentence.sentence_end ?? sentence.is_sentence_end
-      const isFinal = endFlag === true || endFlag === 'true'
+      const isFinal = truthySentenceEnd(endFlag)
       const now = Date.now()
       if (isFinal) {
-        if (!T_first_final) {
-          T_first_final = now
-          L('TIMING first-final', {
-            totalMs: T_first_final - T_create,
-            sinceTaskStarted: T_first_final - T_task_started,
-          })
-        }
-        L('final', { len: text.length, sinceStartMs: now - T_create })
-        onFinal?.(text)
+        clearPauseCommitTimer()
+        emitFinalDeduped(text, 'api_sentence_end')
       } else {
         interimCount++
         if (!T_first_interim) {
           T_first_interim = now
           L('TIMING first-interim', {
             totalMs: T_first_interim - T_create,         // create?first interim
-            sinceTaskStarted: T_first_interim - T_task_started,  // task-started?first interim
+            sinceTaskStarted: T_task_started ? T_first_interim - T_task_started : -1,  // task-started?first interim
             wsConnectMs: T_ws_open - T_create,
-            taskStartedMs: T_task_started - T_create,
+            taskStartedMs: T_task_started ? T_task_started - T_create : -1,
           })
         }
-        L('interim', { n: interimCount, len: text.length, sinceStartMs: now - T_create })
+        latestInterimText = text
+        schedulePauseCommitFinal()
         onInterim?.(text)
       }
       return
     }
 
     if (action === 'task-finished') {
+      clearPauseCommitTimer()
       taskFinished = true
       L('task-finished')
       return
