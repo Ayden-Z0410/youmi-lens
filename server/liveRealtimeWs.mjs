@@ -1,7 +1,11 @@
 import { WebSocketServer } from 'ws'
 import { createClient } from '@supabase/supabase-js'
 import * as youmiHosted from './ai/hosted/youmiHosted.mjs'
-import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
+import {
+  createVolcengineStreamingSession,
+  DEFAULT_VOLC_ASR_WS_URL,
+  DEFAULT_VOLC_ASR_RESOURCE_ID,
+} from './volcengineStreamingAsr.mjs'
 
 function safeSend(ws, payload) {
   try {
@@ -55,102 +59,35 @@ async function transcribeViaSignedUrlFallback({ wsSessionId, id, pass, arrayBuff
   }
 }
 
-// ---------------------------------------------------------------------------
-// Server-side DashScope session pool
-//
-// DashScope task-started handshake from Railway (US/EU) to Alibaba Cloud (China)
-// takes 3-6s due to cross-region TCP + TLS. Pre-warming at server startup means
-// clients claim a ready session with near-zero first-interim latency.
-//
-// Pool stores one entry per sample rate (44100 and 48000 cover all Mac clients).
-// Callbacks use a clientRef indirection to wire pool sessions to claiming clients.
-// ---------------------------------------------------------------------------
-const PREWARM_RATES = [44100, 48000]
-const pool = new Map()  // sampleRate → { session, ready, clientRef }
-
-function poolBuild(apiKey, sampleRate) {
-  if (pool.has(sampleRate)) return
-  const T_build = Date.now()
-  const clientRef = { ws: null }
-  console.log('[YoumiLive][pool] building standby', JSON.stringify({ sampleRate }))
-
-  const session = createDashscopeStreamingSession(apiKey, {
-    sampleRate,
-    onReady: () => {
-      const entry = pool.get(sampleRate)
-      if (entry?.session === session) {
-        entry.ready = true
-        console.log('[YoumiLive][pool] standby READY', JSON.stringify({ sampleRate, buildMs: Date.now() - T_build }))
-      }
-      if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_ready' })
-    },
-    onInterim: (text) => { if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text }) },
-    onFinal:   (text) => { if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final',   text }) },
-    onError: (err) => {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.log('[YoumiLive][pool] standby error', JSON.stringify({ sampleRate, message: msg }))
-      if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: msg })
-      if (pool.get(sampleRate)?.session === session) pool.delete(sampleRate)
-    },
-    onClose: (intentional) => {
-      const isUnclaimed = !clientRef.ws
-      if (pool.get(sampleRate)?.session === session) pool.delete(sampleRate)
-      console.log('[YoumiLive][pool] standby closed', JSON.stringify({ sampleRate, intentional, isUnclaimed }))
-      if (clientRef.ws && !intentional) {
-        try { clientRef.ws.close() } catch { /* ignore */ }
-      }
-      // Unclaimed session closed (DashScope timeout) — rebuild automatically.
-      if (isUnclaimed) setTimeout(() => poolBuild(apiKey, sampleRate), 2000)
-    },
-  })
-
-  pool.set(sampleRate, { session, ready: false, clientRef })
-}
-
-function poolClaim(sampleRate, ws) {
-  const entry = pool.get(sampleRate)
-  if (!entry) return null
-  pool.delete(sampleRate)
-  entry.clientRef.ws = ws
-  return entry
-}
-
 export function attachLiveRealtimeWs(server) {
   const wss = new WebSocketServer({ server, path: '/api/live-realtime-ws' })
   console.log('[YoumiLive][srv] realtime ws route attached at /api/live-realtime-ws')
   console.log(
     '[YoumiLive][srv] realtime ws build marker',
     JSON.stringify({
-      provider: 'dashscope-paraformer-realtime-v2',
-      version: '2026-04-09-continuity-first-v1',
+      provider: 'volcengine-doubao-streaming-asr',
+      version: '2026-04-09-volcengine-x-api-headers',
       hasSupabaseUrl: Boolean(SUPABASE_URL),
       hasServiceRole: Boolean(SUPABASE_SERVICE_ROLE_KEY),
-      hasDashscopeKey: Boolean(process.env.DASHSCOPE_API_KEY?.trim()),
+      hasVolcAppKey:        Boolean(process.env.VOLCENGINE_ASR_APP_KEY?.trim()),
+      hasVolcAccessKey:     Boolean(process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim()),
+      volcResourceIdFromEnv: Boolean(process.env.VOLCENGINE_ASR_RESOURCE_ID?.trim()),
+      volcWsUrlFromEnv:      Boolean(process.env.VOLCENGINE_ASR_WS_URL?.trim()),
     }),
   )
 
-  // Pre-warm DashScope sessions at server startup so the first user gets stream_ready
-  // without the 3-6s cross-Pacific handshake cost.
-  const startupApiKey = process.env.DASHSCOPE_API_KEY?.trim()
-  if (startupApiKey) {
-    for (const sr of PREWARM_RATES) poolBuild(startupApiKey, sr)
-  } else {
-    console.warn('[YoumiLive][pool] DASHSCOPE_API_KEY not set — skipping pre-warm')
-  }
-
   wss.on('connection', (ws) => {
     console.log('[YoumiLive][srv] realtime ws connected')
-    let frameCount = 0
     const wsSessionId = crypto.randomUUID().slice(-12)
     console.log('[YoumiLive][srv] realtime session created', JSON.stringify({ wsSessionId }))
     safeSend(ws, { type: 'ready' })
 
-    // Active DashScope streaming session for this connection (one per client WS).
-    // Session persists for the entire recording — continuity-first design.
+    let frameCount = 0
+    // Active Volcengine streaming session for this connection.
     let streamingSession = null
 
     ws.on('message', async (raw, isBinary) => {
-      // Binary frame = PCM audio → forward directly to DashScope.
+      // Binary frame = PCM audio → forward directly to Volcengine session.
       if (isBinary) {
         if (streamingSession) streamingSession.sendPcm(raw)
         return
@@ -164,71 +101,78 @@ export function attachLiveRealtimeWs(server) {
         return
       }
 
-      // --- Streaming session control ---
+      // ── Streaming session lifecycle ──────────────────────────────────────
+
       if (msg?.type === 'stream_start') {
         if (streamingSession) {
           streamingSession.destroy()
           streamingSession = null
         }
-        const apiKey = process.env.DASHSCOPE_API_KEY?.trim()
-        if (!apiKey) {
-          console.warn('[YoumiLive][srv] DASHSCOPE_API_KEY not set')
-          safeSend(ws, { type: 'stream_error', message: 'DASHSCOPE_API_KEY_MISSING' })
+
+        const appKey     = process.env.VOLCENGINE_ASR_APP_KEY?.trim()
+        const accessKey  = process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim()
+        const resourceId =
+          process.env.VOLCENGINE_ASR_RESOURCE_ID?.trim() || DEFAULT_VOLC_ASR_RESOURCE_ID
+        const wsUrl =
+          process.env.VOLCENGINE_ASR_WS_URL?.trim() || DEFAULT_VOLC_ASR_WS_URL
+
+        if (!appKey || !accessKey) {
+          const missing = [!appKey && 'APP_KEY', !accessKey && 'ACCESS_KEY'].filter(Boolean).join(', ')
+          console.warn('[YoumiLive][srv] Volcengine credentials missing:', missing)
+          safeSend(ws, {
+            type: 'stream_error',
+            message: `VOLCENGINE_ASR_${missing.replace(/, /g, '_AND_')}_MISSING`,
+          })
           return
         }
+
         const sampleRate = typeof msg.sampleRate === 'number' ? msg.sampleRate : 48000
-        console.log('[YoumiLive][srv] stream_start', JSON.stringify({ wsSessionId, sampleRate, poolReady: pool.get(sampleRate)?.ready ?? false }))
+        console.log('[YoumiLive][srv] stream_start — creating Volcengine session', JSON.stringify({
+          wsSessionId, sampleRate, resourceId, wsUrl,
+        }))
 
-        // Try to claim a pre-warmed session.
-        const poolEntry = poolClaim(sampleRate, ws)
-        if (poolEntry) {
-          streamingSession = poolEntry.session
-          if (poolEntry.ready) {
-            console.log('[YoumiLive][srv] pool claim — instant stream_ready', JSON.stringify({ wsSessionId, sampleRate }))
-            safeSend(ws, { type: 'stream_ready' })
-          } else {
-            console.log('[YoumiLive][srv] pool claim — still warming, onReady will fire', JSON.stringify({ wsSessionId, sampleRate }))
-          }
-          // Rebuild standby for the next client.
-          setTimeout(() => poolBuild(apiKey, sampleRate), 0)
-          return
-        }
-
-        // Pool miss (server restart or unexpected sample rate) — create fresh session.
-        console.log('[YoumiLive][srv] pool miss — creating new DashScope session', JSON.stringify({ wsSessionId, sampleRate }))
         const clientRef = { ws }
-        streamingSession = createDashscopeStreamingSession(apiKey, {
-          sampleRate,
-          onReady: () => {
-            console.log('[YoumiLive][srv] DashScope task-started → stream_ready', JSON.stringify({ wsSessionId }))
-            safeSend(ws, { type: 'stream_ready' })
+        streamingSession = createVolcengineStreamingSession(
+          { appKey, accessKey, resourceId, wsUrl },
+          {
+            sampleRate,
+            onReady: () => {
+              console.log('[YoumiLive][srv] Volcengine ready → stream_ready', JSON.stringify({ wsSessionId }))
+              safeSend(clientRef.ws, { type: 'stream_ready' })
+            },
+            onInterim: (text) => {
+              if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text })
+            },
+            onFinal: (text) => {
+              if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final', text })
+            },
+            onError: (err) => {
+              const errMsg = err instanceof Error ? err.message : String(err)
+              console.log('[YoumiLive][srv] Volcengine error', JSON.stringify({ message: errMsg, wsSessionId }))
+              if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: errMsg })
+            },
+            onClose: (intentional) => {
+              console.log('[YoumiLive][srv] Volcengine session closed', JSON.stringify({ wsSessionId, intentional }))
+              streamingSession = null
+              clientRef.ws = null
+              if (!intentional) {
+                // Unexpected close — signal client to reconnect.
+                console.log('[YoumiLive][srv] unexpected close — closing client WS', JSON.stringify({ wsSessionId }))
+                try { ws.close() } catch { /* ignore */ }
+              }
+            },
           },
-          onInterim: (text) => { if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text }) },
-          onFinal:   (text) => { if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final',   text }) },
-          onError: (err) => {
-            const errMsg = err instanceof Error ? err.message : String(err)
-            console.log('[YoumiLive][srv] DashScope error', JSON.stringify({ message: errMsg, wsSessionId }))
-            if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: errMsg })
-          },
-          onClose: (intentional) => {
-            console.log('[YoumiLive][srv] DashScope session closed', JSON.stringify({ wsSessionId, intentional }))
-            streamingSession = null
-            clientRef.ws = null
-            if (!intentional) {
-              console.log('[YoumiLive][srv] unexpected close — closing client WS to trigger reconnect', JSON.stringify({ wsSessionId }))
-              try { ws.close() } catch { /* ignore */ }
-            }
-          },
-        })
+        )
         return
       }
 
       if (msg?.type === 'stream_stop') {
         console.log('[YoumiLive][srv] stream_stop', JSON.stringify({ wsSessionId }))
-        streamingSession?.finish()
+        streamingSession?.stop()   // graceful: sends LAST_PACKET, waits for server final
         return
       }
 
+      // ── Legacy chunk-based transcription (after-class path, unchanged) ──
       if (!msg || msg.type !== 'transcribe') return
       const id = typeof msg.id === 'string' ? msg.id : ''
       const mime = typeof msg.mime === 'string' ? msg.mime : 'audio/webm'
@@ -256,54 +200,24 @@ export function attachLiveRealtimeWs(server) {
           '[YoumiLive][srv] ws frame received',
           JSON.stringify({ id, pass, frameCount, mime, b64Len: audioBase64.length, bytes: ab.byteLength }),
         )
-        console.log('[YoumiLive][srv] transcribe buffer created', JSON.stringify({ id, pass, bytes: ab.byteLength }))
-        console.log('[YoumiLive][srv] ws ASR started', JSON.stringify({ id, pass }))
         let text = ''
         try {
           text = await youmiHosted.transcribeAudio(ab, mime, `live-${pass}.${ext}`)
         } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e)
-          console.log(
-            '[YoumiLive][srv] raw buffer path failed',
-            JSON.stringify({ id, pass, message: msg }),
-          )
-          if (msg.includes('HOSTED_TRANSCRIBE_BUFFER_UNAVAILABLE')) {
-            console.log(
-              '[YoumiLive][srv] fallback entered',
-              JSON.stringify({ id, pass, wsSessionId }),
-            )
+          const eMsg = e instanceof Error ? e.message : String(e)
+          if (eMsg.includes('HOSTED_TRANSCRIBE_BUFFER_UNAVAILABLE')) {
             try {
-              text = await transcribeViaSignedUrlFallback({
-                wsSessionId,
-                id,
-                pass,
-                arrayBuffer: ab,
-                mime,
-              })
+              text = await transcribeViaSignedUrlFallback({ wsSessionId, id, pass, arrayBuffer: ab, mime })
             } catch (fallbackErr) {
-              const fallbackMsg =
-                fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)
-              console.log(
-                '[YoumiLive][srv] fallback failed',
-                JSON.stringify({ id, pass, message: fallbackMsg }),
-              )
+              const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)
               throw new Error(`LIVE_URL_FALLBACK_FAILED:${fallbackMsg}`)
             }
           } else {
             throw e
           }
         }
-        console.log(
-          '[YoumiLive][srv] ws ASR result',
-          JSON.stringify({ id, pass, textLen: (text || '').trim().length }),
-        )
         safeSend(ws, { type: 'result', id, pass, text: (text || '').trim() })
-        console.log('[YoumiLive][srv] ws result sent', JSON.stringify({ id, pass }))
       } catch (e) {
-        console.log(
-          '[YoumiLive][srv] ws ASR error',
-          JSON.stringify({ id, pass, message: e instanceof Error ? e.message : String(e) }),
-        )
         safeSend(ws, {
           type: 'result',
           id,
@@ -312,14 +226,13 @@ export function attachLiveRealtimeWs(server) {
         })
       }
     })
+
     ws.on('close', () => {
-      console.log('[YoumiLive][srv] realtime ws closed')
+      console.log('[YoumiLive][srv] realtime ws closed', JSON.stringify({ wsSessionId }))
       streamingSession?.destroy()
       streamingSession = null
     })
-
   })
 
   return wss
 }
-
