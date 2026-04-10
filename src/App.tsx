@@ -1537,7 +1537,9 @@ function RecordingWorkspace({
     }
   }, [liveCaptionSessionActive, translateTarget, liveCaptionsPipelineEnabled, useLiveEngineV2])
 
-  useEffect(() => {
+  // useLayoutEffect: attach PCM handler before paint so ScriptProcessor callbacks never run with a null ref
+  // (recorder.start uses flushSync('recording') then starts AudioContext — effect would be too late).
+  useLayoutEffect(() => {
     if (!useLiveEngineV2) {
       if (liveEngineRef.current) {
         liveRouteDiagLog('[LiveEngine][diag] stopping v2 engine because route is legacy')

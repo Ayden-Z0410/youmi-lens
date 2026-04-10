@@ -1,5 +1,5 @@
 /**
- * YoumiLiveAdapter — PCM → server /api/live-realtime-ws (server: Volc when keys set, else DashScope).
+ * YoumiLiveAdapter — PCM → server /api/live-realtime-ws (product main line: DashScope; Volc only server-side experiment).
  *
  * Design principles:
  *   • Provider delivers natural clause boundaries via VAD (definite:true = final).
@@ -166,7 +166,7 @@ export class YoumiLiveAdapter {
     this.lastFinalMs   = 0
     this.pcmQueue      = []
     this.cadence.reset()
-    log('adapter starting (live ASR: server Volc if keys else DashScope)')
+    log('adapter starting (live ASR: server DashScope main line)')
     this.listener?.({ type: 'connected' })
   }
 

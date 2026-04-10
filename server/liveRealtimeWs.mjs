@@ -9,20 +9,13 @@ import {
 import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
 
 /**
- * Live realtime ASR — restore user-smooth path: Volc streaming when both Volc keys are set on the host.
- * - LIVE_ASR_PROVIDER=dashscope|dash → always DashScope (override).
- * - LIVE_ASR_PROVIDER=volcengine|volc|vol → Volc (still needs keys).
- * - Otherwise: if VOLCENGINE_ASR_APP_KEY + ACCESS_KEY both set → volcengine, else dashscope.
+ * Live realtime ASR — product main line is **always** DashScope (no env-based provider switching).
+ * Volcengine streaming exists only when `YOUMI_LIVE_ASR_EXPERIMENT=volcengine|volc|vol` (internal experiment).
  * @returns {'dashscope' | 'volcengine'}
  */
 function resolveLiveAsrProvider() {
-  const ex = (process.env.LIVE_ASR_PROVIDER || '').trim().toLowerCase()
-  if (ex === 'dashscope' || ex === 'dash') return 'dashscope'
-  if (ex === 'volcengine' || ex === 'volc' || ex === 'vol') return 'volcengine'
-  const volcOk = Boolean(
-    process.env.VOLCENGINE_ASR_APP_KEY?.trim() && process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim(),
-  )
-  if (volcOk) return 'volcengine'
+  const exp = (process.env.YOUMI_LIVE_ASR_EXPERIMENT || '').trim().toLowerCase()
+  if (exp === 'volcengine' || exp === 'volc' || exp === 'vol') return 'volcengine'
   return 'dashscope'
 }
 
@@ -85,26 +78,18 @@ async function transcribeViaSignedUrlFallback({ wsSessionId, id, pass, arrayBuff
 }
 
 function liveAsrRoutingReason(activeProvider) {
-  const ex = (process.env.LIVE_ASR_PROVIDER || '').trim().toLowerCase()
-  if (ex === 'dashscope' || ex === 'dash') return 'forced_dashscope'
-  if (ex === 'volcengine' || ex === 'volc' || ex === 'vol') return 'forced_volc'
-  if (activeProvider === 'volcengine') return 'volc_keys_default'
-  return 'dashscope_no_volc_keys'
+  if (activeProvider === 'volcengine') return 'experiment_volcengine'
+  return 'main_dashscope'
 }
 
 export function attachLiveRealtimeWs(server) {
   const wss = new WebSocketServer({ server, path: '/api/live-realtime-ws' })
   const activeProvider = resolveLiveAsrProvider()
-  const volcAppKeyPresent = Boolean(process.env.VOLCENGINE_ASR_APP_KEY?.trim())
-  const volcAccessKeyPresent = Boolean(process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim())
   console.info(
     JSON.stringify({
       event: 'live_realtime_ws_ready',
       liveAsrProvider: activeProvider,
       routingReason: liveAsrRoutingReason(activeProvider),
-      LIVE_ASR_PROVIDER_raw: (process.env.LIVE_ASR_PROVIDER || '').trim() || null,
-      volcAppKeyPresent,
-      volcAccessKeyPresent,
     }),
   )
   console.info(
@@ -130,7 +115,7 @@ export function attachLiveRealtimeWs(server) {
     }
 
     ws.on('message', async (raw, isBinary) => {
-      // Binary frame = PCM → active live ASR session (DashScope or Volc).
+      // Binary frame = PCM → active live ASR session (main: DashScope).
       if (isBinary) {
         if (streamingSession) streamingSession.sendPcm(raw)
         else if (pendingPcm.length < PENDING_PCM_CAP) pendingPcm.push(Buffer.isBuffer(raw) ? raw : Buffer.from(raw))
@@ -258,6 +243,7 @@ export function attachLiveRealtimeWs(server) {
           return
         }
 
+        // ── Volc: experiment only (YOUMI_LIVE_ASR_EXPERIMENT); not the product main line. ──
         const resourceId =
           process.env.VOLCENGINE_ASR_RESOURCE_ID?.trim() || DEFAULT_VOLC_ASR_RESOURCE_ID
         const wsUrl =
@@ -291,53 +277,9 @@ export function attachLiveRealtimeWs(server) {
           )
         }
 
-        const dsKeyFallback = process.env.DASHSCOPE_API_KEY?.trim()
-        let volcReady = false
-
-        const startDashscopeFallback = () => {
-          if (!dsKeyFallback) return false
-          console.warn(
-            '[YoumiLive][srv] live ASR fallback to DashScope',
-            JSON.stringify({ wsSessionId, hadVolcAttempt: true }),
-          )
-          let dsFbWrapper = null
-          const innerDs = createDashscopeStreamingSession(dsKeyFallback, {
-            sampleRate,
-            onReady: () => {
-              if (SRV_LIVE_VERBOSE) {
-                console.log('[YoumiLive][srv] dashscope ready (fallback) → stream_ready', JSON.stringify({ wsSessionId }))
-              }
-              sendStreamReadyOnce()
-            },
-            onInterim: relayInterim,
-            onFinal: relayFinal,
-            onError: (err) => {
-              const errMsg = err instanceof Error ? err.message : String(err)
-              console.warn('[YoumiLive][srv] live ASR error', JSON.stringify({ message: errMsg, wsSessionId, liveProvider: 'dashscope_fallback' }))
-              if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: errMsg })
-            },
-            onClose: (intentional) => {
-              if (!dsFbWrapper || streamingSession !== dsFbWrapper) return
-              streamingSession = null
-              if (!intentional) {
-                try { ws.close() } catch { /* ignore */ }
-              }
-            },
-          })
-          dsFbWrapper = {
-            sendPcm: (b) => innerDs.sendPcm(b),
-            stop: () => innerDs.finish(),
-            destroy: () => innerDs.destroy(),
-          }
-          streamingSession = dsFbWrapper
-          flushPendingPcm()
-          return true
-        }
-
         const volcWrapper = createVolcengineStreamingSession(volcCreds, {
           sampleRate,
           onReady: () => {
-            volcReady = true
             if (SRV_LIVE_VERBOSE) {
               console.log('[YoumiLive][srv] volcengine ready → stream_ready', JSON.stringify({ wsSessionId }))
             }
@@ -347,13 +289,6 @@ export function attachLiveRealtimeWs(server) {
           onFinal: relayFinal,
           onError: (err) => {
             const errMsg = err instanceof Error ? err.message : String(err)
-            if (!volcReady && dsKeyFallback) {
-              try {
-                if (streamingSession === volcWrapper) volcWrapper.destroy()
-              } catch { /* ignore */ }
-              if (streamingSession === volcWrapper) streamingSession = null
-              if (startDashscopeFallback()) return
-            }
             console.warn('[YoumiLive][srv] live ASR error', JSON.stringify({ message: errMsg, wsSessionId, liveProvider }))
             if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: errMsg })
           },
