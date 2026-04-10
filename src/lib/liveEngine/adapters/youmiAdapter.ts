@@ -166,7 +166,7 @@ export class YoumiLiveAdapter {
     this.lastFinalMs   = 0
     this.pcmQueue      = []
     this.cadence.reset()
-    log('adapter starting (server live ASR — DashScope preferred when key set)')
+    log('adapter starting (live ASR: server default DashScope)')
     this.listener?.({ type: 'connected' })
   }
 

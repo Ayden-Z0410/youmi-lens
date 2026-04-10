@@ -300,7 +300,6 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
 
   const {
     sampleRate = 48_000,
-    wsSessionId = '',
     onReady, onInterim, onFinal, onError, onClose,
   } = callbacks
 
@@ -319,65 +318,15 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
   const T0            = Date.now()
   let T_first_interim = 0
 
-  let pcmChunksIn     = 0
-  let pcmBytesIn      = 0
-  let lastPcmAt       = 0
-  let volcFramesOut   = 0
-  let volcBytesOut    = 0
-  let lastVolcSendAt  = 0
-  let volcRxFrameSeq  = 0
-  let emitInterimSeq  = 0
-  let emitFinalSeq    = 0
-
-  function logPcmIn(chunkLen, accumAfter) {
-    pcmChunksIn += 1
-    pcmBytesIn  += chunkLen
-    lastPcmAt    = Date.now()
-    const n = pcmChunksIn
-    if (n === 1 || n === 20 || n === 50 || (n % 100 === 0)) {
-      L('pcm chunk in', {
-        wsSessionId,
-        pcmChunksIn,
-        pcmBytesIn,
-        chunkByteLength: chunkLen,
-        sampleRate,
-        lastPcmAt,
-        accumBytes: accumAfter,
-      })
-    }
-  }
-
   function drainChunk(isLast = false) {
     if (!ws || ws.readyState !== ws.OPEN) return
     const raw = pcmAccum
     pcmAccum  = Buffer.alloc(0)
     if (raw.length === 0 && !isLast) return
     try {
-      const didResample = sampleRate !== TARGET_RATE
-      const pcm16k      = resamplePcm(raw, sampleRate)
-      const frame       = buildAudioFrame(pcm16k, isLast)
+      const pcm16k = resamplePcm(raw, sampleRate)
+      const frame  = buildAudioFrame(pcm16k, isLast)
       ws.send(frame)
-      volcFramesOut  += 1
-      volcBytesOut   += frame.length
-      lastVolcSendAt  = Date.now()
-      const n = volcFramesOut
-      if (n === 1 || n === 10 || (n % 50 === 0) || isLast) {
-        L('audio frame to Volc', {
-          wsSessionId,
-          volcFramesOut,
-          volcBytesOut,
-          frameByteLength: frame.length,
-          readyState: ws.readyState,
-          resampled: didResample,
-          compressed: true,
-          sampleRate,
-          clientPcmBytesThisTick: raw.length,
-          pcm16kBytes: pcm16k.length,
-          lastVolcSendAt,
-          targetRate: TARGET_RATE,
-          isLast,
-        })
-      }
     } catch (err) {
       L('drainChunk error', { message: err.message })
     }
@@ -421,50 +370,18 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
         : Boolean(payload.result?.is_final ?? payload.is_final)
 
     if (isFinal) {
-      emitFinalSeq += 1
-      L('emit onFinal', {
-        phase: 'pre',
-        wsSessionId,
-        segId: emitFinalSeq,
-        textLen: text.length,
-        preview: text.slice(0, 80),
-        ms: Date.now() - T0,
-      })
       L('FINAL', { text: text.slice(0, 80), ms: Date.now() - T0 })
       onFinal?.(text)
-      L('emit onFinal', {
-        phase: 'post',
-        wsSessionId,
-        segId: emitFinalSeq,
-        textLen: text.length,
-        preview: text.slice(0, 80),
-      })
     } else {
-      emitInterimSeq += 1
       if (!T_first_interim) {
         T_first_interim = Date.now()
         L('first INTERIM', { ms: T_first_interim - T0, text: text.slice(0, 50) })
       }
-      L('emit onInterim', {
-        phase: 'pre',
-        wsSessionId,
-        segId: emitInterimSeq,
-        textLen: text.length,
-        preview: text.slice(0, 80),
-      })
       onInterim?.(text)
-      L('emit onInterim', {
-        phase: 'post',
-        wsSessionId,
-        segId: emitInterimSeq,
-        textLen: text.length,
-        preview: text.slice(0, 80),
-      })
     }
   }
 
   let handshakeHeaders
-  let handshakeDiag
   try {
     const built = buildVolcOpenspeechHandshake({
       authMode,
@@ -476,13 +393,10 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
       wsUrl,
     })
     handshakeHeaders = built.headers
-    handshakeDiag = built.diag
   } catch (err) {
     L('handshake config error', { message: err.message, code: err.code })
     throw err
   }
-
-  L('auth handshake plan', handshakeDiag)
 
   L('connecting', { wsUrl, sampleRate, resourceId, connectId, authMode })
 
@@ -545,61 +459,7 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
       return
     }
     if (!decoded) return
-    const { payload, frame } = decoded
-
-    try {
-      if (frame?.isResultFrame) {
-        volcRxFrameSeq += 1
-        const utt    = extractUtterances(payload)
-        const disp   = extractDisplayText(payload)
-        const r      = payload.result
-        const rText  = typeof r?.text === 'string' ? r.text : ''
-        const definite =
-          utt?.length ? utt.every((u) => u.definite === true) : null
-        const resultKeys =
-          r && typeof r === 'object' && !Array.isArray(r)
-            ? Object.keys(r)
-            : []
-        L('volc result frame', {
-          wsSessionId,
-          seq: volcRxFrameSeq,
-          messageType: `0x${frame.msgType.toString(16)}`,
-          resultKeys,
-          hasUtterances: Boolean(utt?.length),
-          displayLen: disp.length,
-          definite,
-          textPreview: rText.slice(0, 80),
-          code: payload.code,
-          topKeys: Object.keys(payload),
-          ser: frame.serialization,
-          cmp: frame.compression,
-          wasGzip: frame.wasGzip,
-        })
-        if (!payload._error && disp.length === 0) {
-          L('volc parsed no transcript', {
-            wsSessionId,
-            seq: volcRxFrameSeq,
-            messageType: `0x${frame.msgType.toString(16)}`,
-            resultKeys,
-            hasUtterances: Boolean(utt?.length),
-            displayLen: 0,
-            definite,
-            textPreview: rText.slice(0, 80),
-            resultType: r == null ? 'null' : Array.isArray(r) ? 'array' : typeof r,
-          })
-        }
-      } else if (frame && !frame.isResultFrame && frame.msgType === MSG_ERROR) {
-        L('volc error frame wire', {
-          msgTypeHex: `0x${frame.msgType.toString(16)}`,
-          ser: frame.serialization,
-          cmp: frame.compression,
-        })
-      } else if (!frame && payload && typeof payload === 'object') {
-        L('volc text json frame', { topKeys: Object.keys(payload) })
-      }
-    } catch (err) {
-      L('volc frame diag error', { message: err.message })
-    }
+    const { payload } = decoded
 
     try {
       handleServerPayload(payload)
@@ -624,7 +484,6 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
       if (stopped) return
       const chunk = Buffer.isBuffer(buf) ? buf : Buffer.from(buf)
       pcmAccum = Buffer.concat([pcmAccum, chunk])
-      logPcmIn(chunk.length, pcmAccum.length)
       const maxBytes = Math.ceil(sampleRate * 3 * 2)
       if (pcmAccum.length > maxBytes) {
         L('pcmAccum overflow - dropping oldest audio', { droppedBytes: pcmAccum.length - maxBytes })

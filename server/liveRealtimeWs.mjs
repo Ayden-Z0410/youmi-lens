@@ -5,18 +5,17 @@ import {
   createVolcengineStreamingSession,
   DEFAULT_VOLC_ASR_WS_URL,
   DEFAULT_VOLC_ASR_RESOURCE_ID,
-  normalizeVolcAuthMode,
-  AUTH_MODE_API_KEY,
 } from './volcengineStreamingAsr.mjs'
 import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
 
-/** @returns {'dashscope' | 'volcengine'} */
+/**
+ * Default live ASR: DashScope (paraformer-realtime). Volcengine only when explicitly opted in.
+ * @returns {'dashscope' | 'volcengine'}
+ */
 function resolveLiveAsrProvider() {
   const ex = (process.env.LIVE_ASR_PROVIDER || '').trim().toLowerCase()
   if (ex === 'volcengine' || ex === 'volc') return 'volcengine'
-  if (ex === 'dashscope' || ex === 'dash') return 'dashscope'
-  if (process.env.DASHSCOPE_API_KEY?.trim()) return 'dashscope'
-  return 'volcengine'
+  return 'dashscope'
 }
 
 function safeSend(ws, payload) {
@@ -77,19 +76,13 @@ export function attachLiveRealtimeWs(server) {
   console.log(
     '[YoumiLive][srv] realtime ws build marker',
     JSON.stringify({
-      provider: 'live-realtime-asr',
-      liveAsrProvider: resolveLiveAsrProvider(),
-      version: '2026-04-10-dashscope-default-when-key',
-      volcAuthMode: normalizeVolcAuthMode(process.env.VOLCENGINE_AUTH_MODE),
+      liveAsrDefault: 'dashscope',
+      liveAsrActive: resolveLiveAsrProvider(),
+      version: '2026-04-11-live-asr-stable',
+      hasDashscopeKey: Boolean(process.env.DASHSCOPE_API_KEY?.trim()),
+      volcExperimental: resolveLiveAsrProvider() === 'volcengine',
       hasSupabaseUrl: Boolean(SUPABASE_URL),
       hasServiceRole: Boolean(SUPABASE_SERVICE_ROLE_KEY),
-      hasVolcAppKey: Boolean(process.env.VOLCENGINE_ASR_APP_KEY?.trim()),
-      hasVolcAccessKey: Boolean(process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim()),
-      hasVolcAsrApiKey: Boolean(process.env.VOLCENGINE_ASR_API_KEY?.trim()),
-      hasVolcEnvApiKey: Boolean(process.env.VOLCENGINE_API_KEY?.trim()),
-      volcResourceIdFromEnv: Boolean(process.env.VOLCENGINE_ASR_RESOURCE_ID?.trim()),
-      volcWsUrlFromEnv: Boolean(process.env.VOLCENGINE_ASR_WS_URL?.trim()),
-      hasDashscopeKey: Boolean(process.env.DASHSCOPE_API_KEY?.trim()),
     }),
   )
 
@@ -100,11 +93,10 @@ export function attachLiveRealtimeWs(server) {
     safeSend(ws, { type: 'ready' })
 
     let frameCount = 0
-    // Active Volcengine streaming session for this connection.
     let streamingSession = null
 
     ws.on('message', async (raw, isBinary) => {
-      // Binary frame = PCM audio → forward directly to Volcengine session.
+      // Binary frame = PCM → active live ASR session (DashScope or Volc).
       if (isBinary) {
         if (streamingSession) streamingSession.sendPcm(raw)
         return
@@ -136,30 +128,16 @@ export function attachLiveRealtimeWs(server) {
           relayInterimSeg += 1
           const open    = clientRef.ws?.readyState === 1
           const preview = typeof text === 'string' ? text.slice(0, 80) : ''
-          const sentOk  = Boolean(clientRef.ws && open)
-          console.log(
-            '[YoumiLive][srv] relay stream_interim',
-            JSON.stringify({
-              wsSessionId,
-              liveProvider,
-              clientWsOpen: open,
-              sent: false,
-              segId: relayInterimSeg,
-              preview,
-              phase: 'pre',
-            }),
-          )
           if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text })
           console.log(
             '[YoumiLive][srv] relay stream_interim',
             JSON.stringify({
               wsSessionId,
               liveProvider,
-              clientWsOpen: open,
-              sent: sentOk,
               segId: relayInterimSeg,
               preview,
-              phase: 'post',
+              clientWsOpen: open,
+              sent: Boolean(clientRef.ws && open),
             }),
           )
         }
@@ -168,30 +146,16 @@ export function attachLiveRealtimeWs(server) {
           relayFinalSeg += 1
           const open    = clientRef.ws?.readyState === 1
           const preview = typeof text === 'string' ? text.slice(0, 80) : ''
-          const sentOk  = Boolean(clientRef.ws && open)
-          console.log(
-            '[YoumiLive][srv] relay stream_final',
-            JSON.stringify({
-              wsSessionId,
-              liveProvider,
-              clientWsOpen: open,
-              sent: false,
-              segId: relayFinalSeg,
-              preview,
-              phase: 'pre',
-            }),
-          )
           if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final', text })
           console.log(
             '[YoumiLive][srv] relay stream_final',
             JSON.stringify({
               wsSessionId,
               liveProvider,
-              clientWsOpen: open,
-              sent: sentOk,
               segId: relayFinalSeg,
               preview,
-              phase: 'post',
+              clientWsOpen: open,
+              sent: Boolean(clientRef.ws && open),
             }),
           )
         }
@@ -249,62 +213,45 @@ export function attachLiveRealtimeWs(server) {
           return
         }
 
-        const authMode = normalizeVolcAuthMode(process.env.VOLCENGINE_AUTH_MODE)
         const resourceId =
           process.env.VOLCENGINE_ASR_RESOURCE_ID?.trim() || DEFAULT_VOLC_ASR_RESOURCE_ID
         const wsUrl =
           process.env.VOLCENGINE_ASR_WS_URL?.trim() || DEFAULT_VOLC_ASR_WS_URL
 
-        /** @type {{ authMode: string, appKey?: string, accessKey?: string, apiKey?: string, resourceId: string, wsUrl: string }} */
-        let volcCreds
-        if (authMode === AUTH_MODE_API_KEY) {
-          const apiKey =
-            process.env.VOLCENGINE_ASR_API_KEY?.trim() ||
-            process.env.VOLCENGINE_API_KEY?.trim() ||
-            process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim()
-          if (!apiKey) {
-            console.warn('[YoumiLive][srv] Volcengine api_key mode: no token (VOLCENGINE_ASR_API_KEY / VOLCENGINE_API_KEY / VOLCENGINE_ASR_ACCESS_KEY)')
-            safeSend(ws, {
-              type: 'stream_error',
-              message: 'VOLCENGINE_API_KEY_MODE_MISSING_TOKEN',
-            })
-            return
-          }
-          volcCreds = { authMode, apiKey, resourceId, wsUrl }
-        } else {
-          const appKey = process.env.VOLCENGINE_ASR_APP_KEY?.trim()
-          const accessKey = process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim()
-          if (!appKey || !accessKey) {
-            const missing = [!appKey && 'APP_KEY', !accessKey && 'ACCESS_KEY'].filter(Boolean).join(', ')
-            console.warn('[YoumiLive][srv] Volcengine credentials missing:', missing)
-            safeSend(ws, {
-              type: 'stream_error',
-              message: `VOLCENGINE_ASR_${missing.replace(/, /g, '_AND_')}_MISSING`,
-            })
-            return
-          }
-          volcCreds = { authMode, appKey, accessKey, resourceId, wsUrl }
+        const appKey = process.env.VOLCENGINE_ASR_APP_KEY?.trim()
+        const accessKey = process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim()
+        if (!appKey || !accessKey) {
+          const missing = [!appKey && 'APP_KEY', !accessKey && 'ACCESS_KEY'].filter(Boolean).join(', ')
+          console.warn('[YoumiLive][srv] Volcengine (experimental) credentials missing:', missing)
+          safeSend(ws, {
+            type: 'stream_error',
+            message: `VOLCENGINE_ASR_${missing.replace(/, /g, '_AND_')}_MISSING`,
+          })
+          return
+        }
+
+        /** @type {{ authMode: 'legacy_headers', appKey: string, accessKey: string, resourceId: string, wsUrl: string }} */
+        const volcCreds = {
+          authMode: 'legacy_headers',
+          appKey,
+          accessKey,
+          resourceId,
+          wsUrl,
         }
 
         console.log(
-          '[YoumiLive][srv] stream_start — Volc auth experiment',
+          '[YoumiLive][srv] stream_start',
           JSON.stringify({
             wsSessionId,
             sampleRate,
             liveProvider: 'volcengine',
-            authMode,
-            hasXApiAppKey: authMode !== AUTH_MODE_API_KEY && Boolean(volcCreds.appKey),
-            hasXApiAccessKey: authMode !== AUTH_MODE_API_KEY && Boolean(volcCreds.accessKey),
-            hasAuthorization: authMode === AUTH_MODE_API_KEY,
-            resourceId,
-            wsUrl,
+            note: 'experimental; set LIVE_ASR_PROVIDER=volcengine',
           }),
         )
 
         streamingSession = createVolcengineStreamingSession(
           volcCreds,
           {
-            wsSessionId,
             sampleRate,
             onReady: () => {
               console.log(
