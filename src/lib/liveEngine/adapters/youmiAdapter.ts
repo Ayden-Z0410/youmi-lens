@@ -1,5 +1,5 @@
 /**
- * YoumiLiveAdapter — PCM → server /api/live-realtime-ws (default DashScope; Volc opt-in on server).
+ * YoumiLiveAdapter — PCM → server /api/live-realtime-ws (server picks Volc when creds set, else DashScope).
  *
  * Design principles:
  *   • Provider delivers natural clause boundaries via VAD (definite:true = final).
@@ -14,7 +14,7 @@
  *
  * Audio flow:
  *   browser AudioContext (PCM Int16) → pushPcm() → StreamingWsSession (WS)
- *   → server ASR (DashScope by default) → stream_interim / stream_final → adapter events
+ *   → server ASR (Volc preferred when configured) → stream_interim / stream_final → adapter events
  */
 
 import { StreamingWsSession } from '../streamingWsSession'
@@ -166,7 +166,7 @@ export class YoumiLiveAdapter {
     this.lastFinalMs   = 0
     this.pcmQueue      = []
     this.cadence.reset()
-    log('adapter starting (live ASR: server default DashScope)')
+    log('adapter starting (live ASR: server chooses Volc or DashScope)')
     this.listener?.({ type: 'connected' })
   }
 
