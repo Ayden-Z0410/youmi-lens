@@ -86,8 +86,11 @@ const PROTO_VER    = 0x1
 const HDR_SIZE     = 0x1
 const MSG_FULL_REQ = 0x1
 const MSG_AUDIO    = 0x2
-const MSG_FULL_RES = 0x9
-const MSG_ERROR    = 0xF
+/** @deprecated in Volc WS doc; some services still emit it */
+const MSG_FULL_SERVER_RES = 0x9
+/** Volc binary protocol: server ACK / result (replaces 0x9 in newer docs) */
+const MSG_AUDIO_ONLY_SERVER = 0xb
+const MSG_ERROR = 0xf
 const FLAG_LAST    = 0x2
 const SER_JSON     = 0x1
 const SER_NONE     = 0x0
@@ -133,34 +136,84 @@ function buildAudioFrame(pcm16k, isLast) {
   return Buffer.concat([h, sz, body])
 }
 
-function parseBinaryResponse(buf) {
+/**
+ * Decode one Volc / openspeech WebSocket binary frame (big-endian).
+ * Layout: [header][payload_size: u32 BE][payload bytesù]
+ * Byte0: version (high nibble) | header_units (low nibble); header_len = units * 4 (units 0 ? treat as 1).
+ * Byte1: message_type (high) | flags (low)
+ * Byte2: serialization (high) | compression (low)
+ * Byte3: reserved (0)
+ * Error frames (type 0xF): no separate payload_size; body is code:u32 + msg_len:u32 + msg utf-8.
+ * @see https://www.volcengine.com/docs/6561/79821 (binary message format; 0x9 deprecated, 0xB server ACK)
+ */
+function parseOpenspeechBinaryFrame(buf) {
   if (!Buffer.isBuffer(buf)) buf = Buffer.from(buf)
-  if (buf.length < 8) return null
+  if (buf.length < 4) return null
 
-  const hdrBytes = (buf[0] & 0xF) * 4
-  const msgType  = (buf[1] >> 4) & 0xF
-  const cmp      = buf[2] & 0xF
+  const b0 = buf[0]
+  let headerUnits = b0 & 0xf
+  if (headerUnits === 0) headerUnits = 1
+  let headerLen = headerUnits * 4
+  if (headerUnits === 0xf) {
+    // Volc doc: >= 60 B header + extension; layout not implemented ù skip safely.
+    return null
+  }
+
+  if (buf.length < headerLen) return null
+
+  const msgType = (buf[1] >> 4) & 0xf
+  const serialization = (buf[2] >> 4) & 0xf
+  const compression = buf[2] & 0xf
 
   if (msgType === MSG_ERROR) {
-    const code    = buf.readUInt32BE(hdrBytes)
-    const msgLen  = buf.readUInt32BE(hdrBytes + 4)
-    const message = buf.slice(hdrBytes + 8, hdrBytes + 8 + msgLen).toString('utf8')
+    if (buf.length < headerLen + 8) return null
+    const code = buf.readUInt32BE(headerLen)
+    const msgLen = buf.readUInt32BE(headerLen + 4)
+    if (buf.length < headerLen + 8 + msgLen) return null
+    const message = buf.slice(headerLen + 8, headerLen + 8 + msgLen).toString('utf8')
     return { _error: true, code, message }
   }
 
-  if (msgType === MSG_FULL_RES) {
-    const payloadSize = buf.readUInt32BE(hdrBytes)
-    let payload = buf.slice(hdrBytes + 4, hdrBytes + 4 + payloadSize)
-    if (cmp === CMP_GZIP) payload = zlib.gunzipSync(payload)
-    return JSON.parse(payload.toString('utf8'))
+  const isPayloadFrame =
+    msgType === MSG_FULL_SERVER_RES || msgType === MSG_AUDIO_ONLY_SERVER
+  if (!isPayloadFrame) return null
+
+  if (buf.length < headerLen + 4) return null
+  const payloadSize = buf.readUInt32BE(headerLen)
+  if (buf.length < headerLen + 4 + payloadSize) return null
+
+  let body = buf.slice(headerLen + 4, headerLen + 4 + payloadSize)
+  if (body.length === 0) return null
+
+  let useGzip = compression === CMP_GZIP
+  if (!useGzip && body.length >= 2 && body[0] === 0x1f && body[1] === 0x8b) {
+    useGzip = true
+  }
+  if (useGzip) {
+    try {
+      body = zlib.gunzipSync(body)
+    } catch {
+      return null
+    }
   }
 
-  return null
+  const wantJson =
+    serialization === SER_JSON ||
+    (serialization === SER_NONE && body[0] === 0x7b)
+  if (!wantJson) return null
+
+  const text = body.toString('utf8')
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
 }
 
-/** Try plain JSON (v3 may send text frames). */
-function tryParseJsonMessage(data) {
-  const s = Buffer.isBuffer(data) ? data.toString('utf8').trim() : String(data).trim()
+/** Text WebSocket frames only ù never UTF-8ùdecode binary ASR frames here. */
+function tryParseJsonTextMessage(data) {
+  if (typeof data !== 'string') return null
+  const s = data.trim()
   if (!s.startsWith('{') && !s.startsWith('[')) return null
   try {
     return JSON.parse(s)
@@ -384,8 +437,11 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
   ws.on('message', (data) => {
     let result = null
     try {
-      result = parseBinaryResponse(data)
-      if (!result) result = tryParseJsonMessage(data)
+      if (typeof data === 'string') {
+        result = tryParseJsonTextMessage(data)
+      } else {
+        result = parseOpenspeechBinaryFrame(data)
+      }
     } catch (err) {
       L('parse error', { message: err.message })
       return
