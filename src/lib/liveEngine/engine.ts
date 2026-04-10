@@ -11,6 +11,16 @@ function log(tag: string, fields?: Record<string, unknown>) {
   else console.info(`[LiveEngine] ${tag}`)
 }
 
+/** Strip CJK / Japanese / Korean from EN caption source so translate does not echo mixed garbage (e.g. 不listen). */
+function sanitizeEnglishForZhTranslate(text: string): string {
+  return text
+    .replace(/\p{Script=Han}/gu, ' ')
+    .replace(/[\u3040-\u30ff]/gu, ' ')
+    .replace(/[\uac00-\ud7af]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 // ─── Translation queue ────────────────────────────────────────────────────────
 // translateFinal is fire-and-forget. Without rate-limiting, a slow Qwen API can
 // cause 10+ concurrent fetches after 20+ minutes, degrading the event loop.
@@ -25,13 +35,16 @@ export class LiveEngine {
   private running = false
   private translateTarget: 'zh' | 'en' | 'off' = 'off'
   private zhRevBySeg = new Map<string, number>()
+  /** Monotonic per segmentId so stale translateFinal completions are dropped when a newer final supersedes. */
+  private translateRevBySeg = new Map<string, number>()
 
   // Debounce interim translation: latest interim only, keep secondary line snappy without spamming API.
   private interimTranslateTimer: ReturnType<typeof setTimeout> | null = null
   private static readonly INTERIM_TRANSLATE_DEBOUNCE_MS = 280
 
   // Translation queue state
-  private translationQueue: Array<{ segmentId: string; text: string; enqueuedAt: number }> = []
+  private translationQueue: Array<{ segmentId: string; text: string; enqueuedAt: number; rev: number }> =
+    []
   private activeTranslations = 0
 
   // Session-level timing for long-run diagnostics: ms since engine.start()
@@ -50,6 +63,7 @@ export class LiveEngine {
     this.running = true
     this.translateTarget = opts.translateTarget
     this.zhRevBySeg.clear()
+    this.translateRevBySeg.clear()
     this.translationQueue = []
     this.activeTranslations = 0
     this.sessionStartMs = Date.now()
@@ -156,7 +170,11 @@ export class LiveEngine {
     if (this.translateTarget === 'off') return
     if (!text.trim()) return
 
-    this.translationQueue.push({ segmentId, text, enqueuedAt: Date.now() })
+    const rev = (this.translateRevBySeg.get(segmentId) ?? 0) + 1
+    this.translateRevBySeg.set(segmentId, rev)
+    this.translationQueue = this.translationQueue.filter((j) => j.segmentId !== segmentId)
+
+    this.translationQueue.push({ segmentId, text, enqueuedAt: Date.now(), rev })
 
     // Drop oldest entries when backlogged — prevents unbounded growth during long sessions
     if (this.translationQueue.length > MAX_QUEUE_SIZE) {
@@ -183,7 +201,7 @@ export class LiveEngine {
         continue
       }
       this.activeTranslations++
-      this.translateFinal(job.segmentId, job.text, job.enqueuedAt).finally(() => {
+      this.translateFinal(job.segmentId, job.text, job.enqueuedAt, job.rev).finally(() => {
         this.activeTranslations--
         this.drainTranslationQueue()
       })
@@ -192,7 +210,9 @@ export class LiveEngine {
 
   private async translateInterim(segmentId: string, text: string) {
     if (this.translateTarget === 'off') return
-    const t = text.trim()
+    let t = text.trim()
+    if (!t) return
+    if (this.translateTarget === 'zh') t = sanitizeEnglishForZhTranslate(t)
     if (!t) return
     try {
       const zh = (await translateLiveCaption(t, { target: this.translateTarget })).trim()
@@ -211,15 +231,29 @@ export class LiveEngine {
     }
   }
 
-  private async translateFinal(segmentId: string, text: string, enqueuedAt?: number) {
+  private async translateFinal(
+    segmentId: string,
+    text: string,
+    enqueuedAt?: number,
+    rev?: number,
+  ) {
     if (this.translateTarget === 'off') return
-    const t = text.trim()
+    let t = text.trim()
+    if (!t) return
+    if (this.translateTarget === 'zh') t = sanitizeEnglishForZhTranslate(t)
     if (!t) return
     const t0 = Date.now()
     try {
       const zh = (await translateLiveCaption(t, { target: this.translateTarget })).trim()
       const latencyMs = Date.now() - t0
       const queueWaitMs = enqueuedAt ? t0 - enqueuedAt : 0
+      if (rev !== undefined) {
+        const latest = this.translateRevBySeg.get(segmentId)
+        if (latest !== rev) {
+          log('zh_final dropped (stale rev)', { segmentId, rev, latest, sessionMs: this.elapsed() })
+          return
+        }
+      }
       // Timing log: visible in Console over time to spot Qwen API degradation
       log('zh_final', { segmentId, len: zh.length, latencyMs, queueWaitMs, sessionMs: this.elapsed() })
       if (!zh || !this.running) return

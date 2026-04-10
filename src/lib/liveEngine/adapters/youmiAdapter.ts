@@ -10,7 +10,8 @@
  * Segment lifecycle:
  *   First interim → create stream-N.
  *   Each interim  → immediate en_interim for stream-N.
- *   Provider final → en_final for stream-N; next interim will open stream-N+1.
+ *   Provider final → en_final for stream-N; next interim opens stream-N+1.
+ *   Burst finals (e.g. pause-commit) with no interim between reuse lastInterimSegmentId so segmentId stays stable.
  *
  * Audio flow:
  *   browser AudioContext (PCM Int16) → pushPcm() → StreamingWsSession (WS)
@@ -54,6 +55,8 @@ export class YoumiLiveAdapter {
 
   // Per-segment state
   private currentSegId = ''
+  /** Last segment that received an interim — reused when a final arrives with currentSegId already cleared (burst pause-commit finals). */
+  private lastInterimSegmentId = ''
   private segCounter   = 0
   private interimRev   = 0
   private lastInterimMs  = 0
@@ -75,6 +78,7 @@ export class YoumiLiveAdapter {
     this.sessionReady  = false
     this.activeRef     = { active: false }
     this.currentSegId  = ''
+    this.lastInterimSegmentId = ''
     this.segCounter    = 0
     this.interimRev    = 0
     this.lastInterimMs = 0
@@ -101,6 +105,7 @@ export class YoumiLiveAdapter {
     const segId = this.currentSegId
     const text  = ''  // discard in-flight draft — content integrity > partial output
     this.currentSegId  = ''
+    this.lastInterimSegmentId = ''
     this.interimRev    = 0
     this.lastInterimMs = 0
     this.firstInterimLogged = false
@@ -205,6 +210,7 @@ export class YoumiLiveAdapter {
         this.lastInterimMs = now
         const rev = ++this.interimRev
         // Hot path: no per-frame console — avoids main-thread jank when ASR sends many interims/sec.
+        this.lastInterimSegmentId = this.currentSegId
         this.listener?.({ type: 'en_interim', segmentId: this.currentSegId, rev, text: trimmed })
       },
 
@@ -213,7 +219,10 @@ export class YoumiLiveAdapter {
         const now     = Date.now()
         const trimmed = text.trim()
 
-        const segId = this.currentSegId || `stream-${this.segCounter++}`
+        const segId =
+          this.currentSegId ||
+          this.lastInterimSegmentId ||
+          `stream-${this.segCounter++}`
         log('B-metric: last-interim → final', {
           lastInterimToFinalMs: this.lastInterimMs ? now - this.lastInterimMs : -1,
           gapSinceLastFinalMs:  this.lastFinalMs   ? now - this.lastFinalMs   : -1,
