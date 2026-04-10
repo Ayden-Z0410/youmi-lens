@@ -9,14 +9,20 @@ import {
 import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
 
 /**
- * Live realtime ASR routing — product default is always DashScope.
- * - Default: dashscope (Volc env keys alone never change this).
- * - Volcengine only when explicitly enabled: LIVE_ASR_PROVIDER=volcengine or vol (requires Volc keys at stream_start).
+ * Live realtime ASR — restore user-smooth path: Volc streaming when both Volc keys are set on the host.
+ * - LIVE_ASR_PROVIDER=dashscope|dash → always DashScope (override).
+ * - LIVE_ASR_PROVIDER=volcengine|volc|vol → Volc (still needs keys).
+ * - Otherwise: if VOLCENGINE_ASR_APP_KEY + ACCESS_KEY both set → volcengine, else dashscope.
  * @returns {'dashscope' | 'volcengine'}
  */
 function resolveLiveAsrProvider() {
   const ex = (process.env.LIVE_ASR_PROVIDER || '').trim().toLowerCase()
+  if (ex === 'dashscope' || ex === 'dash') return 'dashscope'
   if (ex === 'volcengine' || ex === 'volc' || ex === 'vol') return 'volcengine'
+  const volcOk = Boolean(
+    process.env.VOLCENGINE_ASR_APP_KEY?.trim() && process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim(),
+  )
+  if (volcOk) return 'volcengine'
   return 'dashscope'
 }
 
@@ -80,8 +86,10 @@ async function transcribeViaSignedUrlFallback({ wsSessionId, id, pass, arrayBuff
 
 function liveAsrRoutingReason(activeProvider) {
   const ex = (process.env.LIVE_ASR_PROVIDER || '').trim().toLowerCase()
-  if (activeProvider === 'volcengine') return 'explicit_volc_LIVE_ASR_PROVIDER'
-  return 'default_dashscope'
+  if (ex === 'dashscope' || ex === 'dash') return 'forced_dashscope'
+  if (ex === 'volcengine' || ex === 'volc' || ex === 'vol') return 'forced_volc'
+  if (activeProvider === 'volcengine') return 'volc_keys_default'
+  return 'dashscope_no_volc_keys'
 }
 
 export function attachLiveRealtimeWs(server) {
