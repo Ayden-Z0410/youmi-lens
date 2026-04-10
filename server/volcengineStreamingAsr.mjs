@@ -165,13 +165,24 @@ function parseOpenspeechBinaryFrame(buf) {
   const serialization = (buf[2] >> 4) & 0xf
   const compression = buf[2] & 0xf
 
+  const frameMeta = (extra) => ({
+    msgType,
+    serialization,
+    compression,
+    wasGzip: extra.wasGzip,
+    isResultFrame: extra.isResultFrame,
+  })
+
   if (msgType === MSG_ERROR) {
     if (buf.length < headerLen + 8) return null
     const code = buf.readUInt32BE(headerLen)
     const msgLen = buf.readUInt32BE(headerLen + 4)
     if (buf.length < headerLen + 8 + msgLen) return null
     const message = buf.slice(headerLen + 8, headerLen + 8 + msgLen).toString('utf8')
-    return { _error: true, code, message }
+    return {
+      payload: { _error: true, code, message },
+      frame: frameMeta({ wasGzip: false, isResultFrame: false }),
+    }
   }
 
   const isPayloadFrame =
@@ -204,7 +215,11 @@ function parseOpenspeechBinaryFrame(buf) {
 
   const text = body.toString('utf8')
   try {
-    return JSON.parse(text)
+    const parsed = JSON.parse(text)
+    return {
+      payload: parsed,
+      frame: frameMeta({ wasGzip: useGzip, isResultFrame: true }),
+    }
   } catch {
     return null
   }
@@ -285,6 +300,7 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
 
   const {
     sampleRate = 48_000,
+    wsSessionId = '',
     onReady, onInterim, onFinal, onError, onClose,
   } = callbacks
 
@@ -303,15 +319,65 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
   const T0            = Date.now()
   let T_first_interim = 0
 
+  let pcmChunksIn     = 0
+  let pcmBytesIn      = 0
+  let lastPcmAt       = 0
+  let volcFramesOut   = 0
+  let volcBytesOut    = 0
+  let lastVolcSendAt  = 0
+  let volcRxFrameSeq  = 0
+  let emitInterimSeq  = 0
+  let emitFinalSeq    = 0
+
+  function logPcmIn(chunkLen, accumAfter) {
+    pcmChunksIn += 1
+    pcmBytesIn  += chunkLen
+    lastPcmAt    = Date.now()
+    const n = pcmChunksIn
+    if (n === 1 || n === 20 || n === 50 || (n % 100 === 0)) {
+      L('pcm chunk in', {
+        wsSessionId,
+        pcmChunksIn,
+        pcmBytesIn,
+        chunkByteLength: chunkLen,
+        sampleRate,
+        lastPcmAt,
+        accumBytes: accumAfter,
+      })
+    }
+  }
+
   function drainChunk(isLast = false) {
     if (!ws || ws.readyState !== ws.OPEN) return
     const raw = pcmAccum
     pcmAccum  = Buffer.alloc(0)
     if (raw.length === 0 && !isLast) return
     try {
-      const pcm16k = resamplePcm(raw, sampleRate)
-      const frame  = buildAudioFrame(pcm16k, isLast)
+      const didResample = sampleRate !== TARGET_RATE
+      const pcm16k      = resamplePcm(raw, sampleRate)
+      const frame       = buildAudioFrame(pcm16k, isLast)
       ws.send(frame)
+      volcFramesOut  += 1
+      volcBytesOut   += frame.length
+      lastVolcSendAt  = Date.now()
+      const n = volcFramesOut
+      if (n === 1 || n === 10 || (n % 50 === 0) || isLast) {
+        L('audio frame to Volc', {
+          wsSessionId,
+          volcFramesOut,
+          volcBytesOut,
+          frameByteLength: frame.length,
+          readyState: ws.readyState,
+          resampled: didResample,
+          compressed: true,
+          sampleRate,
+          clientPcmBytesThisTick: raw.length,
+          pcm16kBytes: pcm16k.length,
+          lastVolcSendAt,
+          targetRate: TARGET_RATE,
+          isLast,
+        })
+      }
     } catch (err) {
       L('drainChunk error', { message: err.message })
     }
@@ -355,14 +421,45 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
         : Boolean(payload.result?.is_final ?? payload.is_final)
 
     if (isFinal) {
+      emitFinalSeq += 1
+      L('emit onFinal', {
+        phase: 'pre',
+        wsSessionId,
+        segId: emitFinalSeq,
+        textLen: text.length,
+        preview: text.slice(0, 80),
+        ms: Date.now() - T0,
+      })
       L('FINAL', { text: text.slice(0, 80), ms: Date.now() - T0 })
       onFinal?.(text)
+      L('emit onFinal', {
+        phase: 'post',
+        wsSessionId,
+        segId: emitFinalSeq,
+        textLen: text.length,
+        preview: text.slice(0, 80),
+      })
     } else {
+      emitInterimSeq += 1
       if (!T_first_interim) {
         T_first_interim = Date.now()
         L('first INTERIM', { ms: T_first_interim - T0, text: text.slice(0, 50) })
       }
+      L('emit onInterim', {
+        phase: 'pre',
+        wsSessionId,
+        segId: emitInterimSeq,
+        textLen: text.length,
+        preview: text.slice(0, 80),
+      })
       onInterim?.(text)
+      L('emit onInterim', {
+        phase: 'post',
+        wsSessionId,
+        segId: emitInterimSeq,
+        textLen: text.length,
+        preview: text.slice(0, 80),
+      })
     }
   }
 
@@ -435,20 +532,77 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
   })
 
   ws.on('message', (data) => {
-    let result = null
+    let decoded = null
     try {
       if (typeof data === 'string') {
-        result = tryParseJsonTextMessage(data)
+        const p = tryParseJsonTextMessage(data)
+        if (p) decoded = { payload: p, frame: null }
       } else {
-        result = parseOpenspeechBinaryFrame(data)
+        decoded = parseOpenspeechBinaryFrame(data)
       }
     } catch (err) {
       L('parse error', { message: err.message })
       return
     }
-    if (!result) return
+    if (!decoded) return
+    const { payload, frame } = decoded
+
     try {
-      handleServerPayload(result)
+      if (frame?.isResultFrame) {
+        volcRxFrameSeq += 1
+        const utt    = extractUtterances(payload)
+        const disp   = extractDisplayText(payload)
+        const r      = payload.result
+        const rText  = typeof r?.text === 'string' ? r.text : ''
+        const definite =
+          utt?.length ? utt.every((u) => u.definite === true) : null
+        const resultKeys =
+          r && typeof r === 'object' && !Array.isArray(r)
+            ? Object.keys(r)
+            : []
+        L('volc result frame', {
+          wsSessionId,
+          seq: volcRxFrameSeq,
+          messageType: `0x${frame.msgType.toString(16)}`,
+          resultKeys,
+          hasUtterances: Boolean(utt?.length),
+          displayLen: disp.length,
+          definite,
+          textPreview: rText.slice(0, 80),
+          code: payload.code,
+          topKeys: Object.keys(payload),
+          ser: frame.serialization,
+          cmp: frame.compression,
+          wasGzip: frame.wasGzip,
+        })
+        if (!payload._error && disp.length === 0) {
+          L('volc parsed no transcript', {
+            wsSessionId,
+            seq: volcRxFrameSeq,
+            messageType: `0x${frame.msgType.toString(16)}`,
+            resultKeys,
+            hasUtterances: Boolean(utt?.length),
+            displayLen: 0,
+            definite,
+            textPreview: rText.slice(0, 80),
+            resultType: r == null ? 'null' : Array.isArray(r) ? 'array' : typeof r,
+          })
+        }
+      } else if (frame && !frame.isResultFrame && frame.msgType === MSG_ERROR) {
+        L('volc error frame wire', {
+          msgTypeHex: `0x${frame.msgType.toString(16)}`,
+          ser: frame.serialization,
+          cmp: frame.compression,
+        })
+      } else if (!frame && payload && typeof payload === 'object') {
+        L('volc text json frame', { topKeys: Object.keys(payload) })
+      }
+    } catch (err) {
+      L('volc frame diag error', { message: err.message })
+    }
+
+    try {
+      handleServerPayload(payload)
     } catch (err) {
       L('handleServerPayload error', { message: err.message })
     }
@@ -470,6 +624,7 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
       if (stopped) return
       const chunk = Buffer.isBuffer(buf) ? buf : Buffer.from(buf)
       pcmAccum = Buffer.concat([pcmAccum, chunk])
+      logPcmIn(chunk.length, pcmAccum.length)
       const maxBytes = Math.ceil(sampleRate * 3 * 2)
       if (pcmAccum.length > maxBytes) {
         L('pcmAccum overflow - dropping oldest audio', { droppedBytes: pcmAccum.length - maxBytes })

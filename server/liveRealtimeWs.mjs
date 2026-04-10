@@ -167,19 +167,74 @@ export function attachLiveRealtimeWs(server) {
         )
 
         const clientRef = { ws }
+        let relayInterimSeg = 0
+        let relayFinalSeg   = 0
         streamingSession = createVolcengineStreamingSession(
           volcCreds,
           {
+            wsSessionId,
             sampleRate,
             onReady: () => {
               console.log('[YoumiLive][srv] Volcengine ready → stream_ready', JSON.stringify({ wsSessionId }))
               safeSend(clientRef.ws, { type: 'stream_ready' })
             },
             onInterim: (text) => {
+              relayInterimSeg += 1
+              const open    = clientRef.ws?.readyState === 1
+              const preview = typeof text === 'string' ? text.slice(0, 80) : ''
+              const sentOk  = Boolean(clientRef.ws && open)
+              console.log(
+                '[YoumiLive][srv] relay stream_interim',
+                JSON.stringify({
+                  wsSessionId,
+                  clientWsOpen: open,
+                  sent: false,
+                  segId: relayInterimSeg,
+                  preview,
+                  phase: 'pre',
+                }),
+              )
               if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text })
+              console.log(
+                '[YoumiLive][srv] relay stream_interim',
+                JSON.stringify({
+                  wsSessionId,
+                  clientWsOpen: open,
+                  sent: sentOk,
+                  segId: relayInterimSeg,
+                  preview,
+                  phase: 'post',
+                }),
+              )
             },
             onFinal: (text) => {
+              relayFinalSeg += 1
+              const open    = clientRef.ws?.readyState === 1
+              const preview = typeof text === 'string' ? text.slice(0, 80) : ''
+              const sentOk  = Boolean(clientRef.ws && open)
+              console.log(
+                '[YoumiLive][srv] relay stream_final',
+                JSON.stringify({
+                  wsSessionId,
+                  clientWsOpen: open,
+                  sent: false,
+                  segId: relayFinalSeg,
+                  preview,
+                  phase: 'pre',
+                }),
+              )
               if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final', text })
+              console.log(
+                '[YoumiLive][srv] relay stream_final',
+                JSON.stringify({
+                  wsSessionId,
+                  clientWsOpen: open,
+                  sent: sentOk,
+                  segId: relayFinalSeg,
+                  preview,
+                  phase: 'post',
+                }),
+              )
             },
             onError: (err) => {
               const errMsg = err instanceof Error ? err.message : String(err)
