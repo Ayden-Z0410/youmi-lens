@@ -9,21 +9,14 @@ import {
 import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
 
 /**
- * Live realtime ASR routing (product: match user-verified smooth path).
- * - When Volc credentials are both set, prefer Volcengine streaming (typical Railway deploy).
- * - Explicit LIVE_ASR_PROVIDER=dashscope|dash forces DashScope even if Volc keys exist.
- * - Explicit LIVE_ASR_PROVIDER=volcengine|vol forces Volc (must still have keys at stream_start).
- * - If Volc keys missing, use DashScope when DASHSCOPE_API_KEY is available at stream_start.
+ * Live realtime ASR routing — product default is always DashScope.
+ * - Default: dashscope (Volc env keys alone never change this).
+ * - Volcengine only when explicitly enabled: LIVE_ASR_PROVIDER=volcengine or vol (requires Volc keys at stream_start).
  * @returns {'dashscope' | 'volcengine'}
  */
 function resolveLiveAsrProvider() {
   const ex = (process.env.LIVE_ASR_PROVIDER || '').trim().toLowerCase()
-  if (ex === 'dashscope' || ex === 'dash') return 'dashscope'
-  if (ex === 'volcengine' || ex === 'volc') return 'volcengine'
-  const volcOk = Boolean(
-    process.env.VOLCENGINE_ASR_APP_KEY?.trim() && process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim(),
-  )
-  if (volcOk) return 'volcengine'
+  if (ex === 'volcengine' || ex === 'volc' || ex === 'vol') return 'volcengine'
   return 'dashscope'
 }
 
@@ -87,14 +80,8 @@ async function transcribeViaSignedUrlFallback({ wsSessionId, id, pass, arrayBuff
 
 function liveAsrRoutingReason(activeProvider) {
   const ex = (process.env.LIVE_ASR_PROVIDER || '').trim().toLowerCase()
-  if (ex === 'dashscope' || ex === 'dash') return 'forced_dashscope_via_LIVE_ASR_PROVIDER'
-  if (ex === 'volcengine' || ex === 'volc') return 'forced_volc_via_LIVE_ASR_PROVIDER'
-  const app = Boolean(process.env.VOLCENGINE_ASR_APP_KEY?.trim())
-  const acc = Boolean(process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim())
-  if (app && acc) return 'volc_keys_present'
-  if (!app && !acc) return 'volc_keys_missing_both'
-  if (!app) return 'volc_missing_APP_KEY'
-  return 'volc_missing_ACCESS_KEY'
+  if (activeProvider === 'volcengine') return 'explicit_volc_LIVE_ASR_PROVIDER'
+  return 'default_dashscope'
 }
 
 export function attachLiveRealtimeWs(server) {
