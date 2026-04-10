@@ -28,7 +28,7 @@ export class LiveEngine {
 
   // Debounce interim translation: latest interim only, keep secondary line snappy without spamming API.
   private interimTranslateTimer: ReturnType<typeof setTimeout> | null = null
-  private static readonly INTERIM_TRANSLATE_DEBOUNCE_MS = 90
+  private static readonly INTERIM_TRANSLATE_DEBOUNCE_MS = 280
 
   // Translation queue state
   private translationQueue: Array<{ segmentId: string; text: string; enqueuedAt: number }> = []
@@ -80,7 +80,8 @@ export class LiveEngine {
         return
       }
       if (ev.type === 'en_interim') {
-        this.emit({ type: 'status', status: 'streaming' })
+        // Do not emit status:'streaming' on every interim — it triggered App setState each time and
+        // queued behind hundreds of draft updates (first word fast, then UI fell behind speech).
         this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: ev.text })
         // Cancel any pending interim debounce — prevents stale zh_interim after zh_final
         if (this.interimTranslateTimer) {

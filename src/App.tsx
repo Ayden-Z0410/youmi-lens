@@ -957,6 +957,11 @@ function RecordingWorkspace({
   const v2NextEnSeqRef = useRef(0)
   const v2FinalEnBySeqRef = useRef(new Map<number, string>())
   const v2LatestInterimEnSeqRef = useRef(-1)
+  /** Latest English draft + rAF id — coalesce many interims/sec to one React commit per frame. */
+  const v2EnDraftTextRef = useRef('')
+  const v2EnDraftRafRef = useRef<number | null>(null)
+  const v2ZhDraftTextRef = useRef('')
+  const v2ZhDraftRafRef = useRef<number | null>(null)
   const v2FinalZhBySeqRef = useRef(new Map<number, string>())
   const v2NextZhSeqRef = useRef(0)
   // Tracks segments whose zh_final has already committed. Used to discard in-flight
@@ -1616,13 +1621,22 @@ function RecordingWorkspace({
       if (ev.type === 'en_interim') {
         liveRouteDiagLog('[LiveEngine][App] en_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
         const seq = segmentSeq(ev.segmentId)
-        if (seq >= v2LatestInterimEnSeqRef.current) {
-          v2LatestInterimEnSeqRef.current = seq
-          setPrimaryCaptionDraft(ev.text)
+        if (seq < v2LatestInterimEnSeqRef.current) return
+        v2LatestInterimEnSeqRef.current = seq
+        v2EnDraftTextRef.current = ev.text
+        if (v2EnDraftRafRef.current == null) {
+          v2EnDraftRafRef.current = requestAnimationFrame(() => {
+            v2EnDraftRafRef.current = null
+            setPrimaryCaptionDraft(v2EnDraftTextRef.current)
+          })
         }
         return
       }
       if (ev.type === 'en_final') {
+        if (v2EnDraftRafRef.current != null) {
+          cancelAnimationFrame(v2EnDraftRafRef.current)
+          v2EnDraftRafRef.current = null
+        }
         liveRouteDiagLog('[LiveEngine][App] en_final', JSON.stringify({ segmentId: ev.segmentId }))
         const seq = segmentSeq(ev.segmentId)
         v2FinalEnBySeqRef.current.set(seq, ev.text)
@@ -1656,10 +1670,20 @@ function RecordingWorkspace({
         // Log is intentionally AFTER the guard so Console only shows interims that reach the UI.
         if (v2FinalizedZhSegIds.current.has(ev.segmentId)) return
         liveRouteDiagLog('[LiveEngine][App] zh_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
-        setSecondaryCaptionDraft(ev.text)
+        v2ZhDraftTextRef.current = ev.text
+        if (v2ZhDraftRafRef.current == null) {
+          v2ZhDraftRafRef.current = requestAnimationFrame(() => {
+            v2ZhDraftRafRef.current = null
+            setSecondaryCaptionDraft(v2ZhDraftTextRef.current)
+          })
+        }
         return
       }
       if (ev.type === 'zh_final') {
+        if (v2ZhDraftRafRef.current != null) {
+          cancelAnimationFrame(v2ZhDraftRafRef.current)
+          v2ZhDraftRafRef.current = null
+        }
         liveRouteDiagLog('[LiveEngine][App] zh_final', JSON.stringify({ segmentId: ev.segmentId }))
         v2FinalizedZhSegIds.current.add(ev.segmentId)
         const seq = segmentSeq(ev.segmentId)
@@ -1695,6 +1719,14 @@ function RecordingWorkspace({
     onLiveAudioChunkRef.current = null
 
     return () => {
+      if (v2EnDraftRafRef.current != null) {
+        cancelAnimationFrame(v2EnDraftRafRef.current)
+        v2EnDraftRafRef.current = null
+      }
+      if (v2ZhDraftRafRef.current != null) {
+        cancelAnimationFrame(v2ZhDraftRafRef.current)
+        v2ZhDraftRafRef.current = null
+      }
       onLivePcmChunkRef.current = null
       onLiveAudioChunkRef.current = null
       engine.stop()
