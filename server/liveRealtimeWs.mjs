@@ -120,11 +120,20 @@ export function attachLiveRealtimeWs(server) {
 
     let frameCount = 0
     let streamingSession = null
+    /** PCM that arrives before stream_start finishes installing a session (rare race). */
+    const pendingPcm = []
+    const PENDING_PCM_CAP = 128
+    const flushPendingPcm = () => {
+      if (!streamingSession || pendingPcm.length === 0) return
+      for (const buf of pendingPcm) streamingSession.sendPcm(buf)
+      pendingPcm.length = 0
+    }
 
     ws.on('message', async (raw, isBinary) => {
       // Binary frame = PCM → active live ASR session (DashScope or Volc).
       if (isBinary) {
         if (streamingSession) streamingSession.sendPcm(raw)
+        else if (pendingPcm.length < PENDING_PCM_CAP) pendingPcm.push(Buffer.isBuffer(raw) ? raw : Buffer.from(raw))
         return
       }
 
@@ -139,6 +148,7 @@ export function attachLiveRealtimeWs(server) {
       // ── Streaming session lifecycle ──────────────────────────────────────
 
       if (msg?.type === 'stream_start') {
+        pendingPcm.length = 0
         if (streamingSession) {
           streamingSession.destroy()
           streamingSession = null
@@ -147,6 +157,12 @@ export function attachLiveRealtimeWs(server) {
         const sampleRate   = typeof msg.sampleRate === 'number' ? msg.sampleRate : 48000
         const liveProvider = resolveLiveAsrProvider()
         const clientRef    = { ws }
+        let streamReadySent = false
+        const sendStreamReadyOnce = () => {
+          if (streamReadySent) return
+          streamReadySent = true
+          if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_ready' })
+        }
         let relayInterimSeg = 0
         let relayFinalSeg   = 0
 
@@ -206,7 +222,7 @@ export function attachLiveRealtimeWs(server) {
               if (SRV_LIVE_VERBOSE) {
                 console.log('[YoumiLive][srv] dashscope ready → stream_ready', JSON.stringify({ wsSessionId }))
               }
-              safeSend(clientRef.ws, { type: 'stream_ready' })
+              sendStreamReadyOnce()
             },
             onInterim: relayInterim,
             onFinal: relayFinal,
@@ -222,8 +238,8 @@ export function attachLiveRealtimeWs(server) {
                   JSON.stringify({ wsSessionId, intentional, liveProvider }),
                 )
               }
+              if (streamingSession !== dsWrapper) return
               streamingSession = null
-              clientRef.ws = null
               if (!intentional) {
                 if (SRV_LIVE_VERBOSE) {
                   console.log('[YoumiLive][srv] unexpected close — closing client WS', JSON.stringify({ wsSessionId }))
@@ -232,11 +248,13 @@ export function attachLiveRealtimeWs(server) {
               }
             },
           })
-          streamingSession = {
+          const dsWrapper = {
             sendPcm: (b) => inner.sendPcm(b),
             stop: () => inner.finish(),
             destroy: () => inner.destroy(),
           }
+          streamingSession = dsWrapper
+          flushPendingPcm()
           return
         }
 
@@ -273,41 +291,91 @@ export function attachLiveRealtimeWs(server) {
           )
         }
 
-        streamingSession = createVolcengineStreamingSession(
-          volcCreds,
-          {
+        const dsKeyFallback = process.env.DASHSCOPE_API_KEY?.trim()
+        let volcReady = false
+
+        const startDashscopeFallback = () => {
+          if (!dsKeyFallback) return false
+          console.warn(
+            '[YoumiLive][srv] live ASR fallback to DashScope',
+            JSON.stringify({ wsSessionId, hadVolcAttempt: true }),
+          )
+          let dsFbWrapper = null
+          const innerDs = createDashscopeStreamingSession(dsKeyFallback, {
             sampleRate,
             onReady: () => {
               if (SRV_LIVE_VERBOSE) {
-                console.log('[YoumiLive][srv] volcengine ready → stream_ready', JSON.stringify({ wsSessionId }))
+                console.log('[YoumiLive][srv] dashscope ready (fallback) → stream_ready', JSON.stringify({ wsSessionId }))
               }
-              safeSend(clientRef.ws, { type: 'stream_ready' })
+              sendStreamReadyOnce()
             },
             onInterim: relayInterim,
             onFinal: relayFinal,
             onError: (err) => {
               const errMsg = err instanceof Error ? err.message : String(err)
-              console.warn('[YoumiLive][srv] live ASR error', JSON.stringify({ message: errMsg, wsSessionId, liveProvider }))
+              console.warn('[YoumiLive][srv] live ASR error', JSON.stringify({ message: errMsg, wsSessionId, liveProvider: 'dashscope_fallback' }))
               if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: errMsg })
             },
             onClose: (intentional) => {
-              if (SRV_LIVE_VERBOSE) {
-                console.log(
-                  '[YoumiLive][srv] live ASR session closed',
-                  JSON.stringify({ wsSessionId, intentional, liveProvider }),
-                )
-              }
+              if (!dsFbWrapper || streamingSession !== dsFbWrapper) return
               streamingSession = null
-              clientRef.ws = null
               if (!intentional) {
-                if (SRV_LIVE_VERBOSE) {
-                  console.log('[YoumiLive][srv] unexpected close — closing client WS', JSON.stringify({ wsSessionId }))
-                }
                 try { ws.close() } catch { /* ignore */ }
               }
             },
+          })
+          dsFbWrapper = {
+            sendPcm: (b) => innerDs.sendPcm(b),
+            stop: () => innerDs.finish(),
+            destroy: () => innerDs.destroy(),
+          }
+          streamingSession = dsFbWrapper
+          flushPendingPcm()
+          return true
+        }
+
+        const volcWrapper = createVolcengineStreamingSession(volcCreds, {
+          sampleRate,
+          onReady: () => {
+            volcReady = true
+            if (SRV_LIVE_VERBOSE) {
+              console.log('[YoumiLive][srv] volcengine ready → stream_ready', JSON.stringify({ wsSessionId }))
+            }
+            sendStreamReadyOnce()
           },
-        )
+          onInterim: relayInterim,
+          onFinal: relayFinal,
+          onError: (err) => {
+            const errMsg = err instanceof Error ? err.message : String(err)
+            if (!volcReady && dsKeyFallback) {
+              try {
+                if (streamingSession === volcWrapper) volcWrapper.destroy()
+              } catch { /* ignore */ }
+              if (streamingSession === volcWrapper) streamingSession = null
+              if (startDashscopeFallback()) return
+            }
+            console.warn('[YoumiLive][srv] live ASR error', JSON.stringify({ message: errMsg, wsSessionId, liveProvider }))
+            if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: errMsg })
+          },
+          onClose: (intentional) => {
+            if (streamingSession !== volcWrapper) return
+            if (SRV_LIVE_VERBOSE) {
+              console.log(
+                '[YoumiLive][srv] live ASR session closed',
+                JSON.stringify({ wsSessionId, intentional, liveProvider }),
+              )
+            }
+            streamingSession = null
+            if (!intentional) {
+              if (SRV_LIVE_VERBOSE) {
+                console.log('[YoumiLive][srv] unexpected close — closing client WS', JSON.stringify({ wsSessionId }))
+              }
+              try { ws.close() } catch { /* ignore */ }
+            }
+          },
+        })
+        streamingSession = volcWrapper
+        flushPendingPcm()
         return
       }
 

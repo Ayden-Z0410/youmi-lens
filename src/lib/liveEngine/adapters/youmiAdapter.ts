@@ -235,8 +235,16 @@ export class YoumiLiveAdapter {
     this.session = new StreamingWsSession(sampleRate, {
       onOpen: () => {
         if (!ref.active || this.closed) return
-        log('WS open — waiting for stream_ready', {
-          queued: this.pcmQueue.length, wsOpenMs: Date.now() - T_init,
+        // Send PCM as soon as the app WS is up (stream_start already sent). Avoids a deadlock
+        // where some upstream ASR providers only finalize after receiving audio, but the client
+        // previously waited for stream_ready before sending any PCM.
+        this.sessionReady = true
+        const q = this.pcmQueue
+        this.pcmQueue = []
+        for (const buf of q) this.session?.sendPcm(buf)
+        log('WS open — sending PCM immediately', {
+          drained: q.length,
+          wsOpenMs: Date.now() - T_init,
         })
       },
 
@@ -244,7 +252,8 @@ export class YoumiLiveAdapter {
         if (!ref.active || this.closed) return
         this.sessionReady = true
         log('stream_ready — draining PCM queue', {
-          queued: this.pcmQueue.length, readyMs: Date.now() - T_init,
+          queued: this.pcmQueue.length,
+          readyMs: Date.now() - T_init,
           nextSeg: `stream-${this.segCounter}`,
         })
         this.listener?.({ type: 'connected' })
