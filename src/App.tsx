@@ -8,6 +8,7 @@ import {
   useState,
   useSyncExternalStore,
   type ChangeEvent,
+  type MouseEvent,
   type MutableRefObject,
   type ReactNode,
 } from 'react'
@@ -172,7 +173,8 @@ const LIVE_WHISPER_SLICE_SEC = LIVE_WHISPER_SLICE_MS / 1000
 /** Live caption chunk failures: never flash a global red error if captions are already streaming. */
 const LIVE_CHUNK_SOFT_STREAK = 4
 const LIVE_CHUNK_FATAL_STREAK = 8
-const USE_LIVE_ENGINE_V2 = import.meta.env.VITE_USE_LIVE_ENGINE_V2 === 'true'
+/** Default on for hosted builds; set `VITE_USE_LIVE_ENGINE_V2=false` to force legacy slice path. */
+const USE_LIVE_ENGINE_V2 = import.meta.env.VITE_USE_LIVE_ENGINE_V2 !== 'false'
 
 /** Trial builds: hide route/engine labels in UI. Dev still shows unless trial or set false explicitly. */
 const VITE_TRIAL_BUILD = import.meta.env.VITE_TRIAL_BUILD === 'true'
@@ -182,6 +184,11 @@ const LIVE_ROUTE_DIAG_ENABLED =
   !VITE_TRIAL_BUILD && (import.meta.env.DEV || VITE_DEBUG_LIVE)
 /** On-screen “Route: …” line for engineers (hidden in trial/public builds). */
 const SHOW_LIVE_ROUTE_DEBUG_UI = LIVE_ROUTE_DIAG_ENABLED
+
+function liveRouteDiagLog(...args: unknown[]) {
+  if (!LIVE_ROUTE_DIAG_ENABLED) return
+  console.info(...args)
+}
 
 const LIVE_CAPTIONS_USER_EXPECTATION_EN =
   'Original captions appear first, followed by translation. Captions are generated in segments as you record.'
@@ -231,14 +238,14 @@ function DraggableLectureItem({
   recordingId,
   selected,
   dragging,
-  onOpen,
+  onRowClick,
   suppressItemClickRef,
   children,
 }: {
   recordingId: string
   selected: boolean
   dragging: boolean
-  onOpen: () => void
+  onRowClick: (e: MouseEvent<HTMLButtonElement>) => void
   suppressItemClickRef: MutableRefObject<boolean>
   children: ReactNode
 }) {
@@ -255,9 +262,9 @@ function DraggableLectureItem({
       {...attributes}
       className={`rec-item ${selected ? 'active' : ''}${dragging || isDragging ? ' is-dragging' : ''}`}
       style={{ transform: toDragTranslate(transform), touchAction: 'none' }}
-      onClick={() => {
+      onClick={(e) => {
         if (suppressItemClickRef.current) return
-        onOpen()
+        onRowClick(e)
       }}
     >
       {children}
@@ -1031,7 +1038,7 @@ function RecordingWorkspace({
       liveCaptionsPipelineEnabled,
       recorderStatus: recorder.status,
     }
-    console.info('[LiveEngine][diag] route snapshot', JSON.stringify(snapshot))
+    liveRouteDiagLog('[LiveEngine][diag] route snapshot', JSON.stringify(snapshot))
     ;(window as unknown as { __YL_LIVE_ROUTE__?: unknown }).__YL_LIVE_ROUTE__ = snapshot
   }, [useLiveEngineV2, usesHosted, liveCaptionsPipelineEnabled, recorder.status])
 
@@ -1091,7 +1098,7 @@ function RecordingWorkspace({
   useLayoutEffect(() => {
     if (useLiveEngineV2) {
       setLiveRouteState(liveCaptionSessionActive ? 'v2_starting' : 'v2_waiting_session')
-      console.info(
+      liveRouteDiagLog(
         '[LiveEngine][diag] v2 branch selected; legacy chunk handler detached',
         JSON.stringify({ liveCaptionSessionActive }),
       )
@@ -1099,7 +1106,7 @@ function RecordingWorkspace({
       return
     }
     setLiveRouteState('legacy')
-    console.info('[LiveEngine][diag] legacy branch selected')
+    liveRouteDiagLog('[LiveEngine][diag] legacy branch selected')
     if (!liveCaptionSessionActive) {
       onLiveAudioChunkRef.current = null
       resetLiveTranscribeRuntime()
@@ -1583,7 +1590,7 @@ function RecordingWorkspace({
   useEffect(() => {
     if (!useLiveEngineV2) {
       if (liveEngineRef.current) {
-        console.info('[LiveEngine][diag] stopping v2 engine because route is legacy')
+        liveRouteDiagLog('[LiveEngine][diag] stopping v2 engine because route is legacy')
         liveEngineRef.current.stop()
         liveEngineRef.current = null
       }
@@ -1594,7 +1601,7 @@ function RecordingWorkspace({
       onLiveAudioChunkRef.current = null
       onLivePcmChunkRef.current = null
       if (liveEngineRef.current) {
-        console.info('[LiveEngine][diag] stopping v2 engine because session is inactive')
+        liveRouteDiagLog('[LiveEngine][diag] stopping v2 engine because session is inactive')
         liveEngineRef.current.stop()
         liveEngineRef.current = null
       }
@@ -1602,7 +1609,7 @@ function RecordingWorkspace({
     }
     if (!liveCaptionsPipelineEnabled || !usesHosted) {
       setLiveRouteState('v2_blocked_pipeline')
-      console.info(
+      liveRouteDiagLog(
         '[LiveEngine][diag] v2 blocked (pipeline/capability)',
         JSON.stringify({ liveCaptionsPipelineEnabled, usesHosted }),
       )
@@ -1612,7 +1619,7 @@ function RecordingWorkspace({
     }
 
     setLiveRouteState('v2_starting')
-    console.info('[LiveEngine][diag] LiveEngine.start()')
+    liveRouteDiagLog('[LiveEngine][diag] LiveEngine.start()')
     const engine = new LiveEngine()
     liveEngineRef.current = engine
     v2PushCountRef.current = 0
@@ -1626,7 +1633,7 @@ function RecordingWorkspace({
 
     engine.onEvent((ev) => {
       if (ev.type === 'status') {
-        console.info('[LiveEngine][App] status', JSON.stringify({ status: ev.status, detail: ev.detail }))
+        liveRouteDiagLog('[LiveEngine][App] status', JSON.stringify({ status: ev.status, detail: ev.detail }))
         if (ev.status === 'connected' || ev.status === 'streaming') setLiveRouteState('v2_streaming')
         if (ev.status === 'error') setLiveRouteState('v2_error')
         if (ev.status === 'reconnecting') {
@@ -1640,7 +1647,7 @@ function RecordingWorkspace({
         return
       }
       if (ev.type === 'error') {
-        console.info(
+        liveRouteDiagLog(
           '[LiveEngine][App] error',
           JSON.stringify({ code: ev.code, message: ev.message, recoverable: ev.recoverable }),
         )
@@ -1655,7 +1662,7 @@ function RecordingWorkspace({
         return
       }
       if (ev.type === 'en_interim') {
-        console.info('[LiveEngine][App] en_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
+        liveRouteDiagLog('[LiveEngine][App] en_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
         const seq = segmentSeq(ev.segmentId)
         if (seq >= v2LatestInterimEnSeqRef.current) {
           v2LatestInterimEnSeqRef.current = seq
@@ -1664,7 +1671,7 @@ function RecordingWorkspace({
         return
       }
       if (ev.type === 'en_final') {
-        console.info('[LiveEngine][App] en_final', JSON.stringify({ segmentId: ev.segmentId }))
+        liveRouteDiagLog('[LiveEngine][App] en_final', JSON.stringify({ segmentId: ev.segmentId }))
         const seq = segmentSeq(ev.segmentId)
         v2FinalEnBySeqRef.current.set(seq, ev.text)
         let appendedCount = 0
@@ -1696,12 +1703,12 @@ function RecordingWorkspace({
         // Discard stale in-flight interim translation that resolved after zh_final for this segment.
         // Log is intentionally AFTER the guard so Console only shows interims that reach the UI.
         if (v2FinalizedZhSegIds.current.has(ev.segmentId)) return
-        console.info('[LiveEngine][App] zh_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
+        liveRouteDiagLog('[LiveEngine][App] zh_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
         setSecondaryCaptionDraft(ev.text)
         return
       }
       if (ev.type === 'zh_final') {
-        console.info('[LiveEngine][App] zh_final', JSON.stringify({ segmentId: ev.segmentId }))
+        liveRouteDiagLog('[LiveEngine][App] zh_final', JSON.stringify({ segmentId: ev.segmentId }))
         v2FinalizedZhSegIds.current.add(ev.segmentId)
         const seq = segmentSeq(ev.segmentId)
         v2FinalZhBySeqRef.current.set(seq, ev.text)
@@ -1753,6 +1760,11 @@ function RecordingWorkspace({
   const [recordings, setRecordings] = useState<Recording[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<RecordingDetail | null>(null)
+
+  const [librarySelectedFolderId, setLibrarySelectedFolderId] = useState<string | null>(null)
+  const [libraryPickMode, setLibraryPickMode] = useState(false)
+  const [libraryPickedIds, setLibraryPickedIds] = useState<string[]>([])
+  const libraryShiftAnchorRef = useRef<string | null>(null)
 
   const hostedCloudJobActive =
     !localOnly &&
@@ -1949,6 +1961,63 @@ function RecordingWorkspace({
     return out
   }, [libraryFolders, recordings, lectureLocationFor])
 
+  const recordingIdsInFolderOrdered = useCallback(
+    (folderId: string): string[] => {
+      if (folderId === 'unfiled') return unfiledRecordings.map((r) => r.id)
+      return (folderRecordingsMap[folderId] ?? []).map((r) => r.id)
+    },
+    [unfiledRecordings, folderRecordingsMap],
+  )
+
+  const applyShiftPickRange = useCallback(
+    (anchorId: string, targetId: string) => {
+      const fa = lectureLocationFor(anchorId)
+      const ft = lectureLocationFor(targetId)
+      if (fa !== ft) return
+      const order = recordingIdsInFolderOrdered(fa)
+      const ia = order.indexOf(anchorId)
+      const ib = order.indexOf(targetId)
+      if (ia < 0 || ib < 0) return
+      const lo = Math.min(ia, ib)
+      const hi = Math.max(ia, ib)
+      const range = order.slice(lo, hi + 1)
+      setLibraryPickedIds((prev) => Array.from(new Set([...prev, ...range])))
+    },
+    [lectureLocationFor, recordingIdsInFolderOrdered],
+  )
+
+  const handleLectureRowClick = useCallback(
+    (recordingId: string) => (e: MouseEvent<HTMLButtonElement>) => {
+      if (suppressItemClickRef.current) return
+      if (libraryPickMode) {
+        setLibraryPickedIds((prev) =>
+          prev.includes(recordingId) ? prev.filter((x) => x !== recordingId) : [...prev, recordingId],
+        )
+        libraryShiftAnchorRef.current = recordingId
+        return
+      }
+      if (e.shiftKey && libraryShiftAnchorRef.current) {
+        e.preventDefault()
+        applyShiftPickRange(libraryShiftAnchorRef.current, recordingId)
+        return
+      }
+      if (e.metaKey || e.ctrlKey) {
+        e.preventDefault()
+        setLibraryPickedIds((prev) =>
+          prev.includes(recordingId) ? prev.filter((x) => x !== recordingId) : [...prev, recordingId],
+        )
+        libraryShiftAnchorRef.current = recordingId
+        return
+      }
+      setLibrarySelectedFolderId(null)
+      setLibraryPickedIds([])
+      setLibraryPickMode(false)
+      setSelectedId(recordingId)
+      libraryShiftAnchorRef.current = recordingId
+    },
+    [applyShiftPickRange, libraryPickMode],
+  )
+
   useEffect(() => {
     void refreshList()
   }, [refreshList])
@@ -2134,17 +2203,19 @@ function RecordingWorkspace({
     try {
       const uiElapsedSecBeforeStop = recorder.elapsedSec
       const { blob, mime } = await recorder.stop()
-      console.warn(
-        '[MainRec][save]',
-        JSON.stringify({
-          recordingIdTail: recordingId.slice(-8),
-          uiElapsedSec: uiElapsedSecBeforeStop,
-          durationSource: 'elapsed_state_before_stop',
-          blobBytes: blob.size,
-          mime,
-          t: Date.now(),
-        }),
-      )
+      if (import.meta.env.DEV) {
+        console.warn(
+          '[MainRec][save]',
+          JSON.stringify({
+            recordingIdTail: recordingId.slice(-8),
+            uiElapsedSec: uiElapsedSecBeforeStop,
+            durationSource: 'elapsed_state_before_stop',
+            blobBytes: blob.size,
+            mime,
+            t: Date.now(),
+          }),
+        )
+      }
       const drainUntil = Date.now() + 4500
       while (
         Date.now() < drainUntil &&
@@ -2689,6 +2760,7 @@ function RecordingWorkspace({
         return next
       })
       if (selectedId === id) setSelectedId(null)
+      setLibraryPickedIds((prev) => prev.filter((x) => x !== id))
       await refreshList()
     } finally {
       setDeleteActionBusy(false)
@@ -2738,6 +2810,84 @@ function RecordingWorkspace({
       delete next[folderId]
       return next
     })
+  }
+
+  const batchDeleteLectures = async (ids: string[]) => {
+    const unique = [...new Set(ids)]
+    if (unique.length === 0) return
+    const msg = localOnly
+      ? `Delete ${unique.length} recording(s) from this browser?`
+      : `Delete ${unique.length} recording(s) from the cloud?`
+    if (!confirm(msg)) return
+    setDeleteActionBusy(true)
+    try {
+      if (localOnly) {
+        for (const id of unique) await deleteRecordingLocal(id)
+      } else {
+        const { data, error } = await supabase!
+          .from('recordings')
+          .select('id, storage_path')
+          .eq('user_id', userId!)
+          .in('id', unique)
+        if (error) throw error
+        const map = new Map<string, string>()
+        for (const row of data ?? []) {
+          if (row && typeof row.id === 'string' && typeof (row as { storage_path?: string }).storage_path === 'string') {
+            map.set(row.id, (row as { storage_path: string }).storage_path)
+          }
+        }
+        for (const id of unique) {
+          const sp = map.get(id)
+          if (!sp) continue
+          await deleteRecordingRemote(supabase!, userId!, id, sp)
+        }
+      }
+      setLibraryLectureLocation((prev) => {
+        const next = { ...prev }
+        for (const id of unique) delete next[id]
+        return next
+      })
+      if (selectedId && unique.includes(selectedId)) setSelectedId(null)
+      setLibraryPickedIds([])
+      setLibraryPickMode(false)
+      await refreshList()
+    } finally {
+      setDeleteActionBusy(false)
+    }
+  }
+
+  const handleLibraryToolbarDelete = async () => {
+    if (libraryPickedIds.length > 0) {
+      await batchDeleteLectures(libraryPickedIds)
+      return
+    }
+    if (selectedId) {
+      if (detail?.id === selectedId) {
+        await handleDelete(selectedId, detail.storagePath)
+        return
+      }
+      if (localOnly) {
+        await handleDelete(selectedId, '')
+        return
+      }
+      if (supabase && userId) {
+        const d = await getRecordingDetail(supabase, userId, selectedId)
+        if (d) await handleDelete(selectedId, d.storagePath)
+      }
+      return
+    }
+    if (
+      librarySelectedFolderId &&
+      librarySelectedFolderId !== 'unfiled' &&
+      !libraryPickMode
+    ) {
+      deleteFolder(librarySelectedFolderId)
+    }
+  }
+
+  const renameSelectedLibraryFolder = () => {
+    if (!librarySelectedFolderId || librarySelectedFolderId === 'unfiled') return
+    renameFolder(librarySelectedFolderId)
   }
 
   const moveLectureToFolder = (recordingId: string, folderId: string) => {
@@ -2810,6 +2960,20 @@ function RecordingWorkspace({
       if (audioUrl?.startsWith('blob:')) URL.revokeObjectURL(audioUrl)
     }
   }, [audioUrl])
+
+  const hasLectureSelForToolbar = libraryPickedIds.length > 0 || selectedId !== null
+  const canRenameLibraryFolder =
+    Boolean(librarySelectedFolderId) &&
+    librarySelectedFolderId !== 'unfiled' &&
+    !hasLectureSelForToolbar &&
+    !libraryPickMode
+  const canDeleteLibraryFolderToolbar =
+    Boolean(librarySelectedFolderId) &&
+    librarySelectedFolderId !== 'unfiled' &&
+    !hasLectureSelForToolbar &&
+    !libraryPickMode
+  const libraryToolbarDeleteEnabled =
+    libraryPickedIds.length > 0 || selectedId !== null || canDeleteLibraryFolderToolbar
 
   const showAccountPanel =
     !localOnly && supabase && userId && onProfileRowChange
@@ -2954,6 +3118,75 @@ function RecordingWorkspace({
               </div>
             )}
 
+            <div className="yl-library-toolbar">
+              <div className="yl-library-toolbar__row">
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  onClick={() => {
+                    if (libraryPickMode) {
+                      setLibraryPickMode(false)
+                      setLibraryPickedIds([])
+                    } else {
+                      setLibraryPickMode(true)
+                      setLibraryPickedIds([])
+                      setLibrarySelectedFolderId(null)
+                      setSelectedId(null)
+                    }
+                  }}
+                >
+                  {libraryPickMode ? 'Done' : 'Select'}
+                </button>
+                {libraryPickMode ? (
+                  <>
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      onClick={() => setLibraryPickedIds(recordings.map((r) => r.id))}
+                    >
+                      Select all
+                    </button>
+                    <button type="button" className="btn ghost small" onClick={() => setLibraryPickedIds([])}>
+                      Clear
+                    </button>
+                  </>
+                ) : null}
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  disabled={!canRenameLibraryFolder}
+                  title={
+                    !librarySelectedFolderId
+                      ? 'Select a folder first (click a folder row).'
+                      : librarySelectedFolderId === 'unfiled'
+                        ? 'Unfiled cannot be renamed.'
+                        : hasLectureSelForToolbar || libraryPickMode
+                          ? 'Clear lecture selection or exit Select mode.'
+                          : 'Rename the selected folder'
+                  }
+                  onClick={() => renameSelectedLibraryFolder()}
+                >
+                  Rename folder
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  disabled={!libraryToolbarDeleteEnabled || deleteActionBusy}
+                  onClick={() => void handleLibraryToolbarDelete()}
+                >
+                  {deleteActionBusy ? 'Deleting…' : 'Delete'}
+                </button>
+              </div>
+              {(libraryPickMode || libraryPickedIds.length > 0) && (
+                <div className="yl-library-multiselect-banner">
+                  <span className="yl-library-multiselect-count">{libraryPickedIds.length} selected</span>
+                  <button type="button" className="btn ghost small" onClick={() => setLibraryPickedIds([])}>
+                    Clear selection
+                  </button>
+                </div>
+              )}
+            </div>
+
             <DndContext
               sensors={sensors}
               collisionDetection={closestCenter}
@@ -2978,61 +3211,74 @@ function RecordingWorkspace({
                         <DroppableLibraryTarget
                           dropId={f.id}
                           activeDropId={dropTargetFolderId}
-                          className="yl-recent-group-head"
+                          className={`yl-recent-group-head${librarySelectedFolderId === f.id ? ' is-folder-selected' : ''}`}
                         >
                           <button
                             type="button"
-                            className="yl-recent-group-toggle"
-                            onClick={() =>
+                            className="yl-recent-group-head-btn"
+                            aria-expanded={!collapsed}
+                            onClick={() => {
+                              setLibrarySelectedFolderId(f.id)
+                              setSelectedId(null)
+                              setLibraryPickedIds([])
+                              setLibraryPickMode(false)
                               setLibraryCollapsedByFolderId((prev) => ({
                                 ...prev,
                                 [f.id]: !Boolean(prev[f.id]),
                               }))
-                            }
-                            aria-expanded={!collapsed}
+                            }}
                           >
-                            <span className="yl-recent-chevron" aria-hidden>
+                            <span className="yl-recent-group-chevron" aria-hidden>
                               {collapsed ? '›' : '⌄'}
                             </span>
-                            <span className="yl-recent-course">{f.name}</span>
-                            <span className="yl-recent-count">({items.length})</span>
+                            <span className="yl-recent-group-label">
+                              <span className="yl-recent-course">{f.name}</span>
+                              <span className="yl-recent-count">({items.length})</span>
+                            </span>
                           </button>
-                          <span className="yl-library-folder-actions">
-                            <button
-                              type="button"
-                              className="btn ghost small"
-                              onClick={() => renameFolder(f.id)}
-                            >
-                              Rename
-                            </button>
-                            <button
-                              type="button"
-                              className="btn ghost small"
-                              onClick={() => deleteFolder(f.id)}
-                            >
-                              Delete
-                            </button>
-                          </span>
                         </DroppableLibraryTarget>
                         {!collapsed && items.length > 0 && (
                           <ul className="rec-list yl-recent-items">
                             {items.map((r) => (
                               <li key={r.id}>
-                                <DraggableLectureItem
-                                  recordingId={r.id}
-                                  selected={r.id === selectedId}
-                                  dragging={draggingRecordingId === r.id}
-                                  onOpen={() => setSelectedId(r.id)}
-                                  suppressItemClickRef={suppressItemClickRef}
+                                <div
+                                  className={`yl-lecture-row${libraryPickedIds.includes(r.id) ? ' is-picked' : ''}`}
                                 >
-                                  <span className="yl-recent-item-body">
-                                    <span className="rec-title">{r.title}</span>
-                                    <span className="rec-meta">
-                                      {(r.course?.trim() ? r.course.trim() : 'Uncategorized')} ·{' '}
-                                      {formatClock(r.durationSec)} · {formatDate(r.createdAt)}
+                                  {libraryPickMode ? (
+                                    <label
+                                      className="yl-lecture-row__check"
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={libraryPickedIds.includes(r.id)}
+                                        onChange={() => {
+                                          setLibraryPickedIds((prev) =>
+                                            prev.includes(r.id)
+                                              ? prev.filter((x) => x !== r.id)
+                                              : [...prev, r.id],
+                                          )
+                                          libraryShiftAnchorRef.current = r.id
+                                        }}
+                                      />
+                                    </label>
+                                  ) : null}
+                                  <DraggableLectureItem
+                                    recordingId={r.id}
+                                    selected={r.id === selectedId}
+                                    dragging={draggingRecordingId === r.id}
+                                    onRowClick={handleLectureRowClick(r.id)}
+                                    suppressItemClickRef={suppressItemClickRef}
+                                  >
+                                    <span className="yl-recent-item-body">
+                                      <span className="rec-title">{r.title}</span>
+                                      <span className="rec-meta">
+                                        {(r.course?.trim() ? r.course.trim() : 'Uncategorized')} ·{' '}
+                                        {formatClock(r.durationSec)} · {formatDate(r.createdAt)}
+                                      </span>
                                     </span>
-                                  </span>
-                                </DraggableLectureItem>
+                                  </DraggableLectureItem>
+                                </div>
                               </li>
                             ))}
                           </ul>
@@ -3046,30 +3292,64 @@ function RecordingWorkspace({
                   <DroppableLibraryTarget
                     dropId="unfiled"
                     activeDropId={dropTargetFolderId}
-                    className="yl-recent-group-head"
+                    className={`yl-recent-group-head${librarySelectedFolderId === 'unfiled' ? ' is-folder-selected' : ''}`}
                   >
-                    <span className="yl-recent-course">Unfiled</span>
-                    <span className="yl-recent-count">({unfiledRecordings.length})</span>
+                    <button
+                      type="button"
+                      className="yl-recent-group-head-btn yl-recent-group-head-btn--unfiled"
+                      onClick={() => {
+                        setLibrarySelectedFolderId('unfiled')
+                        setSelectedId(null)
+                        setLibraryPickedIds([])
+                        setLibraryPickMode(false)
+                      }}
+                    >
+                      <span className="yl-recent-group-label">
+                        <span className="yl-recent-course">Unfiled</span>
+                        <span className="yl-recent-count">({unfiledRecordings.length})</span>
+                      </span>
+                    </button>
                   </DroppableLibraryTarget>
                   {unfiledRecordings.length > 0 ? (
                     <ul className="rec-list yl-recent-items">
                       {unfiledRecordings.map((r) => (
                         <li key={r.id}>
-                          <DraggableLectureItem
-                            recordingId={r.id}
-                            selected={r.id === selectedId}
-                            dragging={draggingRecordingId === r.id}
-                            onOpen={() => setSelectedId(r.id)}
-                            suppressItemClickRef={suppressItemClickRef}
+                          <div
+                            className={`yl-lecture-row${libraryPickedIds.includes(r.id) ? ' is-picked' : ''}`}
                           >
-                            <span className="yl-recent-item-body">
-                              <span className="rec-title">{r.title}</span>
-                              <span className="rec-meta">
-                                {(r.course?.trim() ? r.course.trim() : 'Uncategorized')} ·{' '}
-                                {formatClock(r.durationSec)} · {formatDate(r.createdAt)}
+                            {libraryPickMode ? (
+                              <label
+                                className="yl-lecture-row__check"
+                                onPointerDown={(e) => e.stopPropagation()}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={libraryPickedIds.includes(r.id)}
+                                  onChange={() => {
+                                    setLibraryPickedIds((prev) =>
+                                      prev.includes(r.id) ? prev.filter((x) => x !== r.id) : [...prev, r.id],
+                                    )
+                                    libraryShiftAnchorRef.current = r.id
+                                  }}
+                                />
+                              </label>
+                            ) : null}
+                            <DraggableLectureItem
+                              recordingId={r.id}
+                              selected={r.id === selectedId}
+                              dragging={draggingRecordingId === r.id}
+                              onRowClick={handleLectureRowClick(r.id)}
+                              suppressItemClickRef={suppressItemClickRef}
+                            >
+                              <span className="yl-recent-item-body">
+                                <span className="rec-title">{r.title}</span>
+                                <span className="rec-meta">
+                                  {(r.course?.trim() ? r.course.trim() : 'Uncategorized')} ·{' '}
+                                  {formatClock(r.durationSec)} · {formatDate(r.createdAt)}
+                                </span>
                               </span>
-                            </span>
-                          </DraggableLectureItem>
+                            </DraggableLectureItem>
+                          </div>
                         </li>
                       ))}
                     </ul>

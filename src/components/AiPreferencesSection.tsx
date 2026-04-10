@@ -88,7 +88,7 @@ export function AiPreferencesSection({ allowByok }: Props) {
           <span>
             <strong>Youmi AI</strong>
             <span style={{ display: 'block', fontSize: t.fontSize.xs, color: t.colors.textMuted }}>
-              Recommended  runs on our service after you sign in.
+              Recommended — runs on our service after you sign in.
             </span>
           </span>
         </label>

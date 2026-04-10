@@ -218,6 +218,12 @@ select.input {
   opacity: 0.72;
 }
 
+.btn.ghost.is-active {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 1px var(--accent-border);
+  color: var(--text-h);
+}
+
 .btn.small {
   padding: 0.35rem 0.65rem;
   font-size: 0.85rem;
@@ -418,11 +424,90 @@ select.input {
   gap: 0.35rem;
 }
 
+/* In-app confirm/rename for Lectures (Tauri WebView often blocks window.confirm / prompt). */
+.yl-lectures-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+
+.yl-lectures-dialog {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem 1.15rem 1.1rem;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+}
+
+.yl-lectures-dialog-title {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.yl-lectures-dialog-message {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-wrap;
+  font-family: inherit;
+  max-height: min(50vh, 280px);
+  overflow: auto;
+}
+
+.yl-lectures-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
 .yl-library-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+}
+
+.yl-library-toolbar {
+  margin-bottom: 0.65rem;
+}
+
+.yl-library-toolbar__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.yl-library-multiselect-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.45rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.yl-library-multiselect-count {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-h);
+  margin-right: auto;
 }
 
 .yl-library-folder-actions {
@@ -442,11 +527,18 @@ select.input {
   gap: 0.65rem;
 }
 
+/* One folder block: header row, then clear gap, then lectures (only when expanded). */
+.yl-recent-group {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .yl-recent-group-head.is-drop-target {
   border: 1px dashed var(--accent);
   border-radius: 8px;
   background: rgba(30, 64, 175, 0.08);
-  padding: 0.2rem 0.35rem;
+  padding: 0.35rem 0.45rem;
 }
 
 .rec-item.is-dragging {
@@ -523,8 +615,104 @@ select.input {
 .yl-recent-group-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
+  justify-content: flex-start;
+  gap: 0.15rem;
+  flex-shrink: 0;
+}
+
+.yl-recent-group-head.is-folder-selected {
+  border-radius: 8px;
+  padding: 0.3rem 0.4rem;
+  margin: 0 -0.2rem;
+  box-shadow: 0 0 0 1px var(--accent-border);
+  background: rgba(30, 64, 175, 0.06);
+}
+
+/* Lectures start clearly below the folder header (expanded only — no ul when collapsed). */
+.yl-recent-group > ul.rec-list.yl-recent-items {
+  margin-top: 0.55rem;
+  padding-top: 0.35rem;
+}
+
+.yl-recent-group > .yl-recent-group-head + p.muted {
+  margin-top: 0.45rem;
+  margin-bottom: 0;
+}
+
+/* One control: select folder + toggle expand/collapse (custom folders). */
+.yl-recent-group-head-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.2rem;
+  width: 100%;
+  margin: 0;
+  min-height: 2.4rem;
+  padding: 0.45rem 0.45rem;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.yl-recent-group-head-btn:hover {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.yl-recent-group-head-btn--unfiled {
+  padding-left: 0.4rem;
+}
+
+.yl-recent-group-chevron {
+  flex: 0 0 auto;
+  width: 1.75rem;
+  min-height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  border-radius: 6px;
+  user-select: none;
+}
+
+.yl-recent-group-label {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+.yl-recent-group-title {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: transparent;
+  border: none;
+  padding: 0.2rem 0.35rem;
+  cursor: pointer;
+  color: var(--text-h);
+  font-weight: 600;
+  text-align: left;
+  border-radius: 6px;
+}
+
+.yl-recent-group-title:hover {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.yl-recent-group-title--full {
+  padding-left: 0.2rem;
 }
 
 .yl-recent-group-toggle {
@@ -554,6 +742,35 @@ select.input {
 .yl-recent-group-check input {
   width: 16px;
   height: 16px;
+}
+
+.yl-lecture-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+
+.yl-lecture-row .rec-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.yl-lecture-row__check {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  padding-top: 0.55rem;
+}
+
+.yl-lecture-row__check input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.yl-lecture-row.is-picked .rec-item {
+  border-color: var(--accent-border);
+  background: rgba(30, 64, 175, 0.06);
 }
 
 .yl-recent-items .rec-item {

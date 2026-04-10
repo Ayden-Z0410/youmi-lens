@@ -1,13 +1,18 @@
 /**
  * Evidence-only tracing for Youmi AI live captions (grep: [YoumiLive]).
  * Does not log tokens, JWTs, or signed URL query strings.
+ * Off in production builds unless VITE_DEBUG_LIVE=true.
  */
+
+const LIVE_CLIENT_TRACE =
+  import.meta.env.DEV || import.meta.env.VITE_DEBUG_LIVE === 'true'
 
 export function youmiLiveLog(
   category: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'srv' | 'emit' | 'fail',
   message: string,
   fields?: Record<string, string | number | boolean | undefined>,
 ): void {
+  if (!LIVE_CLIENT_TRACE) return
   const parts = [`[YoumiLive][${category}]`, message]
   if (fields && Object.keys(fields).length) {
     parts.push(JSON.stringify(fields))
