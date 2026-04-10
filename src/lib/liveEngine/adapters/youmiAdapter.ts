@@ -39,21 +39,18 @@ function log(tag: string, fields?: Record<string, unknown>) {
 // Speech onset threshold (Int16 ±32767). Filters out silence before first word.
 const VOICE_ENERGY_THRESHOLD = 500
 
-// Cadence window for visible draft updates.
-// Volcengine sends interims every 100–300 ms; we smooth to 250–350 ms for UX.
-const CADENCE_MIN_MS = 250
-const CADENCE_MAX_MS = 350
+// Cadence window for visible English draft: coalesce bursty ASR interims without feeling sluggish.
+// Tuned for DashScope Paraformer (often slower deltas than old Volc path).
+const CADENCE_MIN_MS = 100
+const CADENCE_MAX_MS = 180
 
 // PCM queue capacity while waiting for WS+ASR handshake.
-// Volcengine handshake from Railway US ≈ 300–600 ms.
 // 50 frames × ~46 ms = ~2.3 s buffer — ample for the handshake window.
 const PCM_QUEUE_CAP = 50
 
 // ── CadenceScheduler ──────────────────────────────────────────────────────────
 //
-// Smooths visible en_interim update cadence to 250–350 ms.
-// • Incoming interims faster than CADENCE_MIN_MS are coalesced (only latest shown).
-// • Pending content is always flushed within CADENCE_MAX_MS of arrival.
+// Smooths en_interim: coalesce bursts; rev===1 flushes immediately so each new clause pops in.
 //
 class CadenceScheduler {
   private pending: { segId: string; rev: number; text: string } | null = null
@@ -68,6 +65,15 @@ class CadenceScheduler {
 
   schedule(segId: string, rev: number, text: string) {
     this.pending = { segId, rev, text }
+    if (rev === 1) {
+      if (this.minTimer !== null) {
+        clearTimeout(this.minTimer)
+        this.minTimer = null
+      }
+      this.clearMaxTimer()
+      this.flush(Date.now())
+      return
+    }
     if (this.minTimer !== null) return  // already coalescing; latest pending will fire
 
     const now          = Date.now()
