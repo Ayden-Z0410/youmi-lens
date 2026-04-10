@@ -1,5 +1,5 @@
 /**
- * YoumiLiveAdapter — Volcengine (Doubao) streaming ASR, clean architecture.
+ * YoumiLiveAdapter — PCM → server /api/live-realtime-ws (default DashScope; Volc opt-in on server).
  *
  * Design principles:
  *   • Provider delivers natural clause boundaries via VAD (definite:true = final).
@@ -14,7 +14,7 @@
  *
  * Audio flow:
  *   browser AudioContext (PCM Int16) → pushPcm() → StreamingWsSession (WS)
- *   → server → Volcengine ASR → stream_interim / stream_final → adapter events
+ *   → server ASR (DashScope by default) → stream_interim / stream_final → adapter events
  */
 
 import { StreamingWsSession } from '../streamingWsSession'
@@ -230,12 +230,12 @@ export class YoumiLiveAdapter {
     const ref    = { active: true }
     this.activeRef = ref
     const T_init = Date.now()
-    log('init streaming session (Volcengine)', { sampleRate, nextSeg: `stream-${this.segCounter}` })
+    log('init streaming session (server live-realtime-ws)', { sampleRate, nextSeg: `stream-${this.segCounter}` })
 
     this.session = new StreamingWsSession(sampleRate, {
       onOpen: () => {
         if (!ref.active || this.closed) return
-        log('WS open — waiting for Volcengine stream_ready', {
+        log('WS open — waiting for stream_ready', {
           queued: this.pcmQueue.length, wsOpenMs: Date.now() - T_init,
         })
       },
@@ -243,7 +243,7 @@ export class YoumiLiveAdapter {
       onReady: () => {
         if (!ref.active || this.closed) return
         this.sessionReady = true
-        log('stream_ready (Volcengine) — draining PCM queue', {
+        log('stream_ready — draining PCM queue', {
           queued: this.pcmQueue.length, readyMs: Date.now() - T_init,
           nextSeg: `stream-${this.segCounter}`,
         })

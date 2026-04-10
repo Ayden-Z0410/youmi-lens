@@ -9,19 +9,14 @@ import {
 import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
 
 /**
- * Primary live ASR: Volcengine (bigmodel streaming) when keys are set.
- * Override with LIVE_ASR_PROVIDER=dashscope to use DashScope only.
- * If Volcengine keys are missing, falls back to DashScope when DASHSCOPE_API_KEY is set.
+ * Stable default: DashScope streaming ASR (needs DASHSCOPE_API_KEY at stream_start).
+ * Volcengine is opt-in only: set LIVE_ASR_PROVIDER=volcengine (or volc) and Volc credentials.
+ * We do not pick the provider from “which env vars happen to be set”.
  * @returns {'dashscope' | 'volcengine'}
  */
 function resolveLiveAsrProvider() {
   const ex = (process.env.LIVE_ASR_PROVIDER || '').trim().toLowerCase()
-  if (ex === 'dashscope' || ex === 'dash') return 'dashscope'
   if (ex === 'volcengine' || ex === 'volc') return 'volcengine'
-  const volcOk = Boolean(
-    process.env.VOLCENGINE_ASR_APP_KEY?.trim() && process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim(),
-  )
-  if (volcOk) return 'volcengine'
   return 'dashscope'
 }
 
@@ -87,7 +82,7 @@ export function attachLiveRealtimeWs(server) {
   const wss = new WebSocketServer({ server, path: '/api/live-realtime-ws' })
   const activeProvider = resolveLiveAsrProvider()
   console.info(
-    `[YoumiLive][srv] live-realtime-ws ready (ASR=${activeProvider}; set YOUMI_LIVE_VERBOSE=1 for per-chunk logs)`,
+    `[YoumiLive][srv] live-realtime-ws ready (ASR=${activeProvider}; default=dashscope; LIVE_ASR_PROVIDER=volcengine for Volc; YOUMI_LIVE_VERBOSE=1 for per-chunk logs)`,
   )
 
   wss.on('connection', (ws) => {
