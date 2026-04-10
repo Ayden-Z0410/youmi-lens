@@ -319,6 +319,14 @@ select.input {
   white-space: pre-wrap;
 }
 
+/* v2 streaming: interim merged into .live-streaming-merged — reads as one real-time line, not “faint loading”. */
+.live-streaming-merged {
+  color: var(--text-h);
+  white-space: pre-wrap;
+  font-style: normal;
+  font-weight: 500;
+}
+
 .live-caption-head {
   display: flex;
   flex-wrap: wrap;
@@ -1171,7 +1179,8 @@ select.input {
 .yl-shell .live-caption-label,
 .yl-shell .live-caption-text,
 .yl-shell .live-final,
-.yl-shell .live-interim {
+.yl-shell .live-interim,
+.yl-shell .live-streaming-merged {
   color: #0f172a;
 }
 

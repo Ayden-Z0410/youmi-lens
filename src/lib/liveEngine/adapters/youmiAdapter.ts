@@ -41,8 +41,8 @@ const VOICE_ENERGY_THRESHOLD = 500
 
 // Cadence window for visible English draft: coalesce bursty ASR interims without feeling sluggish.
 // Tuned for DashScope Paraformer (often slower deltas than old Volc path).
-const CADENCE_MIN_MS = 100
-const CADENCE_MAX_MS = 180
+const CADENCE_MIN_MS = 45
+const CADENCE_MAX_MS = 95
 
 // PCM queue capacity while waiting for WS+ASR handshake.
 // 50 frames × ~46 ms = ~2.3 s buffer — ample for the handshake window.
