@@ -5,11 +5,11 @@
  *   • Provider delivers natural clause boundaries via VAD (definite:true = final).
  *   • No force-flush, no stall-commit, no synthetic-final patches needed.
  *   • On error/close → abandon in-flight segment (synthetic final) + reconnect.
- *   • CadenceScheduler smooths visible en_interim updates to 250–350 ms window.
+ *   • Each ASR interim is emitted immediately (no client-side cadence) so text flows continuously.
  *
  * Segment lifecycle:
  *   First interim → create stream-N.
- *   Each interim  → cadenced draft update for stream-N.
+ *   Each interim  → immediate en_interim for stream-N.
  *   Provider final → en_final for stream-N; next interim will open stream-N+1.
  *
  * Audio flow:
@@ -39,93 +39,9 @@ function log(tag: string, fields?: Record<string, unknown>) {
 // Speech onset threshold (Int16 ±32767). Filters out silence before first word.
 const VOICE_ENERGY_THRESHOLD = 500
 
-// Cadence window for visible English draft: coalesce bursty ASR interims without feeling sluggish.
-// Tuned for DashScope Paraformer (often slower deltas than old Volc path).
-const CADENCE_MIN_MS = 45
-const CADENCE_MAX_MS = 95
-
 // PCM queue capacity while waiting for WS+ASR handshake.
 // 50 frames × ~46 ms = ~2.3 s buffer — ample for the handshake window.
 const PCM_QUEUE_CAP = 50
-
-// ── CadenceScheduler ──────────────────────────────────────────────────────────
-//
-// Smooths en_interim: coalesce bursts; rev===1 flushes immediately so each new clause pops in.
-//
-class CadenceScheduler {
-  private pending: { segId: string; rev: number; text: string } | null = null
-  private lastEmitMs = 0
-  private minTimer: ReturnType<typeof setTimeout> | null = null
-  private maxTimer: ReturnType<typeof setTimeout> | null = null
-  private readonly onEmit: (segId: string, rev: number, text: string) => void
-
-  constructor(onEmit: (segId: string, rev: number, text: string) => void) {
-    this.onEmit = onEmit
-  }
-
-  schedule(segId: string, rev: number, text: string) {
-    this.pending = { segId, rev, text }
-    if (rev === 1) {
-      if (this.minTimer !== null) {
-        clearTimeout(this.minTimer)
-        this.minTimer = null
-      }
-      this.clearMaxTimer()
-      this.flush(Date.now())
-      return
-    }
-    if (this.minTimer !== null) return  // already coalescing; latest pending will fire
-
-    const now          = Date.now()
-    const sinceLastEmit = now - this.lastEmitMs
-
-    if (sinceLastEmit >= CADENCE_MIN_MS) {
-      this.flush(now)
-    } else {
-      const minDelay = CADENCE_MIN_MS - sinceLastEmit
-      this.minTimer = setTimeout(() => {
-        this.minTimer = null
-        this.clearMaxTimer()
-        this.flush(Date.now())
-      }, minDelay)
-
-      const maxDelay = CADENCE_MAX_MS - sinceLastEmit
-      this.maxTimer = setTimeout(() => {
-        this.maxTimer = null
-        if (this.minTimer !== null) { clearTimeout(this.minTimer); this.minTimer = null }
-        this.flush(Date.now())
-      }, maxDelay)
-    }
-  }
-
-  private flush(now: number) {
-    const p = this.pending
-    if (!p) return
-    this.pending = null
-    const gapMs = this.lastEmitMs ? now - this.lastEmitMs : -1
-    this.lastEmitMs = now
-    console.info('[Cadence] en_interim → UI', {
-      segId: p.segId, rev: p.rev, gapMs, textLen: p.text.length, preview: p.text.slice(0, 40),
-    })
-    this.onEmit(p.segId, p.rev, p.text)
-  }
-
-  private clearMaxTimer() {
-    if (this.maxTimer !== null) { clearTimeout(this.maxTimer); this.maxTimer = null }
-  }
-
-  cancel() {
-    if (this.minTimer !== null) { clearTimeout(this.minTimer); this.minTimer = null }
-    this.clearMaxTimer()
-    this.pending = null
-    // lastEmitMs preserved — cadence timing carries across segment boundaries.
-  }
-
-  reset() {
-    this.cancel()
-    this.lastEmitMs = 0
-  }
-}
 
 // ── YoumiLiveAdapter ──────────────────────────────────────────────────────────
 
@@ -150,11 +66,6 @@ export class YoumiLiveAdapter {
   // PCM queue: holds audio received before the ASR session is ready.
   private pcmQueue: ArrayBuffer[] = []
 
-  // Cadence scheduler: smooths visible en_interim updates (250–350 ms window).
-  private readonly cadence = new CadenceScheduler((segId, rev, text) => {
-    this.listener?.({ type: 'en_interim', segmentId: segId, rev, text })
-  })
-
   onEvent(listener: YoumiAdapterListener) {
     this.listener = listener
   }
@@ -171,14 +82,12 @@ export class YoumiLiveAdapter {
     this.firstInterimLogged = false
     this.lastFinalMs   = 0
     this.pcmQueue      = []
-    this.cadence.reset()
     log('adapter starting (live ASR: server DashScope main line)')
     this.listener?.({ type: 'connected' })
   }
 
   stop() {
     this.closed = true
-    this.cadence.cancel()
     this.activeRef.active = false
     log('adapter stop')
     this.session?.stop()
@@ -189,7 +98,6 @@ export class YoumiLiveAdapter {
   // ── Segment abandonment (on error / unexpected close) ─────────────────────
 
   private abandonCurrentSegment(reason: string) {
-    this.cadence.cancel()
     const segId = this.currentSegId
     const text  = ''  // discard in-flight draft — content integrity > partial output
     this.currentSegId  = ''
@@ -296,17 +204,14 @@ export class YoumiLiveAdapter {
 
         this.lastInterimMs = now
         const rev = ++this.interimRev
-        log('en_interim', { segId: this.currentSegId, rev, len: trimmed.length, preview: trimmed.slice(0, 60) })
-        this.cadence.schedule(this.currentSegId, rev, trimmed)
+        // Hot path: no per-frame console — avoids main-thread jank when ASR sends many interims/sec.
+        this.listener?.({ type: 'en_interim', segmentId: this.currentSegId, rev, text: trimmed })
       },
 
       onFinal: (text) => {
         if (!ref.active || this.closed || !text.trim()) return
         const now     = Date.now()
         const trimmed = text.trim()
-
-        // Final supersedes any pending cadenced draft.
-        this.cadence.cancel()
 
         const segId = this.currentSegId || `stream-${this.segCounter++}`
         log('B-metric: last-interim → final', {

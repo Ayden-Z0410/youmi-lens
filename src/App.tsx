@@ -3596,14 +3596,14 @@ function RecordingWorkspace({
                   <>
                     <span className="live-pill" style={{ marginRight: '0.4rem' }}>
                       {liveV2CaptionPhase === 'hearing' ? 'Hearing' : null}
-                      {liveV2CaptionPhase === 'drafting' ? 'Live' : null}
+                      {liveV2CaptionPhase === 'drafting' ? 'Draft' : null}
                       {liveV2CaptionPhase === 'refining' ? 'Refining' : null}
                     </span>
                     {liveV2CaptionPhase === 'hearing'
                       ? 'Listening — first words appear within a second.'
                       : null}
                     {liveV2CaptionPhase === 'drafting'
-                      ? 'Updating with your speech.'
+                      ? 'Live — faint text is the current phrase updating in real time.'
                       : null}
                     {liveV2CaptionPhase === 'refining'
                       ? 'Processing — next caption will follow shortly.'
@@ -3622,43 +3622,27 @@ function RecordingWorkspace({
                 </p>
               )}
               <div className="live-caption-text live-realtime">
-                {useLiveEngineV2 ? (
-                  <>
-                    {primaryCaption.trim() || primaryCaptionDraft.trim() ? (
-                      <span className="live-streaming-merged">
-                        {primaryCaption}
-                        {primaryCaption.trim() && primaryCaptionDraft.trim() ? ' ' : ''}
-                        {primaryCaptionDraft}
-                      </span>
-                    ) : (
-                      <span className="muted">
-                        {recorder.status === 'recording' ? 'Speak — words appear as you go.' : 'Paused'}
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    {primaryCaption && <span className="live-final">{primaryCaption}</span>}
-                    {primaryCaptionDraft && (
-                      <span className="live-interim">
-                        {primaryCaption ? ' ' : ''}
-                        {primaryCaptionDraft}
-                      </span>
-                    )}
-                    {liveCaptionPendingSlices > 0 && (
-                      <span className="live-interim">
-                        {primaryCaption || primaryCaptionDraft ? ' ' : ''}
-                        (Updating…)
-                      </span>
-                    )}
-                    {!primaryCaption && !primaryCaptionDraft && liveCaptionPendingSlices === 0 && (
-                      <span className="muted">
-                        {recorder.status === 'recording'
-                          ? `First segment in ~${LIVE_WHISPER_SLICE_SEC}s after you start…`
-                          : 'Paused'}
-                      </span>
-                    )}
-                  </>
+                {primaryCaption && <span className="live-final">{primaryCaption}</span>}
+                {primaryCaptionDraft && (
+                  <span className="live-interim">
+                    {primaryCaption ? ' ' : ''}
+                    {primaryCaptionDraft}
+                  </span>
+                )}
+                {liveCaptionPendingSlices > 0 && !useLiveEngineV2 && (
+                  <span className="live-interim">
+                    {primaryCaption || primaryCaptionDraft ? ' ' : ''}
+                    (Updating…)
+                  </span>
+                )}
+                {!primaryCaption && !primaryCaptionDraft && liveCaptionPendingSlices === 0 && (
+                  <span className="muted">
+                    {recorder.status === 'recording'
+                      ? useLiveEngineV2
+                        ? 'Speak — captions stream as you go.'
+                        : `First segment in ~${LIVE_WHISPER_SLICE_SEC}s after you start…`
+                      : 'Paused'}
+                  </span>
                 )}
               </div>
             </div>
@@ -3670,44 +3654,25 @@ function RecordingWorkspace({
                   </div>
                 </div>
                 <div className="live-caption-text live-realtime">
-                  {useLiveEngineV2 ? (
-                    <>
-                      {secondaryCaption.trim() || secondaryCaptionDraft.trim() ? (
-                        <span className="live-streaming-merged">
-                          {secondaryCaption}
-                          {secondaryCaption.trim() && secondaryCaptionDraft.trim() ? ' ' : ''}
-                          {secondaryCaptionDraft}
-                        </span>
-                      ) : Boolean(primaryCaptionDraft.trim()) ? (
-                        <span className="muted">…</span>
-                      ) : (
-                        <span className="muted">
-                          {liveCaptionsPipelineEnabled
-                            ? 'Translation follows the line above.'
-                            : 'Translation will appear when each line is ready.'}
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      {secondaryCaption ? <span className="live-final">{secondaryCaption}</span> : null}
-                      {secondaryCaptionDraft ? (
-                        <span className="live-interim">
-                          {secondaryCaption ? ' ' : ''}
-                          {secondaryCaptionDraft}
-                        </span>
-                      ) : null}
-                      {!secondaryCaption &&
-                      !secondaryCaptionDraft &&
-                      !(useLiveEngineV2 && Boolean(primaryCaptionDraft.trim())) ? (
-                        <span className="muted">
-                          {liveCaptionsPipelineEnabled
-                            ? 'Translated lines appear after each primary line…'
-                            : 'Translation will appear here when each line is ready.'}
-                        </span>
-                      ) : null}
-                    </>
-                  )}
+                  {secondaryCaption ? <span className="live-final">{secondaryCaption}</span> : null}
+                  {secondaryCaptionDraft ? (
+                    <span className="live-interim">
+                      {secondaryCaption ? ' ' : ''}
+                      {secondaryCaptionDraft}
+                    </span>
+                  ) : null}
+                  {useLiveEngineV2 && Boolean(primaryCaptionDraft.trim()) && !secondaryCaptionDraft ? (
+                    <span className="live-interim muted">Translating…</span>
+                  ) : null}
+                  {!secondaryCaption &&
+                  !secondaryCaptionDraft &&
+                  !(useLiveEngineV2 && Boolean(primaryCaptionDraft.trim())) ? (
+                    <span className="muted">
+                      {liveCaptionsPipelineEnabled
+                        ? 'Translated lines appear after each primary line…'
+                        : 'Translation will appear here when each line is ready.'}
+                    </span>
+                  ) : null}
                 </div>
               </div>
             )}

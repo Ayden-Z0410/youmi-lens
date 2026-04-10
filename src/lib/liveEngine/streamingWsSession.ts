@@ -101,12 +101,6 @@ export class StreamingWsSession {
             readyMs: this.T_stream_ready ? this.T_stream_ready - this.T_connect : -1,
           })
         }
-        console.info('[StreamingWs] interim', {
-          n: this.interimCount,
-          len: (msg.text as string).length,
-          sinceConnectMs: now - this.T_connect,
-          preview: (msg.text as string).slice(0, 40),
-        })
         this.events.onInterim?.(msg.text as string)
       } else if (msg.type === 'stream_final' && typeof msg.text === 'string') {
         const now = Date.now()
