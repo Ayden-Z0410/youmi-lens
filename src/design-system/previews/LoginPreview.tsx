@@ -67,30 +67,41 @@ export function LoginPreview({ embedded = false }: LoginPreviewProps) {
         >
           <h1
             style={{
-              margin: `0 0 ${px(t.spacing[5])}`,
+              margin: `0 0 ${px(t.spacing[3])}`,
               fontSize: t.fontSize.md,
               fontWeight: 600,
               color: t.colors.text,
               letterSpacing: '-0.02em',
             }}
           >
-            School sign-in
+            Sign in to sync recordings
           </h1>
+          <p
+            style={{
+              margin: `0 0 ${px(t.spacing[4])}`,
+              fontSize: t.fontSize.sm,
+              color: t.colors.textMuted,
+              lineHeight: t.lineHeight.relaxed,
+            }}
+          >
+            Use the email address you want for your account. We&apos;ll send a one-time sign-in link.
+          </p>
           <label
+            htmlFor="login-preview-email"
             style={{
               display: 'block',
-              fontSize: t.fontSize.xs,
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em',
-              color: t.colors.textMuted,
+              fontSize: t.fontSize.sm,
+              fontWeight: 600,
+              color: t.colors.text,
               marginBottom: px(t.spacing[2]),
             }}
           >
-            University email
+            Email
           </label>
           <input
+            id="login-preview-email"
             type="email"
-            placeholder="youmilens@gmail.com"
+            placeholder="you@example.com"
             readOnly
             style={{
               width: '100%',
@@ -99,12 +110,12 @@ export function LoginPreview({ embedded = false }: LoginPreviewProps) {
               borderRadius: t.radii.lg,
               border: `1px solid ${t.colors.border}`,
               fontSize: t.fontSize.base,
-              marginBottom: px(t.spacing[4]),
+              marginBottom: px(t.spacing[3]),
               background: t.colors.surface,
             }}
           />
           <button type="button" className="ds-btn ds-btn--primary" style={{ width: '100%' }}>
-            Continue
+            Send sign-in link
           </button>
         </div>
       </div>

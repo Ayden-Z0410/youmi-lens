@@ -12,7 +12,7 @@ interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string
   /** @deprecated No longer used by `apiBase`; Vite dev proxy targets port in `vite.config.ts`. */
   readonly VITE_AI_SERVER_PORT?: string
-  /** Set to `true` to show Apple sign-in on the login screen (requires Supabase + Apple IdP setup). */
+  /** Unused on the login screen (email magic link only); kept for env compatibility. */
   readonly VITE_SHOW_APPLE_SIGNIN?: string
   /** Dev: set to `false` to hide the optional local OpenAI key panel. Ignored in production builds. */
   readonly VITE_SHOW_DEV_AI_KEY?: string

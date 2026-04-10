@@ -304,19 +304,16 @@ function readForceLocalPreference(): boolean {
 }
 
 function LoginScreen({ auth }: { auth: ReturnType<typeof useAuth> }) {
-  const showAppleSignIn = import.meta.env.VITE_SHOW_APPLE_SIGNIN === 'true'
   const [email, setEmail] = useState('')
   const [emailBusy, setEmailBusy] = useState(false)
   const [emailHint, setEmailHint] = useState<string | null>(null)
   const [emailErr, setEmailErr] = useState<string | null>(null)
-  const [oauthErr, setOauthErr] = useState<string | null>(null)
   const t = designTokens
   const px = (n: number) => `${n}px`
 
   const sendMagicLink = async () => {
     setEmailErr(null)
     setEmailHint(null)
-    setOauthErr(null)
     setEmailBusy(true)
     try {
       const { error } = await auth.signInWithEmailOtp(email)
@@ -346,7 +343,7 @@ function LoginScreen({ auth }: { auth: ReturnType<typeof useAuth> }) {
     >
       <header
         style={{
-          marginBottom: px(t.spacing[10]),
+          marginBottom: px(t.spacing[8]),
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -370,14 +367,14 @@ function LoginScreen({ auth }: { auth: ReturnType<typeof useAuth> }) {
         <div
           className="ds-card login-screen__card"
           style={{
-            padding: px(t.spacing[8]),
+            padding: `${px(t.spacing[6])} ${px(t.spacing[8])}`,
             border: `1px solid ${t.colors.border}`,
             background: t.colors.surface,
           }}
         >
           <h1
             style={{
-              margin: `0 0 ${px(t.spacing[5])}`,
+              margin: `0 0 ${px(t.spacing[3])}`,
               fontSize: t.fontSize.md,
               fontWeight: 600,
               color: t.colors.text,
@@ -388,7 +385,7 @@ function LoginScreen({ auth }: { auth: ReturnType<typeof useAuth> }) {
           </h1>
           <p
             style={{
-              margin: `0 0 ${px(t.spacing[5])}`,
+              margin: `0 0 ${px(t.spacing[4])}`,
               fontSize: t.fontSize.sm,
               color: t.colors.textMuted,
               lineHeight: t.lineHeight.relaxed,
@@ -399,21 +396,22 @@ function LoginScreen({ auth }: { auth: ReturnType<typeof useAuth> }) {
           </p>
 
           <label
+            htmlFor="login-email"
             style={{
               display: 'block',
-              fontSize: t.fontSize.xs,
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em',
-              color: t.colors.textMuted,
+              fontSize: t.fontSize.sm,
+              fontWeight: 600,
+              color: t.colors.text,
               marginBottom: px(t.spacing[2]),
             }}
           >
-            University email
+            Email
           </label>
           <input
+            id="login-email"
             type="email"
             className="login-screen__email-input"
-            placeholder="youmilens@gmail.com"
+            placeholder="you@example.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             autoComplete="email"
@@ -424,7 +422,7 @@ function LoginScreen({ auth }: { auth: ReturnType<typeof useAuth> }) {
               borderRadius: t.radii.lg,
               border: `1px solid ${t.colors.border}`,
               fontSize: t.fontSize.base,
-              marginBottom: px(t.spacing[4]),
+              marginBottom: px(t.spacing[3]),
               background: t.colors.surface,
               color: t.colors.text,
               caretColor: t.colors.accent,
@@ -447,53 +445,6 @@ function LoginScreen({ auth }: { auth: ReturnType<typeof useAuth> }) {
           {emailErr && (
             <p style={{ marginTop: px(t.spacing[2]), color: t.colors.danger, fontSize: t.fontSize.sm }}>
               {emailErr}
-            </p>
-          )}
-
-          <p
-            style={{
-              margin: `${px(t.spacing[6])} 0 ${px(t.spacing[3])}`,
-              fontSize: t.fontSize.xs,
-              color: t.colors.textMuted,
-              textAlign: 'center',
-            }}
-          >
-            Or continue with
-          </p>
-          <button
-            type="button"
-            className="ds-btn ds-btn--secondary"
-            style={{
-              width: '100%',
-              marginBottom: showAppleSignIn ? px(t.spacing[2]) : px(t.spacing[3]),
-            }}
-            onClick={() => {
-              setOauthErr(null)
-              void auth.signInWithGoogle().catch((e) =>
-                setOauthErr(e instanceof Error ? e.message : 'Google sign-in failed'),
-              )
-            }}
-          >
-            Continue with Google
-          </button>
-          {showAppleSignIn ? (
-            <button
-              type="button"
-              className="ds-btn ds-btn--secondary"
-              style={{ width: '100%', marginBottom: px(t.spacing[3]) }}
-              onClick={() => {
-                setOauthErr(null)
-                void auth.signInWithApple().catch((e) =>
-                  setOauthErr(e instanceof Error ? e.message : 'Apple sign-in failed'),
-                )
-              }}
-            >
-              Continue with Apple
-            </button>
-          ) : null}
-          {oauthErr && (
-            <p style={{ marginTop: px(t.spacing[2]), color: t.colors.danger, fontSize: t.fontSize.sm }}>
-              {oauthErr}
             </p>
           )}
         </div>
@@ -530,8 +481,7 @@ function CloudSetupSplash({ onUseLocal }: { onUseLocal: () => void }) {
         </p>
         <h2>2. Enable email sign-in (optional but recommended)</h2>
         <p className="hint small">
-          In <strong>Authentication → Providers</strong>, turn on <strong>Email</strong> (magic link). Enable
-          Google / Apple if you like.
+          In <strong>Authentication → Providers</strong>, turn on <strong>Email</strong> (magic link).
         </p>
         <h2>3. Configure this repo&apos;s <code>.env</code></h2>
         <pre
