@@ -8,6 +8,16 @@ import {
   normalizeVolcAuthMode,
   AUTH_MODE_API_KEY,
 } from './volcengineStreamingAsr.mjs'
+import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
+
+/** @returns {'dashscope' | 'volcengine'} */
+function resolveLiveAsrProvider() {
+  const ex = (process.env.LIVE_ASR_PROVIDER || '').trim().toLowerCase()
+  if (ex === 'volcengine' || ex === 'volc') return 'volcengine'
+  if (ex === 'dashscope' || ex === 'dash') return 'dashscope'
+  if (process.env.DASHSCOPE_API_KEY?.trim()) return 'dashscope'
+  return 'volcengine'
+}
 
 function safeSend(ws, payload) {
   try {
@@ -67,8 +77,9 @@ export function attachLiveRealtimeWs(server) {
   console.log(
     '[YoumiLive][srv] realtime ws build marker',
     JSON.stringify({
-      provider: 'volcengine-doubao-streaming-asr',
-      version: '2026-04-10-volcengine-dual-auth',
+      provider: 'live-realtime-asr',
+      liveAsrProvider: resolveLiveAsrProvider(),
+      version: '2026-04-10-dashscope-default-when-key',
       volcAuthMode: normalizeVolcAuthMode(process.env.VOLCENGINE_AUTH_MODE),
       hasSupabaseUrl: Boolean(SUPABASE_URL),
       hasServiceRole: Boolean(SUPABASE_SERVICE_ROLE_KEY),
@@ -78,6 +89,7 @@ export function attachLiveRealtimeWs(server) {
       hasVolcEnvApiKey: Boolean(process.env.VOLCENGINE_API_KEY?.trim()),
       volcResourceIdFromEnv: Boolean(process.env.VOLCENGINE_ASR_RESOURCE_ID?.trim()),
       volcWsUrlFromEnv: Boolean(process.env.VOLCENGINE_ASR_WS_URL?.trim()),
+      hasDashscopeKey: Boolean(process.env.DASHSCOPE_API_KEY?.trim()),
     }),
   )
 
@@ -112,6 +124,129 @@ export function attachLiveRealtimeWs(server) {
         if (streamingSession) {
           streamingSession.destroy()
           streamingSession = null
+        }
+
+        const sampleRate   = typeof msg.sampleRate === 'number' ? msg.sampleRate : 48000
+        const liveProvider = resolveLiveAsrProvider()
+        const clientRef    = { ws }
+        let relayInterimSeg = 0
+        let relayFinalSeg   = 0
+
+        const relayInterim = (text) => {
+          relayInterimSeg += 1
+          const open    = clientRef.ws?.readyState === 1
+          const preview = typeof text === 'string' ? text.slice(0, 80) : ''
+          const sentOk  = Boolean(clientRef.ws && open)
+          console.log(
+            '[YoumiLive][srv] relay stream_interim',
+            JSON.stringify({
+              wsSessionId,
+              liveProvider,
+              clientWsOpen: open,
+              sent: false,
+              segId: relayInterimSeg,
+              preview,
+              phase: 'pre',
+            }),
+          )
+          if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text })
+          console.log(
+            '[YoumiLive][srv] relay stream_interim',
+            JSON.stringify({
+              wsSessionId,
+              liveProvider,
+              clientWsOpen: open,
+              sent: sentOk,
+              segId: relayInterimSeg,
+              preview,
+              phase: 'post',
+            }),
+          )
+        }
+
+        const relayFinal = (text) => {
+          relayFinalSeg += 1
+          const open    = clientRef.ws?.readyState === 1
+          const preview = typeof text === 'string' ? text.slice(0, 80) : ''
+          const sentOk  = Boolean(clientRef.ws && open)
+          console.log(
+            '[YoumiLive][srv] relay stream_final',
+            JSON.stringify({
+              wsSessionId,
+              liveProvider,
+              clientWsOpen: open,
+              sent: false,
+              segId: relayFinalSeg,
+              preview,
+              phase: 'pre',
+            }),
+          )
+          if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final', text })
+          console.log(
+            '[YoumiLive][srv] relay stream_final',
+            JSON.stringify({
+              wsSessionId,
+              liveProvider,
+              clientWsOpen: open,
+              sent: sentOk,
+              segId: relayFinalSeg,
+              preview,
+              phase: 'post',
+            }),
+          )
+        }
+
+        if (liveProvider === 'dashscope') {
+          const dsKey = process.env.DASHSCOPE_API_KEY?.trim()
+          if (!dsKey) {
+            safeSend(ws, { type: 'stream_error', message: 'DASHSCOPE_API_KEY_MISSING' })
+            return
+          }
+          console.log(
+            '[YoumiLive][srv] stream_start',
+            JSON.stringify({ wsSessionId, sampleRate, liveProvider: 'dashscope' }),
+          )
+          const inner = createDashscopeStreamingSession(dsKey, {
+            sampleRate,
+            onReady: () => {
+              console.log(
+                '[YoumiLive][srv] dashscope ready → stream_ready',
+                JSON.stringify({ wsSessionId }),
+              )
+              safeSend(clientRef.ws, { type: 'stream_ready' })
+            },
+            onInterim: relayInterim,
+            onFinal: relayFinal,
+            onError: (err) => {
+              const errMsg = err instanceof Error ? err.message : String(err)
+              console.log(
+                '[YoumiLive][srv] live ASR error',
+                JSON.stringify({ message: errMsg, wsSessionId, liveProvider }),
+              )
+              if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: errMsg })
+            },
+            onClose: (intentional) => {
+              console.log(
+                '[YoumiLive][srv] live ASR session closed',
+                JSON.stringify({ wsSessionId, intentional, liveProvider }),
+              )
+              streamingSession = null
+              clientRef.ws = null
+              if (!intentional) {
+                console.log(
+                  '[YoumiLive][srv] unexpected close — closing client WS',
+                  JSON.stringify({ wsSessionId }),
+                )
+                try { ws.close() } catch { /* ignore */ }
+              }
+            },
+          })
+          streamingSession = {
+            sendPcm: (b) => inner.sendPcm(b),
+            stop: () => inner.finish(),
+            destroy: () => inner.destroy(),
+          }
+          return
         }
 
         const authMode = normalizeVolcAuthMode(process.env.VOLCENGINE_AUTH_MODE)
@@ -151,12 +286,12 @@ export function attachLiveRealtimeWs(server) {
           volcCreds = { authMode, appKey, accessKey, resourceId, wsUrl }
         }
 
-        const sampleRate = typeof msg.sampleRate === 'number' ? msg.sampleRate : 48000
         console.log(
           '[YoumiLive][srv] stream_start — Volc auth experiment',
           JSON.stringify({
             wsSessionId,
             sampleRate,
+            liveProvider: 'volcengine',
             authMode,
             hasXApiAppKey: authMode !== AUTH_MODE_API_KEY && Boolean(volcCreds.appKey),
             hasXApiAccessKey: authMode !== AUTH_MODE_API_KEY && Boolean(volcCreds.accessKey),
@@ -166,88 +301,40 @@ export function attachLiveRealtimeWs(server) {
           }),
         )
 
-        const clientRef = { ws }
-        let relayInterimSeg = 0
-        let relayFinalSeg   = 0
         streamingSession = createVolcengineStreamingSession(
           volcCreds,
           {
             wsSessionId,
             sampleRate,
             onReady: () => {
-              console.log('[YoumiLive][srv] Volcengine ready → stream_ready', JSON.stringify({ wsSessionId }))
+              console.log(
+                '[YoumiLive][srv] volcengine ready → stream_ready',
+                JSON.stringify({ wsSessionId }),
+              )
               safeSend(clientRef.ws, { type: 'stream_ready' })
             },
-            onInterim: (text) => {
-              relayInterimSeg += 1
-              const open    = clientRef.ws?.readyState === 1
-              const preview = typeof text === 'string' ? text.slice(0, 80) : ''
-              const sentOk  = Boolean(clientRef.ws && open)
-              console.log(
-                '[YoumiLive][srv] relay stream_interim',
-                JSON.stringify({
-                  wsSessionId,
-                  clientWsOpen: open,
-                  sent: false,
-                  segId: relayInterimSeg,
-                  preview,
-                  phase: 'pre',
-                }),
-              )
-              if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text })
-              console.log(
-                '[YoumiLive][srv] relay stream_interim',
-                JSON.stringify({
-                  wsSessionId,
-                  clientWsOpen: open,
-                  sent: sentOk,
-                  segId: relayInterimSeg,
-                  preview,
-                  phase: 'post',
-                }),
-              )
-            },
-            onFinal: (text) => {
-              relayFinalSeg += 1
-              const open    = clientRef.ws?.readyState === 1
-              const preview = typeof text === 'string' ? text.slice(0, 80) : ''
-              const sentOk  = Boolean(clientRef.ws && open)
-              console.log(
-                '[YoumiLive][srv] relay stream_final',
-                JSON.stringify({
-                  wsSessionId,
-                  clientWsOpen: open,
-                  sent: false,
-                  segId: relayFinalSeg,
-                  preview,
-                  phase: 'pre',
-                }),
-              )
-              if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final', text })
-              console.log(
-                '[YoumiLive][srv] relay stream_final',
-                JSON.stringify({
-                  wsSessionId,
-                  clientWsOpen: open,
-                  sent: sentOk,
-                  segId: relayFinalSeg,
-                  preview,
-                  phase: 'post',
-                }),
-              )
-            },
+            onInterim: relayInterim,
+            onFinal: relayFinal,
             onError: (err) => {
               const errMsg = err instanceof Error ? err.message : String(err)
-              console.log('[YoumiLive][srv] Volcengine error', JSON.stringify({ message: errMsg, wsSessionId }))
+              console.log(
+                '[YoumiLive][srv] live ASR error',
+                JSON.stringify({ message: errMsg, wsSessionId, liveProvider }),
+              )
               if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: errMsg })
             },
             onClose: (intentional) => {
-              console.log('[YoumiLive][srv] Volcengine session closed', JSON.stringify({ wsSessionId, intentional }))
+              console.log(
+                '[YoumiLive][srv] live ASR session closed',
+                JSON.stringify({ wsSessionId, intentional, liveProvider }),
+              )
               streamingSession = null
               clientRef.ws = null
               if (!intentional) {
-                // Unexpected close — signal client to reconnect.
-                console.log('[YoumiLive][srv] unexpected close — closing client WS', JSON.stringify({ wsSessionId }))
+                console.log(
+                  '[YoumiLive][srv] unexpected close — closing client WS',
+                  JSON.stringify({ wsSessionId }),
+                )
                 try { ws.close() } catch { /* ignore */ }
               }
             },
