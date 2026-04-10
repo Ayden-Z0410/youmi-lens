@@ -138,6 +138,11 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
           // delays English output by ~500-1500ms while the model re-scores Chinese hypotheses.
           language_hints: ['en', 'zh'],
           disfluency_removal_enabled: false,
+          // Without this, DashScope often holds one mega-sentence for 30s+ with sentence_end=false,
+          // so the client never gets en_final commits and the transcript looks like "one line".
+          semantic_punctuation_enabled: true,
+          // VAD silence cap (ms) to end a sentence; doc range 200ù6000, default ~800.
+          max_sentence_silence: 700,
         },
         input: {},
       },
@@ -168,7 +173,8 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
 
     if (action === 'result-generated') {
       const sentence = msg?.payload?.output?.sentence
-      if (!sentence?.text) return
+      if (!sentence || sentence.heartbeat === true) return
+      if (!sentence.text) return
       const text = sentence.text.trim()
       if (!text) return
       // Log the raw sentence object once to confirm field names in Railway logs
@@ -176,8 +182,9 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
         L('sentence-diag (first result)', { keys: Object.keys(sentence), sentence_end: sentence.sentence_end, is_sentence_end: sentence.is_sentence_end })
         diagLogged = true
       }
-      // DashScope uses sentence_end (v2) or is_sentence_end (some variants)
-      const isFinal = sentence.sentence_end === true || sentence.is_sentence_end === true
+      // DashScope uses sentence_end (v2) or is_sentence_end; some payloads use string "true".
+      const endFlag = sentence.sentence_end ?? sentence.is_sentence_end
+      const isFinal = endFlag === true || endFlag === 'true'
       const now = Date.now()
       if (isFinal) {
         if (!T_first_final) {
