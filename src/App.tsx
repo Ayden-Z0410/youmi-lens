@@ -331,6 +331,36 @@ function v2SyncCommittedStringsFromChunks(
   zhFullRef.current = zhChunks.join(' ').trim()
 }
 
+/** Black-line display: hide last committed chunk when gray draft is the same utterance (revision / extension). */
+function v2CommittedForBlackDisplay(chunks: readonly string[], draft: string): string {
+  const d = draft.trim()
+  if (chunks.length === 0) return ''
+  const last = chunks[chunks.length - 1]!
+  if (d && v2IsSameSemanticChunk(last, d)) return chunks.slice(0, -1).join(' ').trim()
+  return chunks.join(' ').trim()
+}
+
+function v2WindowCaptionWords(full: string, maxWords = 150): string {
+  const t = full.trim()
+  if (!t) return ''
+  const words = t.split(/\s+/)
+  return words.length > maxWords ? words.slice(-maxWords).join(' ') : t
+}
+
+/** Full transcript for save: merge last chunk with draft when semantic duplicate (no "chunk + same chunk"). */
+function v2JoinForPersist(chunks: readonly string[], draft: string): string {
+  const ch = [...chunks]
+  const d = draft.trim()
+  if (ch.length === 0) return d
+  if (!d) return ch.join(' ').trim()
+  const last = ch[ch.length - 1]!
+  if (v2IsSameSemanticChunk(last, d)) {
+    ch[ch.length - 1] = v2PickRicherRevision(last, d)
+    return ch.join(' ').trim()
+  }
+  return `${ch.join(' ')} ${d}`.trim()
+}
+
 /** After this much quiet time, move the open utterance from draft → committed (black). */
 const V2_UTTERANCE_IDLE_FLUSH_MS = 1000
 
@@ -1721,29 +1751,26 @@ function RecordingWorkspace({
     }
 
     const syncPrimaryCaptionSaveRef = () => {
-      const c = v2CommittedEnRef.current.trim()
-      const u = v2CurrentEnUtteranceRef.current.trim()
-      primaryCaptionRef.current = c && u ? `${c} ${u}` : c || u
+      primaryCaptionRef.current = v2JoinForPersist(
+        v2CommittedEnChunksRef.current,
+        v2CurrentEnUtteranceRef.current,
+      )
     }
 
     const applyWindowedPrimaryCommitted = () => {
-      const cen = v2CommittedEnRef.current.trim()
-      if (!cen) {
-        setPrimaryCaption('')
-        return
-      }
-      const words = cen.split(/\s+/)
-      setPrimaryCaption(words.length > 150 ? words.slice(-150).join(' ') : cen)
+      const black = v2CommittedForBlackDisplay(
+        v2CommittedEnChunksRef.current,
+        v2CurrentEnUtteranceRef.current,
+      )
+      setPrimaryCaption(black ? v2WindowCaptionWords(black) : '')
     }
 
     const applyWindowedSecondaryCommitted = () => {
-      const czh = secondaryCaptionFullRef.current.trim()
-      if (!czh) {
-        setSecondaryCaption('')
-        return
-      }
-      const words = czh.split(/\s+/)
-      setSecondaryCaption(words.length > 150 ? words.slice(-150).join(' ') : czh)
+      const black = v2CommittedForBlackDisplay(
+        v2CommittedZhChunksRef.current,
+        v2CurrentZhUtteranceRef.current,
+      )
+      setSecondaryCaption(black ? v2WindowCaptionWords(black) : '')
     }
 
     const flushV2OpenUtterance = () => {
@@ -1753,6 +1780,8 @@ function RecordingWorkspace({
       if (!en && !zh) {
         v2OpenUtteranceSeqRef.current = -1
         syncPrimaryCaptionSaveRef()
+        applyWindowedPrimaryCommitted()
+        applyWindowedSecondaryCommitted()
         return
       }
       if (en) {
@@ -1834,10 +1863,12 @@ function RecordingWorkspace({
         const t = ev.text.trim()
         v2CurrentEnUtteranceRef.current = t
         v2EnDraftTextRef.current = ev.text
+        applyWindowedPrimaryCommitted()
         if (v2EnDraftRafRef.current == null) {
           v2EnDraftRafRef.current = requestAnimationFrame(() => {
             v2EnDraftRafRef.current = null
             setPrimaryCaptionDraft(v2EnDraftTextRef.current)
+            applyWindowedPrimaryCommitted()
           })
         }
         syncPrimaryCaptionSaveRef()
@@ -1860,6 +1891,7 @@ function RecordingWorkspace({
         v2CurrentEnUtteranceRef.current = text
         v2EnDraftTextRef.current = ev.text
         setPrimaryCaptionDraft(ev.text)
+        applyWindowedPrimaryCommitted()
         syncPrimaryCaptionSaveRef()
         scheduleV2UtteranceIdleFlush()
         return
@@ -1874,10 +1906,12 @@ function RecordingWorkspace({
         liveRouteDiagLog('[LiveEngine][App] zh_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
         v2CurrentZhUtteranceRef.current = ev.text.trim()
         v2ZhDraftTextRef.current = ev.text
+        applyWindowedSecondaryCommitted()
         if (v2ZhDraftRafRef.current == null) {
           v2ZhDraftRafRef.current = requestAnimationFrame(() => {
             v2ZhDraftRafRef.current = null
             setSecondaryCaptionDraft(v2ZhDraftTextRef.current)
+            applyWindowedSecondaryCommitted()
           })
         }
         scheduleV2UtteranceIdleFlush()
@@ -1896,6 +1930,7 @@ function RecordingWorkspace({
         if (open !== -1 && seq === open) {
           v2CurrentZhUtteranceRef.current = text
           setSecondaryCaptionDraft(ev.text)
+          applyWindowedSecondaryCommitted()
           scheduleV2UtteranceIdleFlush()
         } else if (text) {
           v2MergeChunkIntoHistory(v2CommittedZhChunksRef.current, text)
@@ -2435,12 +2470,13 @@ function RecordingWorkspace({
       ) {
         await new Promise((r) => window.setTimeout(r, 90))
       }
-      const primary = primaryCaptionRef.current.trim()
+      const primary = (
+        useLiveEngineV2
+          ? v2JoinForPersist(v2CommittedEnChunksRef.current, v2CurrentEnUtteranceRef.current)
+          : primaryCaptionRef.current
+      ).trim()
       const secondary = useLiveEngineV2
-        ? [secondaryCaptionFullRef.current.trim(), v2CurrentZhUtteranceRef.current.trim()]
-            .filter(Boolean)
-            .join(' ')
-            .trim()
+        ? v2JoinForPersist(v2CommittedZhChunksRef.current, v2CurrentZhUtteranceRef.current)
         : secondaryCaption.trim()
       const liveText =
         translateTarget === 'off'
