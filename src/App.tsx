@@ -1888,11 +1888,23 @@ function RecordingWorkspace({
         if (open !== -1 && seq < open) return
         if (open !== -1 && seq > open) flushV2OpenUtterance()
         v2OpenUtteranceSeqRef.current = seq
-        v2CurrentEnUtteranceRef.current = text
-        v2EnDraftTextRef.current = ev.text
-        setPrimaryCaptionDraft(ev.text)
+        // Commit EN final into black-line history immediately. Gray stays for true interims only;
+        // avoids long "final stuck in draft" and reduces reliance on v2CommittedForBlackDisplay heuristics.
+        if (text) {
+          v2MergeChunkIntoHistory(v2CommittedEnChunksRef.current, text)
+          v2SyncCommittedStringsFromChunks(
+            v2CommittedEnChunksRef.current,
+            v2CommittedZhChunksRef.current,
+            v2CommittedEnRef,
+            secondaryCaptionFullRef,
+          )
+        }
+        v2CurrentEnUtteranceRef.current = ''
+        v2EnDraftTextRef.current = ''
+        setPrimaryCaptionDraft('')
         applyWindowedPrimaryCommitted()
         syncPrimaryCaptionSaveRef()
+        // Idle flush still drains ZH draft → committed when translation settles (EN slot already empty).
         scheduleV2UtteranceIdleFlush()
         return
       }
