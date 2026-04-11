@@ -227,6 +227,110 @@ function segmentSeq(segmentId: string): number {
   return Number(m[1])
 }
 
+/** Tokens for overlap: Latin words + short CJK runs (no pure startsWith-only). */
+function v2RoughTokens(s: string): string[] {
+  const t = s.toLowerCase().trim()
+  const out: string[] = []
+  for (const w of t.split(/[^a-z0-9]+/)) {
+    if (w.length > 1) out.push(w)
+  }
+  for (const m of t.match(/[\u4e00-\u9fff]{1,14}/g) || []) {
+    out.push(m)
+  }
+  return out
+}
+
+function v2LexicalOverlapRatio(a: string, b: string): number {
+  const ta = v2RoughTokens(a)
+  const tb = v2RoughTokens(b)
+  if (ta.length === 0 || tb.length === 0) return 0
+  const sa = new Set(ta)
+  const sb = new Set(tb)
+  let inter = 0
+  for (const x of sb) {
+    if (sa.has(x)) inter += 1
+  }
+  return inter / Math.min(sa.size, sb.size)
+}
+
+function v2LcpRatio(a: string, b: string): number {
+  const p = a.trim().toLowerCase().replace(/\s+/g, ' ')
+  const n = b.trim().toLowerCase().replace(/\s+/g, ' ')
+  const max = Math.min(p.length, n.length)
+  if (max === 0) return 0
+  let i = 0
+  while (i < max && p[i] === n[i]) i += 1
+  return i / max
+}
+
+/**
+ * True if `next` is a revision / paraphrase of `prev` (same semantic chunk), not a new sentence.
+ * Used to avoid polluting committed history with many near-duplicates when ASR/VAD flushes often.
+ */
+function v2IsSameSemanticChunk(prev: string, next: string): boolean {
+  const p = prev.trim()
+  const n = next.trim()
+  if (!p || !n) return false
+  if (p === n) return true
+  const pl = p.toLowerCase()
+  const nl = n.toLowerCase()
+  if (pl === nl) return true
+  if (nl.startsWith(pl) || pl.startsWith(nl)) return true
+  const compactP = pl.replace(/\s+/g, '')
+  const compactN = nl.replace(/\s+/g, '')
+  const minCompact = Math.min(compactP.length, compactN.length)
+  if (minCompact < 8) {
+    return compactN.startsWith(compactP) || compactP.startsWith(compactN)
+  }
+  const ov = v2LexicalOverlapRatio(p, n)
+  if (ov >= 0.5) {
+    const maxL = Math.max(p.length, n.length)
+    const minL = Math.min(p.length, n.length)
+    // Avoid merging a short name/phrase into a much longer unrelated sentence that merely repeats an entity.
+    if (maxL > 55 && minL > 0 && maxL / minL > 3.2 && !nl.startsWith(pl) && !pl.startsWith(nl)) {
+      return false
+    }
+    return true
+  }
+  if (minCompact >= 14 && v2LcpRatio(pl, nl) >= 0.55) return true
+  return false
+}
+
+function v2PickRicherRevision(prev: string, next: string): string {
+  const p = prev.trim()
+  const n = next.trim()
+  if (!p) return n
+  if (!n) return p
+  if (n.startsWith(p) || p.startsWith(n)) return n.length >= p.length ? n : p
+  return n.length >= p.length ? n : p
+}
+
+/** Append to committed chunk list, or replace last chunk when semantically the same utterance. */
+function v2MergeChunkIntoHistory(chunks: string[], incoming: string) {
+  const t = incoming.trim()
+  if (!t) return
+  if (chunks.length === 0) {
+    chunks.push(t)
+    return
+  }
+  const last = chunks[chunks.length - 1]!
+  if (v2IsSameSemanticChunk(last, t)) {
+    chunks[chunks.length - 1] = v2PickRicherRevision(last, t)
+    return
+  }
+  chunks.push(t)
+}
+
+function v2SyncCommittedStringsFromChunks(
+  enChunks: string[],
+  zhChunks: string[],
+  committedEnRef: { current: string },
+  zhFullRef: { current: string },
+) {
+  committedEnRef.current = enChunks.join(' ').trim()
+  zhFullRef.current = zhChunks.join(' ').trim()
+}
+
 /** After this much quiet time, move the open utterance from draft → committed (black). */
 const V2_UTTERANCE_IDLE_FLUSH_MS = 1000
 
@@ -959,6 +1063,10 @@ function RecordingWorkspace({
   const liveEngineRef = useRef<LiveEngine | null>(null)
   /** Committed English (black / history only) — never mutated by interim refinements. */
   const v2CommittedEnRef = useRef('')
+  /** Chunk list backing `v2CommittedEnRef` — merged for semantic de-duplication on flush. */
+  const v2CommittedEnChunksRef = useRef<string[]>([])
+  /** Chunk list backing `secondaryCaptionFullRef` for zh committed history. */
+  const v2CommittedZhChunksRef = useRef<string[]>([])
   /** Single open English utterance (gray) — replaced by interims/finals until flush. */
   const v2CurrentEnUtteranceRef = useRef('')
   /** Single open Chinese utterance (gray), aligned to the same logical utterance as EN. */
@@ -1049,6 +1157,7 @@ function RecordingWorkspace({
     setSecondaryCaption('')
     setSecondaryCaptionDraft('')
     secondaryCaptionFullRef.current = ''
+    v2CommittedZhChunksRef.current = []
     v2CurrentZhUtteranceRef.current = ''
   }, [translateTarget])
 
@@ -1646,15 +1755,17 @@ function RecordingWorkspace({
         return
       }
       if (en) {
-        v2CommittedEnRef.current = v2CommittedEnRef.current
-          ? `${v2CommittedEnRef.current} ${en}`
-          : en
+        v2MergeChunkIntoHistory(v2CommittedEnChunksRef.current, en)
       }
       if (zh) {
-        secondaryCaptionFullRef.current = secondaryCaptionFullRef.current
-          ? `${secondaryCaptionFullRef.current} ${zh}`
-          : zh
+        v2MergeChunkIntoHistory(v2CommittedZhChunksRef.current, zh)
       }
+      v2SyncCommittedStringsFromChunks(
+        v2CommittedEnChunksRef.current,
+        v2CommittedZhChunksRef.current,
+        v2CommittedEnRef,
+        secondaryCaptionFullRef,
+      )
       v2CurrentEnUtteranceRef.current = ''
       v2CurrentZhUtteranceRef.current = ''
       v2OpenUtteranceSeqRef.current = -1
@@ -1778,9 +1889,13 @@ function RecordingWorkspace({
           setSecondaryCaptionDraft(ev.text)
           scheduleV2UtteranceIdleFlush()
         } else if (text) {
-          secondaryCaptionFullRef.current = secondaryCaptionFullRef.current
-            ? `${secondaryCaptionFullRef.current} ${text}`
-            : text
+          v2MergeChunkIntoHistory(v2CommittedZhChunksRef.current, text)
+          v2SyncCommittedStringsFromChunks(
+            v2CommittedEnChunksRef.current,
+            v2CommittedZhChunksRef.current,
+            v2CommittedEnRef,
+            secondaryCaptionFullRef,
+          )
           applyWindowedSecondaryCommitted()
         }
         if (v2FinalizedZhSegIds.current.size > 80) {
@@ -1880,6 +1995,8 @@ function RecordingWorkspace({
       setSecondaryCaptionDraft('')
       secondaryCaptionFullRef.current = ''
       v2CommittedEnRef.current = ''
+      v2CommittedEnChunksRef.current = []
+      v2CommittedZhChunksRef.current = []
       v2CurrentEnUtteranceRef.current = ''
       v2CurrentZhUtteranceRef.current = ''
       v2OpenUtteranceSeqRef.current = -1
@@ -2194,6 +2311,8 @@ function RecordingWorkspace({
     setSecondaryCaptionDraft('')
     secondaryCaptionFullRef.current = ''
     v2CommittedEnRef.current = ''
+    v2CommittedEnChunksRef.current = []
+    v2CommittedZhChunksRef.current = []
     v2CurrentEnUtteranceRef.current = ''
     v2CurrentZhUtteranceRef.current = ''
     v2OpenUtteranceSeqRef.current = -1
@@ -2231,6 +2350,8 @@ function RecordingWorkspace({
     setSecondaryCaptionDraft('')
     secondaryCaptionFullRef.current = ''
     v2CommittedEnRef.current = ''
+    v2CommittedEnChunksRef.current = []
+    v2CommittedZhChunksRef.current = []
     v2CurrentEnUtteranceRef.current = ''
     v2CurrentZhUtteranceRef.current = ''
     v2OpenUtteranceSeqRef.current = -1
@@ -2525,6 +2646,8 @@ function RecordingWorkspace({
       setSecondaryCaptionDraft('')
       secondaryCaptionFullRef.current = ''
       v2CommittedEnRef.current = ''
+      v2CommittedEnChunksRef.current = []
+      v2CommittedZhChunksRef.current = []
       v2CurrentEnUtteranceRef.current = ''
       v2CurrentZhUtteranceRef.current = ''
       v2OpenUtteranceSeqRef.current = -1
