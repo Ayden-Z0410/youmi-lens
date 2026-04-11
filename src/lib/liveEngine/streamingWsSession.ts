@@ -106,15 +106,19 @@ export class StreamingWsSession {
         const now = Date.now()
         if (!this.T_first_final) {
           this.T_first_final = now
-          console.info('[StreamingWs] TIMING first-final', {
-            connectToFinalMs: now - this.T_connect,
-            interimToFinalMs: this.T_first_interim ? now - this.T_first_interim : -1,
+          if (import.meta.env.DEV) {
+            console.info('[StreamingWs] TIMING first-final', {
+              connectToFinalMs: now - this.T_connect,
+              interimToFinalMs: this.T_first_interim ? now - this.T_first_interim : -1,
+            })
+          }
+        }
+        if (import.meta.env.DEV) {
+          console.info('[StreamingWs] final', {
+            len: (msg.text as string).length,
+            sinceConnectMs: now - this.T_connect,
           })
         }
-        console.info('[StreamingWs] final', {
-          len: (msg.text as string).length,
-          sinceConnectMs: now - this.T_connect,
-        })
         this.events.onFinal?.(msg.text as string)
       } else if (msg.type === 'stream_error') {
         const reason = typeof msg.message === 'string' ? msg.message : 'stream_error'

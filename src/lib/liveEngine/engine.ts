@@ -40,7 +40,8 @@ export class LiveEngine {
 
   // Debounce interim translation: latest interim only, keep secondary line snappy without spamming API.
   private interimTranslateTimer: ReturnType<typeof setTimeout> | null = null
-  private static readonly INTERIM_TRANSLATE_DEBOUNCE_MS = 280
+  /** Debounced so zh_interim does not compete with EN path; EN emits before this timer is set. */
+  private static readonly INTERIM_TRANSLATE_DEBOUNCE_MS = 200
 
   // Translation queue state
   private translationQueue: Array<{ segmentId: string; text: string; enqueuedAt: number; rev: number }> =

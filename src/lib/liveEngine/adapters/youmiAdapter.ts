@@ -223,12 +223,14 @@ export class YoumiLiveAdapter {
           this.currentSegId ||
           this.lastInterimSegmentId ||
           `stream-${this.segCounter++}`
-        log('B-metric: last-interim → final', {
-          lastInterimToFinalMs: this.lastInterimMs ? now - this.lastInterimMs : -1,
-          gapSinceLastFinalMs:  this.lastFinalMs   ? now - this.lastFinalMs   : -1,
-          segId,
-        })
-        log('en_final', { segId, len: trimmed.length, preview: trimmed.slice(0, 80) })
+        if (import.meta.env.DEV) {
+          log('B-metric: last-interim → final', {
+            lastInterimToFinalMs: this.lastInterimMs ? now - this.lastInterimMs : -1,
+            gapSinceLastFinalMs: this.lastFinalMs ? now - this.lastFinalMs : -1,
+            segId,
+          })
+          log('en_final', { segId, len: trimmed.length, preview: trimmed.slice(0, 80) })
+        }
 
         this.currentSegId  = ''
         this.interimRev    = 0
@@ -239,7 +241,9 @@ export class YoumiLiveAdapter {
 
         this.listener?.({ type: 'connected' })
         this.listener?.({ type: 'en_final', segmentId: segId, text: trimmed })
-        log('segment closed — waiting for next speech', { nextSeg: `stream-${this.segCounter}` })
+        if (import.meta.env.DEV) {
+          log('segment closed — waiting for next speech', { nextSeg: `stream-${this.segCounter}` })
+        }
       },
 
       onError: (reason) => {

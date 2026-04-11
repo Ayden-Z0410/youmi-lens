@@ -1074,7 +1074,8 @@ function RecordingWorkspace({
   /** `segmentSeq(segmentId)` for the utterance currently in the draft slots; -1 = none. */
   const v2OpenUtteranceSeqRef = useRef(-1)
   const v2UtteranceIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const v2LatestInterimEnSeqRef = useRef(-1)
+  /** Per segmentId: last applied en_interim rev (drops duplicate/out-of-order within segment only). */
+  const v2LastEnInterimRevBySegRef = useRef(new Map<string, number>())
   /** Latest English draft + rAF id — coalesce many interims/sec to one React commit per frame. */
   const v2EnDraftTextRef = useRef('')
   const v2EnDraftRafRef = useRef<number | null>(null)
@@ -1708,7 +1709,7 @@ function RecordingWorkspace({
       clearTimeout(v2UtteranceIdleTimerRef.current)
       v2UtteranceIdleTimerRef.current = null
     }
-    v2LatestInterimEnSeqRef.current = -1
+    v2LastEnInterimRevBySegRef.current.clear()
     v2FinalizedZhSegIds.current.clear()
     lastFinalTimestampRef.current = 0
 
@@ -1817,9 +1818,17 @@ function RecordingWorkspace({
       if (ev.type === 'en_interim') {
         liveRouteDiagLog('[LiveEngine][App] en_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
         const seq = segmentSeq(ev.segmentId)
-        if (seq < v2LatestInterimEnSeqRef.current) return
-        v2LatestInterimEnSeqRef.current = seq
         const open = v2OpenUtteranceSeqRef.current
+        // Drop only *late* packets from an older stream-N than the utterance slot (not global max N —
+        // that discarded valid interims after any out-of-order higher segment and caused gray to lag speech).
+        if (open >= 0 && seq < open) return
+        const prevRev = v2LastEnInterimRevBySegRef.current.get(ev.segmentId) ?? 0
+        if (ev.rev <= prevRev) return
+        v2LastEnInterimRevBySegRef.current.set(ev.segmentId, ev.rev)
+        if (v2LastEnInterimRevBySegRef.current.size > 48) {
+          const first = v2LastEnInterimRevBySegRef.current.keys().next().value
+          if (first !== undefined) v2LastEnInterimRevBySegRef.current.delete(first)
+        }
         if (open >= 0 && seq !== open) flushV2OpenUtterance()
         v2OpenUtteranceSeqRef.current = seq
         const t = ev.text.trim()
@@ -2004,7 +2013,7 @@ function RecordingWorkspace({
         clearTimeout(v2UtteranceIdleTimerRef.current)
         v2UtteranceIdleTimerRef.current = null
       }
-      v2LatestInterimEnSeqRef.current = -1
+      v2LastEnInterimRevBySegRef.current.clear()
       liveCaptionSessionIdRef.current = null
       youmiLiveBatchPartsRef.current = []
       youmiLiveBatchBytesRef.current = 0
@@ -2320,7 +2329,7 @@ function RecordingWorkspace({
       clearTimeout(v2UtteranceIdleTimerRef.current)
       v2UtteranceIdleTimerRef.current = null
     }
-    v2LatestInterimEnSeqRef.current = -1
+    v2LastEnInterimRevBySegRef.current.clear()
     if (typeof document !== 'undefined') {
       document.documentElement.lang = liveLang
     }
@@ -2359,7 +2368,7 @@ function RecordingWorkspace({
       clearTimeout(v2UtteranceIdleTimerRef.current)
       v2UtteranceIdleTimerRef.current = null
     }
-    v2LatestInterimEnSeqRef.current = -1
+    v2LastEnInterimRevBySegRef.current.clear()
   }
 
   const pauseRecording = () => {
@@ -2655,7 +2664,7 @@ function RecordingWorkspace({
         clearTimeout(v2UtteranceIdleTimerRef.current)
         v2UtteranceIdleTimerRef.current = null
       }
-      v2LatestInterimEnSeqRef.current = -1
+      v2LastEnInterimRevBySegRef.current.clear()
       setSelectedId(recordingId)
       setTitle('')
     } catch (e) {
