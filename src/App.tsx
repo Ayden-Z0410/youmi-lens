@@ -366,11 +366,12 @@ function v2JoinForPersist(chunks: readonly string[], draft: string): string {
 const V2_UTTERANCE_IDLE_FLUSH_MS = 1000
 
 /** English gray line: phrase-level display (avoid token-by-token React updates). */
-const V2_EN_PHRASE_MIN_CHARS = 12
-const V2_EN_PHRASE_MAX_WAIT_MS = 220
-const V2_EN_PHRASE_FIRST_MIN_CHARS = 6
-const V2_EN_PHRASE_FIRST_WAIT_MS = 120
-const V2_EN_PHRASE_TICK_MS = 80
+const V2_EN_PHRASE_MIN_CHARS = 7
+const V2_EN_PHRASE_MAX_WAIT_MS = 140
+const V2_EN_PHRASE_STALE_MIN_DELTA = 2
+const V2_EN_PHRASE_FIRST_MIN_CHARS = 4
+const V2_EN_PHRASE_FIRST_WAIT_MS = 70
+const V2_EN_PHRASE_TICK_MS = 50
 
 function v2EnEndsPhraseBoundary(s: string): boolean {
   const t = s.trimEnd()
@@ -1802,7 +1803,7 @@ function RecordingWorkspace({
           setPrimaryCaptionDraft(full)
           v2EnPhraseDisplayedLenRef.current = full.length
           v2EnPhraseLastFlushAtRef.current = now
-        } else if (timeSince >= V2_EN_PHRASE_FIRST_WAIT_MS && full.trim().length >= 3) {
+        } else if (timeSince >= V2_EN_PHRASE_FIRST_WAIT_MS && full.trim().length >= 2) {
           setPrimaryCaptionDraft(full)
           v2EnPhraseDisplayedLenRef.current = full.length
           v2EnPhraseLastFlushAtRef.current = now
@@ -1826,7 +1827,7 @@ function RecordingWorkspace({
         return
       }
 
-      if (timeSince >= V2_EN_PHRASE_MAX_WAIT_MS && delta >= 3) {
+      if (timeSince >= V2_EN_PHRASE_MAX_WAIT_MS && delta >= V2_EN_PHRASE_STALE_MIN_DELTA) {
         setPrimaryCaptionDraft(full)
         v2EnPhraseDisplayedLenRef.current = full.length
         v2EnPhraseLastFlushAtRef.current = now
