@@ -42,11 +42,16 @@ export class LiveEngine {
    * (same segment, older EN draft) never emit zh_interim after the segment has finalized.
    */
   private zhInterimGenBySeg = new Map<string, number>()
+  /** Latest EN interim text per segment (timer reads this, not a stale closure). */
+  private latestEnInterimBySeg = new Map<string, string>()
+  /** Last EN source we actually translated for zh_interim (phrase-aligned; avoids micro-retranslate). */
+  private lastZhInterimChunkEnBySeg = new Map<string, string>()
+  private lastZhInterimChunkAtMsBySeg = new Map<string, number>()
 
   // Debounce interim translation: latest interim only, keep secondary line snappy without spamming API.
   private interimTranslateTimer: ReturnType<typeof setTimeout> | null = null
-  /** Debounced so zh_interim does not compete with EN path; EN emits before this timer is set. */
-  private static readonly INTERIM_TRANSLATE_DEBOUNCE_MS = 200
+  /** Debounced so zh_interim tracks phrase-level EN, not every ASR partial. */
+  private static readonly INTERIM_TRANSLATE_DEBOUNCE_MS = 300
 
   // Translation queue state
   private translationQueue: Array<{ segmentId: string; text: string; enqueuedAt: number; rev: number }> =
@@ -71,6 +76,9 @@ export class LiveEngine {
     this.zhRevBySeg.clear()
     this.translateRevBySeg.clear()
     this.zhInterimGenBySeg.clear()
+    this.latestEnInterimBySeg.clear()
+    this.lastZhInterimChunkEnBySeg.clear()
+    this.lastZhInterimChunkAtMsBySeg.clear()
     this.translationQueue = []
     this.activeTranslations = 0
     this.sessionStartMs = Date.now()
@@ -104,17 +112,18 @@ export class LiveEngine {
         // Do not emit status:'streaming' on every interim — it triggered App setState each time and
         // queued behind hundreds of draft updates (first word fast, then UI fell behind speech).
         this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: ev.text })
+        this.latestEnInterimBySeg.set(ev.segmentId, ev.text)
         // Cancel any pending interim debounce — prevents stale zh_interim after zh_final
         if (this.interimTranslateTimer) {
           clearTimeout(this.interimTranslateTimer)
           this.interimTranslateTimer = null
         }
         const capturedId = ev.segmentId
-        const capturedText = ev.text
         const gen = this.zhInterimGenBySeg.get(capturedId) ?? 0
         this.interimTranslateTimer = setTimeout(() => {
           this.interimTranslateTimer = null
-          void this.translateInterim(capturedId, capturedText, gen)
+          const latest = this.latestEnInterimBySeg.get(capturedId) ?? ''
+          void this.translateInterim(capturedId, latest, gen)
         }, LiveEngine.INTERIM_TRANSLATE_DEBOUNCE_MS)
         return
       }
@@ -126,6 +135,8 @@ export class LiveEngine {
         }
         const sid = ev.segmentId
         this.zhInterimGenBySeg.set(sid, (this.zhInterimGenBySeg.get(sid) ?? 0) + 1)
+        this.lastZhInterimChunkEnBySeg.delete(sid)
+        this.lastZhInterimChunkAtMsBySeg.delete(sid)
         log('en_final', {
           segmentId: ev.segmentId,
           len: ev.text.length,
@@ -218,18 +229,38 @@ export class LiveEngine {
     }
   }
 
+  /** Only translate when EN moved enough for a phrase chunk (aligned with App phrase display). */
+  private shouldEmitZhInterimForChunk(segmentId: string, en: string): boolean {
+    const last = this.lastZhInterimChunkEnBySeg.get(segmentId) ?? ''
+    if (en === last) return false
+    const trim = en.trimEnd()
+    const endsClause = /[.!?,;:\u2026]\s*$/.test(trim)
+    if (endsClause) return true
+    if (last.length === 0) {
+      return en.trim().length >= 6 || endsClause
+    }
+    if (en.length - last.length >= 14) return true
+    const now = Date.now()
+    const prevAt = this.lastZhInterimChunkAtMsBySeg.get(segmentId) ?? 0
+    if (now - prevAt >= 520 && en.length > last.length + 4) return true
+    return false
+  }
+
   private async translateInterim(segmentId: string, text: string, expectedGen: number) {
     if (this.translateTarget === 'off') return
     let t = text.trim()
     if (!t) return
     if (this.translateTarget === 'zh') t = sanitizeEnglishForZhTranslate(t)
     if (!t) return
+    if (!this.shouldEmitZhInterimForChunk(segmentId, t)) return
     try {
       const zh = (await translateLiveCaption(t, { target: this.translateTarget })).trim()
       if (!zh || !this.running) return
       if ((this.zhInterimGenBySeg.get(segmentId) ?? 0) !== expectedGen) return
       const rev = (this.zhRevBySeg.get(segmentId) ?? 0) + 1
       this.zhRevBySeg.set(segmentId, rev)
+      this.lastZhInterimChunkEnBySeg.set(segmentId, t)
+      this.lastZhInterimChunkAtMsBySeg.set(segmentId, Date.now())
       log('zh_interim', { segmentId, rev, len: zh.length })
       this.emit({ type: 'zh_interim', segmentId, rev, text: zh })
     } catch (e) {

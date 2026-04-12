@@ -365,6 +365,18 @@ function v2JoinForPersist(chunks: readonly string[], draft: string): string {
 /** After this much quiet time, move the open utterance from draft → committed (black). */
 const V2_UTTERANCE_IDLE_FLUSH_MS = 1000
 
+/** English gray line: phrase-level display (avoid token-by-token React updates). */
+const V2_EN_PHRASE_MIN_CHARS = 12
+const V2_EN_PHRASE_MAX_WAIT_MS = 220
+const V2_EN_PHRASE_FIRST_MIN_CHARS = 6
+const V2_EN_PHRASE_FIRST_WAIT_MS = 120
+const V2_EN_PHRASE_TICK_MS = 80
+
+function v2EnEndsPhraseBoundary(s: string): boolean {
+  const t = s.trimEnd()
+  return /[.!?,;:\u2026]\s*$/.test(t)
+}
+
 type LibraryDropId = string | 'unfiled'
 
 function toDragTranslate(transform: { x: number; y: number } | null | undefined): string | undefined {
@@ -1117,6 +1129,12 @@ function RecordingWorkspace({
   // Tracks segments whose zh_final has already committed. Used to discard in-flight
   // stale zh_interim translations that resolve after zh_final for the same segment.
   const v2FinalizedZhSegIds = useRef(new Set<string>())
+  /** Gray EN phrase display: last segmentId we applied phrase state for. */
+  const v2EnPhraseLastSegmentIdRef = useRef('')
+  /** Length of `v2EnDraftTextRef` last pushed to `primaryCaptionDraft`. */
+  const v2EnPhraseDisplayedLenRef = useRef(0)
+  const v2EnPhraseLastFlushAtRef = useRef(0)
+  const v2EnPhraseTickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Retained for future use (paragraph block separation, currently disabled).
   const lastFinalTimestampRef = useRef(0)
@@ -1746,6 +1764,85 @@ function RecordingWorkspace({
     v2LastZhInterimRevBySegRef.current.clear()
     v2FinalizedZhSegIds.current.clear()
     lastFinalTimestampRef.current = 0
+    v2EnPhraseLastSegmentIdRef.current = ''
+    v2EnPhraseDisplayedLenRef.current = 0
+    v2EnPhraseLastFlushAtRef.current = Date.now()
+
+    const clearEnPhraseTick = () => {
+      if (v2EnPhraseTickTimerRef.current != null) {
+        clearTimeout(v2EnPhraseTickTimerRef.current)
+        v2EnPhraseTickTimerRef.current = null
+      }
+    }
+
+    const tryFlushEnPhraseDisplay = (force: boolean) => {
+      const full = v2EnDraftTextRef.current
+      const now = Date.now()
+      const shownLen = v2EnPhraseDisplayedLenRef.current
+      const lastAt = v2EnPhraseLastFlushAtRef.current
+
+      if (force) {
+        setPrimaryCaptionDraft(full)
+        v2EnPhraseDisplayedLenRef.current = full.length
+        v2EnPhraseLastFlushAtRef.current = now
+        return
+      }
+
+      if (!full.trim()) return
+
+      const delta = full.length - shownLen
+      const timeSince = now - lastAt
+
+      if (shownLen === 0) {
+        if (v2EnEndsPhraseBoundary(full)) {
+          setPrimaryCaptionDraft(full)
+          v2EnPhraseDisplayedLenRef.current = full.length
+          v2EnPhraseLastFlushAtRef.current = now
+        } else if (full.trim().length >= V2_EN_PHRASE_FIRST_MIN_CHARS) {
+          setPrimaryCaptionDraft(full)
+          v2EnPhraseDisplayedLenRef.current = full.length
+          v2EnPhraseLastFlushAtRef.current = now
+        } else if (timeSince >= V2_EN_PHRASE_FIRST_WAIT_MS && full.trim().length >= 3) {
+          setPrimaryCaptionDraft(full)
+          v2EnPhraseDisplayedLenRef.current = full.length
+          v2EnPhraseLastFlushAtRef.current = now
+        }
+        return
+      }
+
+      if (delta <= 0) return
+
+      if (v2EnEndsPhraseBoundary(full)) {
+        setPrimaryCaptionDraft(full)
+        v2EnPhraseDisplayedLenRef.current = full.length
+        v2EnPhraseLastFlushAtRef.current = now
+        return
+      }
+
+      if (delta >= V2_EN_PHRASE_MIN_CHARS) {
+        setPrimaryCaptionDraft(full)
+        v2EnPhraseDisplayedLenRef.current = full.length
+        v2EnPhraseLastFlushAtRef.current = now
+        return
+      }
+
+      if (timeSince >= V2_EN_PHRASE_MAX_WAIT_MS && delta >= 3) {
+        setPrimaryCaptionDraft(full)
+        v2EnPhraseDisplayedLenRef.current = full.length
+        v2EnPhraseLastFlushAtRef.current = now
+      }
+    }
+
+    const scheduleEnPhraseTick = () => {
+      clearEnPhraseTick()
+      v2EnPhraseTickTimerRef.current = window.setTimeout(() => {
+        v2EnPhraseTickTimerRef.current = null
+        tryFlushEnPhraseDisplay(false)
+        if (v2EnDraftTextRef.current.length > v2EnPhraseDisplayedLenRef.current) {
+          scheduleEnPhraseTick()
+        }
+      }, V2_EN_PHRASE_TICK_MS)
+    }
 
     const clearV2IdleTimer = () => {
       if (v2UtteranceIdleTimerRef.current != null) {
@@ -1779,6 +1876,7 @@ function RecordingWorkspace({
 
     const flushV2OpenUtterance = () => {
       clearV2IdleTimer()
+      clearEnPhraseTick()
       const en = v2CurrentEnUtteranceRef.current.trim()
       const zh = v2CurrentZhUtteranceRef.current.trim()
       if (!en && !zh) {
@@ -1805,6 +1903,8 @@ function RecordingWorkspace({
       v2OpenUtteranceSeqRef.current = -1
       setPrimaryCaptionDraft('')
       setSecondaryCaptionDraft('')
+      v2EnPhraseLastSegmentIdRef.current = ''
+      v2EnPhraseDisplayedLenRef.current = 0
       applyWindowedPrimaryCommitted()
       applyWindowedSecondaryCommitted()
       syncPrimaryCaptionSaveRef()
@@ -1867,14 +1967,20 @@ function RecordingWorkspace({
         const t = ev.text.trim()
         v2CurrentEnUtteranceRef.current = t
         v2EnDraftTextRef.current = ev.text
+        if (v2EnPhraseLastSegmentIdRef.current !== ev.segmentId) {
+          v2EnPhraseLastSegmentIdRef.current = ev.segmentId
+          v2EnPhraseDisplayedLenRef.current = 0
+          v2EnPhraseLastFlushAtRef.current = Date.now()
+        }
         applyWindowedPrimaryCommitted()
-        // Immediate draft commit: rAF coalescing made gray EN feel one frame behind dense interims.
-        setPrimaryCaptionDraft(ev.text)
+        tryFlushEnPhraseDisplay(false)
+        scheduleEnPhraseTick()
         syncPrimaryCaptionSaveRef()
         scheduleV2UtteranceIdleFlush()
         return
       }
       if (ev.type === 'en_final') {
+        clearEnPhraseTick()
         if (v2EnDraftRafRef.current != null) {
           cancelAnimationFrame(v2EnDraftRafRef.current)
           v2EnDraftRafRef.current = null
@@ -1900,6 +2006,8 @@ function RecordingWorkspace({
         }
         v2CurrentEnUtteranceRef.current = ''
         v2EnDraftTextRef.current = ''
+        v2EnPhraseLastSegmentIdRef.current = ''
+        v2EnPhraseDisplayedLenRef.current = 0
         setPrimaryCaptionDraft('')
         applyWindowedPrimaryCommitted()
         syncPrimaryCaptionSaveRef()
@@ -1993,6 +2101,10 @@ function RecordingWorkspace({
       if (v2UtteranceIdleTimerRef.current != null) {
         clearTimeout(v2UtteranceIdleTimerRef.current)
         v2UtteranceIdleTimerRef.current = null
+      }
+      if (v2EnPhraseTickTimerRef.current != null) {
+        clearTimeout(v2EnPhraseTickTimerRef.current)
+        v2EnPhraseTickTimerRef.current = null
       }
       if (v2EnDraftRafRef.current != null) {
         cancelAnimationFrame(v2EnDraftRafRef.current)
