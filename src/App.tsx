@@ -1107,7 +1107,9 @@ function RecordingWorkspace({
   const v2UtteranceIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** Per segmentId: last applied en_interim rev (drops duplicate/out-of-order within segment only). */
   const v2LastEnInterimRevBySegRef = useRef(new Map<string, number>())
-  /** Latest English draft + rAF id — coalesce many interims/sec to one React commit per frame. */
+  /** Per segmentId: last applied zh_interim rev (drops stale/out-of-order interim translations). */
+  const v2LastZhInterimRevBySegRef = useRef(new Map<string, number>())
+  /** Latest English draft text (ref mirror for save path). */
   const v2EnDraftTextRef = useRef('')
   const v2EnDraftRafRef = useRef<number | null>(null)
   const v2ZhDraftTextRef = useRef('')
@@ -1741,6 +1743,7 @@ function RecordingWorkspace({
       v2UtteranceIdleTimerRef.current = null
     }
     v2LastEnInterimRevBySegRef.current.clear()
+    v2LastZhInterimRevBySegRef.current.clear()
     v2FinalizedZhSegIds.current.clear()
     lastFinalTimestampRef.current = 0
 
@@ -1865,13 +1868,8 @@ function RecordingWorkspace({
         v2CurrentEnUtteranceRef.current = t
         v2EnDraftTextRef.current = ev.text
         applyWindowedPrimaryCommitted()
-        if (v2EnDraftRafRef.current == null) {
-          v2EnDraftRafRef.current = requestAnimationFrame(() => {
-            v2EnDraftRafRef.current = null
-            setPrimaryCaptionDraft(v2EnDraftTextRef.current)
-            applyWindowedPrimaryCommitted()
-          })
-        }
+        // Immediate draft commit: rAF coalescing made gray EN feel one frame behind dense interims.
+        setPrimaryCaptionDraft(ev.text)
         syncPrimaryCaptionSaveRef()
         scheduleV2UtteranceIdleFlush()
         return
@@ -1916,6 +1914,13 @@ function RecordingWorkspace({
         const seq = segmentSeq(ev.segmentId)
         const open = v2OpenUtteranceSeqRef.current
         if (open === -1 || seq !== open) return
+        const prevZhRev = v2LastZhInterimRevBySegRef.current.get(ev.segmentId) ?? 0
+        if (ev.rev <= prevZhRev) return
+        v2LastZhInterimRevBySegRef.current.set(ev.segmentId, ev.rev)
+        if (v2LastZhInterimRevBySegRef.current.size > 48) {
+          const first = v2LastZhInterimRevBySegRef.current.keys().next().value
+          if (first !== undefined) v2LastZhInterimRevBySegRef.current.delete(first)
+        }
         liveRouteDiagLog('[LiveEngine][App] zh_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
         v2CurrentZhUtteranceRef.current = ev.text.trim()
         v2ZhDraftTextRef.current = ev.text
@@ -1940,20 +1945,35 @@ function RecordingWorkspace({
         const seq = segmentSeq(ev.segmentId)
         const text = ev.text.trim()
         const open = v2OpenUtteranceSeqRef.current
-        if (open !== -1 && seq === open) {
-          v2CurrentZhUtteranceRef.current = text
-          setSecondaryCaptionDraft(ev.text)
-          applyWindowedSecondaryCommitted()
+        if (text) {
+          if (open !== -1 && seq === open) {
+            v2MergeChunkIntoHistory(v2CommittedZhChunksRef.current, text)
+            v2SyncCommittedStringsFromChunks(
+              v2CommittedEnChunksRef.current,
+              v2CommittedZhChunksRef.current,
+              v2CommittedEnRef,
+              secondaryCaptionFullRef,
+            )
+            v2CurrentZhUtteranceRef.current = ''
+            v2ZhDraftTextRef.current = ''
+            setSecondaryCaptionDraft('')
+            applyWindowedSecondaryCommitted()
+          } else {
+            v2MergeChunkIntoHistory(v2CommittedZhChunksRef.current, text)
+            v2SyncCommittedStringsFromChunks(
+              v2CommittedEnChunksRef.current,
+              v2CommittedZhChunksRef.current,
+              v2CommittedEnRef,
+              secondaryCaptionFullRef,
+            )
+            applyWindowedSecondaryCommitted()
+          }
+        }
+        if (!v2CurrentEnUtteranceRef.current.trim() && !v2CurrentZhUtteranceRef.current.trim()) {
+          v2OpenUtteranceSeqRef.current = -1
+          clearV2IdleTimer()
+        } else {
           scheduleV2UtteranceIdleFlush()
-        } else if (text) {
-          v2MergeChunkIntoHistory(v2CommittedZhChunksRef.current, text)
-          v2SyncCommittedStringsFromChunks(
-            v2CommittedEnChunksRef.current,
-            v2CommittedZhChunksRef.current,
-            v2CommittedEnRef,
-            secondaryCaptionFullRef,
-          )
-          applyWindowedSecondaryCommitted()
         }
         if (v2FinalizedZhSegIds.current.size > 80) {
           const entries = [...v2FinalizedZhSegIds.current]

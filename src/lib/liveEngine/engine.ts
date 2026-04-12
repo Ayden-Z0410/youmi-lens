@@ -37,6 +37,11 @@ export class LiveEngine {
   private zhRevBySeg = new Map<string, number>()
   /** Monotonic per segmentId so stale translateFinal completions are dropped when a newer final supersedes. */
   private translateRevBySeg = new Map<string, number>()
+  /**
+   * Bumped on each en_final for a segment so in-flight translateInterim HTTP completions
+   * (same segment, older EN draft) never emit zh_interim after the segment has finalized.
+   */
+  private zhInterimGenBySeg = new Map<string, number>()
 
   // Debounce interim translation: latest interim only, keep secondary line snappy without spamming API.
   private interimTranslateTimer: ReturnType<typeof setTimeout> | null = null
@@ -65,6 +70,7 @@ export class LiveEngine {
     this.translateTarget = opts.translateTarget
     this.zhRevBySeg.clear()
     this.translateRevBySeg.clear()
+    this.zhInterimGenBySeg.clear()
     this.translationQueue = []
     this.activeTranslations = 0
     this.sessionStartMs = Date.now()
@@ -105,9 +111,10 @@ export class LiveEngine {
         }
         const capturedId = ev.segmentId
         const capturedText = ev.text
+        const gen = this.zhInterimGenBySeg.get(capturedId) ?? 0
         this.interimTranslateTimer = setTimeout(() => {
           this.interimTranslateTimer = null
-          void this.translateInterim(capturedId, capturedText)
+          void this.translateInterim(capturedId, capturedText, gen)
         }, LiveEngine.INTERIM_TRANSLATE_DEBOUNCE_MS)
         return
       }
@@ -117,6 +124,8 @@ export class LiveEngine {
           clearTimeout(this.interimTranslateTimer)
           this.interimTranslateTimer = null
         }
+        const sid = ev.segmentId
+        this.zhInterimGenBySeg.set(sid, (this.zhInterimGenBySeg.get(sid) ?? 0) + 1)
         log('en_final', {
           segmentId: ev.segmentId,
           len: ev.text.length,
@@ -209,7 +218,7 @@ export class LiveEngine {
     }
   }
 
-  private async translateInterim(segmentId: string, text: string) {
+  private async translateInterim(segmentId: string, text: string, expectedGen: number) {
     if (this.translateTarget === 'off') return
     let t = text.trim()
     if (!t) return
@@ -218,6 +227,7 @@ export class LiveEngine {
     try {
       const zh = (await translateLiveCaption(t, { target: this.translateTarget })).trim()
       if (!zh || !this.running) return
+      if ((this.zhInterimGenBySeg.get(segmentId) ?? 0) !== expectedGen) return
       const rev = (this.zhRevBySeg.get(segmentId) ?? 0) + 1
       this.zhRevBySeg.set(segmentId, rev)
       log('zh_interim', { segmentId, rev, len: zh.length })
