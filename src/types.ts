@@ -13,10 +13,16 @@ export interface Recording {
   createdAt: number
   durationSec: number
   mime: string
+  /** Canonical text (normalized); summaries and primary UI use this. */
   transcript?: string
+  /** Raw ASR/browser transcription before canonicalization. */
+  transcriptRaw?: string
   summaryEn?: string
   summaryZh?: string
+  /** Canonical in-class caption text. */
   liveTranscript?: string
+  /** Assembled live caption stream before canonicalization. */
+  liveTranscriptRaw?: string
   aiStatus?: AiJobStatus
   aiError?: string
   aiUpdatedAt?: number

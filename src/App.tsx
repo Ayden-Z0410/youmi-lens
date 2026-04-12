@@ -115,6 +115,7 @@ import {
 import { transcribeHostedLiveCaptionChunk } from './lib/liveCaptionHostedTranscribe'
 import { transcribeHostedLiveRealtime } from './lib/liveCaptionRealtime'
 import { LiveEngine } from './lib/liveEngine/engine'
+import { canonicalizeLectureTranscript } from './lib/transcriptCanonical'
 import { youmiLiveLog } from './lib/youmiLiveDebug'
 import type { Recording, RecordingDetail } from './types'
 import { YoumiLensShell } from './components/YoumiLensShell'
@@ -2500,6 +2501,8 @@ function RecordingWorkspace({
               `[Track B — ${translateTarget === 'zh' ? 'Simplified Chinese' : 'English'}]`,
               secondary || '(empty)',
             ].join('\n')
+      const liveTranscriptRaw = liveText
+      const { canonical: liveTranscriptCanonical } = canonicalizeLectureTranscript(liveTranscriptRaw)
       if (blob.size > MAX_WHISPER_BYTES) {
         endCapture({
           kind: 'failure',
@@ -2528,7 +2531,8 @@ function RecordingWorkspace({
               durationSec,
               mime,
               audioBlob: blob,
-              liveTranscript: liveText || undefined,
+              liveTranscript: liveTranscriptCanonical || undefined,
+              liveTranscriptRaw: liveTranscriptRaw || undefined,
             }),
             SAVE_DB_TIMEOUT_MS,
             'Local save (browser storage)',
@@ -2628,7 +2632,8 @@ function RecordingWorkspace({
               durationSec,
               mime,
               storagePath: path,
-              liveTranscript: liveText,
+              liveTranscript: liveTranscriptCanonical,
+              liveTranscriptRaw,
             }),
             SAVE_DB_TIMEOUT_MS,
             'Database write',
@@ -2860,12 +2865,15 @@ function RecordingWorkspace({
         return
       }
 
+      const transcriptRaw = transcript
+      const { canonical: transcriptCanon } = canonicalizeLectureTranscript(transcriptRaw)
+
       dispatchFlow({ type: 'AI_SUMMARIZE' })
       let summaryEn: string
       let summaryZh: string
       try {
         const sums = await withTimeout(
-          summarizeRecording(transcript, { course: detail.course, title: detail.title }),
+          summarizeRecording(transcriptCanon, { course: detail.course, title: detail.title }),
           AI_SUMMARIZE_TIMEOUT_MS,
           'Bilingual summary',
         )
@@ -2876,13 +2884,19 @@ function RecordingWorkspace({
         try {
           if (localOnly) {
             await withTimeout(
-              updateRecordingLocal(detail.id, { transcript }),
+              updateRecordingLocal(detail.id, {
+                transcript: transcriptCanon,
+                transcriptRaw,
+              }),
               AI_PERSIST_TIMEOUT_MS,
               'Save transcript locally',
             )
           } else {
             await withTimeout(
-              updateRecordingAi(supabase!, userId!, detail.id, { transcript }),
+              updateRecordingAi(supabase!, userId!, detail.id, {
+                transcript: transcriptCanon,
+                transcriptRaw,
+              }),
               AI_PERSIST_TIMEOUT_MS,
               'Save transcript to database',
             )
@@ -2918,7 +2932,8 @@ function RecordingWorkspace({
       if (localOnly) {
         await withTimeout(
           updateRecordingLocal(detail.id, {
-            transcript,
+            transcript: transcriptCanon,
+            transcriptRaw,
             summaryEn,
             summaryZh,
           }),
@@ -2930,7 +2945,8 @@ function RecordingWorkspace({
       } else {
         await withTimeout(
           updateRecordingAi(supabase!, userId!, detail.id, {
-            transcript,
+            transcript: transcriptCanon,
+            transcriptRaw,
             summaryEn,
             summaryZh,
           }),

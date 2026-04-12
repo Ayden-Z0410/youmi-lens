@@ -17,9 +17,11 @@ function baseRow(over: Partial<RecordingDbRow> = {}): RecordingDbRow {
     mime: 'audio/webm',
     storage_path: 'u/00000000-0000-4000-8000-000000000001.webm',
     transcript: null,
+    transcript_raw: null,
     summary_en: null,
     summary_zh: null,
     live_transcript: null,
+    live_transcript_raw: null,
     ai_status: null,
     ai_error: null,
     ai_updated_at: null,
@@ -73,6 +75,7 @@ describe('lectureRecordingInsertPayload', () => {
       mime: 'audio/webm',
       storagePath: 'p',
       liveTranscript: '',
+      liveTranscriptRaw: '',
       nowIso: '2030-01-01T00:00:00.000Z',
     })
     expect(p.ai_status).toBe('pending')

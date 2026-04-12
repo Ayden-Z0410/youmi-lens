@@ -34,9 +34,11 @@ export type RecordingDbRow = {
   mime: string
   storage_path: string
   transcript: string | null
+  transcript_raw: string | null
   summary_en: string | null
   summary_zh: string | null
   live_transcript: string | null
+  live_transcript_raw: string | null
   ai_status: string | null
   ai_error: string | null
   ai_updated_at: string | null
@@ -66,9 +68,11 @@ export function mapDbRowToRecording(r: RecordingDbRow): Recording {
     durationSec: r.duration_sec,
     mime: r.mime,
     transcript: r.transcript ?? undefined,
+    transcriptRaw: r.transcript_raw ?? undefined,
     summaryEn: r.summary_en ?? undefined,
     summaryZh: r.summary_zh ?? undefined,
     liveTranscript: r.live_transcript ?? undefined,
+    liveTranscriptRaw: r.live_transcript_raw ?? undefined,
     aiStatus: parseAiJobStatus(r.ai_status),
     aiError: r.ai_error ?? undefined,
     aiUpdatedAt: r.ai_updated_at ? new Date(r.ai_updated_at).getTime() : undefined,
@@ -205,7 +209,10 @@ export function lectureRecordingInsertPayload(input: {
   durationSec: number
   mime: string
   storagePath: string
+  /** Canonical live caption (display + downstream). */
   liveTranscript: string
+  /** Raw assembled live text before canonicalization. */
+  liveTranscriptRaw: string
   /** @internal fixed clock for tests */
   nowIso?: string
 }) {
@@ -219,6 +226,7 @@ export function lectureRecordingInsertPayload(input: {
     mime: input.mime,
     storage_path: input.storagePath,
     live_transcript: input.liveTranscript || null,
+    live_transcript_raw: input.liveTranscriptRaw || null,
     ai_status: 'pending' as const,
     ai_error: null,
     ai_updated_at: nowIso,
@@ -239,6 +247,7 @@ export async function insertLectureRecordingRow(input: {
   mime: string
   storagePath: string
   liveTranscript: string
+  liveTranscriptRaw: string
 }): Promise<'inserted' | 'already_exists'> {
   const { error: insErr } = await input.supabase
     .from('recordings')
@@ -252,6 +261,7 @@ export async function insertLectureRecordingRow(input: {
         mime: input.mime,
         storagePath: input.storagePath,
         liveTranscript: input.liveTranscript,
+        liveTranscriptRaw: input.liveTranscriptRaw,
       }),
     )
 
@@ -298,6 +308,7 @@ export async function saveRecordingRemote(input: {
   mime: string
   blob: Blob
   liveTranscript: string
+  liveTranscriptRaw: string
 }): Promise<void> {
   const path = lectureAudioStoragePath(input.userId, input.id, input.mime)
   await uploadLectureAudio(input.supabase, path, input.blob, input.mime)
@@ -311,6 +322,7 @@ export async function saveRecordingRemote(input: {
     mime: input.mime,
     storagePath: path,
     liveTranscript: input.liveTranscript,
+    liveTranscriptRaw: input.liveTranscriptRaw,
   })
 }
 
@@ -324,12 +336,14 @@ export async function updateRecordingAi(
   id: string,
   patch: {
     transcript?: string
+    transcriptRaw?: string
     summaryEn?: string
     summaryZh?: string
   },
 ): Promise<void> {
   const payload: Record<string, string | undefined> = {}
   if (patch.transcript !== undefined) payload.transcript = patch.transcript
+  if (patch.transcriptRaw !== undefined) payload.transcript_raw = patch.transcriptRaw
   if (patch.summaryEn !== undefined) payload.summary_en = patch.summaryEn
   if (patch.summaryZh !== undefined) payload.summary_zh = patch.summaryZh
 

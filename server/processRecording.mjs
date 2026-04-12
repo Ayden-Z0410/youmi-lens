@@ -1,6 +1,10 @@
 import { createClient } from '@supabase/supabase-js'
 import * as youmiHosted from './ai/hosted/youmiHosted.mjs'
 import { CLIENT_SAFE_UNAVAILABLE } from './ai/errors.mjs'
+import {
+  canonicalizeLectureTranscript,
+  transcriptCanonicalQualityGate,
+} from '../src/lib/transcriptCanonicalCore.js'
 
 const BUCKET = 'lecture-audio'
 
@@ -253,11 +257,11 @@ async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRe
       })
     }
 
-    let transcript
+    let transcriptRaw
     try {
       jobLog('transcribe_begin', { recordingId })
-      transcript = await youmiHosted.transcribeAudioFromUrl(signed.signedUrl)
-      jobLog('transcribe_done', { recordingId, textLen: transcript?.length ?? 0 })
+      transcriptRaw = await youmiHosted.transcribeAudioFromUrl(signed.signedUrl)
+      jobLog('transcribe_done', { recordingId, textLen: transcriptRaw?.length ?? 0 })
     } catch (e) {
       console.warn('[process-recording] transcribe', e)
       jobLog('transcribe_error', { recordingId, message: e instanceof Error ? e.message : String(e) })
@@ -265,10 +269,19 @@ async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRe
       return
     }
 
+    const gate = transcriptCanonicalQualityGate(transcriptRaw)
+    if (!gate.ok) {
+      jobLog('canonical_quality_gate', { recordingId, reason: gate.reason ?? 'unknown' })
+    }
+    const { canonical: transcriptCanonical, diagnostics: canonDiag } =
+      canonicalizeLectureTranscript(transcriptRaw)
+    jobLog('canonical_ok', { recordingId, ...canonDiag })
+
     const { error: txErr } = await dbSb
       .from('recordings')
       .update({
-        transcript,
+        transcript_raw: transcriptRaw,
+        transcript: transcriptCanonical,
         ai_status: 'summarizing',
         ai_updated_at: new Date().toISOString(),
       })
@@ -280,13 +293,17 @@ async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRe
       return
     }
 
-    jobLog('status_summarizing', { recordingId, transcriptLen: transcript.length })
+    jobLog('status_summarizing', {
+      recordingId,
+      transcriptLen: transcriptCanonical.length,
+      transcriptRawLen: transcriptRaw.length,
+    })
 
     let summaryEn
     let summaryZh
     try {
       jobLog('summarize_begin', { recordingId })
-      const s = await youmiHosted.summarizeTranscript(transcript, row.course, row.title)
+      const s = await youmiHosted.summarizeTranscript(transcriptCanonical, row.course, row.title)
       summaryEn = s.summaryEn
       summaryZh = s.summaryZh
       jobLog('summarize_done', {
@@ -300,7 +317,8 @@ async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRe
       const { error: sumFailErr } = await dbSb
         .from('recordings')
         .update({
-          transcript,
+          transcript_raw: transcriptRaw,
+          transcript: transcriptCanonical,
           ai_status: 'failed',
           ai_error:
             'Summaries did not finish. Your transcript was saved - you can try again shortly.',
@@ -315,7 +333,8 @@ async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRe
     const { error: doneErr } = await dbSb
       .from('recordings')
       .update({
-        transcript,
+        transcript_raw: transcriptRaw,
+        transcript: transcriptCanonical,
         summary_en: summaryEn,
         summary_zh: summaryZh,
         ai_status: 'done',

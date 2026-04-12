@@ -34,7 +34,12 @@ export async function saveRecordingLocal(row: RecordingWithBlob): Promise<void> 
 
 export async function updateRecordingLocal(
   id: string,
-  patch: Partial<Pick<Recording, 'transcript' | 'summaryEn' | 'summaryZh' | 'liveTranscript'>>,
+  patch: Partial<
+    Pick<
+      Recording,
+      'transcript' | 'transcriptRaw' | 'summaryEn' | 'summaryZh' | 'liveTranscript' | 'liveTranscriptRaw'
+    >
+  >,
 ): Promise<void> {
   const existing = await getRecordingWithBlob(id)
   if (!existing) throw new Error('Recording not found')
@@ -69,9 +74,11 @@ export async function getRecordingDetailLocal(id: string): Promise<RecordingDeta
     durationSec: row.durationSec,
     mime: row.mime,
     transcript: row.transcript,
+    transcriptRaw: row.transcriptRaw,
     summaryEn: row.summaryEn,
     summaryZh: row.summaryZh,
     liveTranscript: row.liveTranscript,
+    liveTranscriptRaw: row.liveTranscriptRaw,
     audioUrl: URL.createObjectURL(row.audioBlob),
     storagePath: id,
   }
