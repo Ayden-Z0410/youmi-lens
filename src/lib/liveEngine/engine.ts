@@ -1,4 +1,5 @@
 import { translateLiveCaption } from '../aiClient'
+import { sanitizeEnglishForZhTranslate } from '../liveCaptionSanitize'
 import { YoumiLiveAdapter } from './adapters/youmiAdapter'
 import type { LiveEngineEvent, LiveEngineListener } from './types'
 
@@ -9,16 +10,6 @@ type StartOptions = {
 function log(tag: string, fields?: Record<string, unknown>) {
   if (fields) console.info(`[LiveEngine] ${tag}`, JSON.stringify(fields))
   else console.info(`[LiveEngine] ${tag}`)
-}
-
-/** Strip CJK / Japanese / Korean from EN caption source so translate does not echo mixed garbage (e.g. 不listen). */
-function sanitizeEnglishForZhTranslate(text: string): string {
-  return text
-    .replace(/\p{Script=Han}/gu, ' ')
-    .replace(/[\u3040-\u30ff]/gu, ' ')
-    .replace(/[\uac00-\ud7af]/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
 }
 
 // ─── Translation queue ────────────────────────────────────────────────────────
@@ -262,7 +253,7 @@ export class LiveEngine {
       this.lastZhInterimChunkEnBySeg.set(segmentId, t)
       this.lastZhInterimChunkAtMsBySeg.set(segmentId, Date.now())
       log('zh_interim', { segmentId, rev, len: zh.length })
-      this.emit({ type: 'zh_interim', segmentId, rev, text: zh })
+      this.emit({ type: 'zh_interim', segmentId, rev, text: zh, sourceEn: t })
     } catch (e) {
       this.emit({
         type: 'error',
@@ -299,7 +290,7 @@ export class LiveEngine {
       // Timing log: visible in Console over time to spot Qwen API degradation
       log('zh_final', { segmentId, len: zh.length, latencyMs, queueWaitMs, sessionMs: this.elapsed() })
       if (!zh || !this.running) return
-      this.emit({ type: 'zh_final', segmentId, text: zh })
+      this.emit({ type: 'zh_final', segmentId, text: zh, sourceEn: t })
     } catch (e) {
       log('zh_final_failed', { segmentId, ms: Date.now() - t0, sessionMs: this.elapsed() })
       this.emit({
