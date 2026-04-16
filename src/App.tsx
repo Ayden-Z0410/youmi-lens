@@ -116,10 +116,10 @@ import { transcribeHostedLiveCaptionChunk } from './lib/liveCaptionHostedTranscr
 import { transcribeHostedLiveRealtime } from './lib/liveCaptionRealtime'
 import { LiveEngine } from './lib/liveEngine/engine'
 import {
-  normCaptionSpaces,
-  sanitizeEnglishForZhTranslate,
-  stripRepeatedZhLectureIntroMirror,
-} from './lib/liveCaptionSanitize'
+  LiveCaptionSessionModel,
+  liveCaptionEventFromEngine,
+  type LiveCaptionView,
+} from './lib/liveCaptionSessionModel'
 import { canonicalizeLectureTranscript } from './lib/transcriptCanonical'
 import { youmiLiveLog } from './lib/youmiLiveDebug'
 import type { Recording, RecordingDetail } from './types'
@@ -224,211 +224,6 @@ function formatDate(ts: number): string {
     dateStyle: 'medium',
     timeStyle: 'short',
   })
-}
-
-function segmentSeq(segmentId: string): number {
-  // Matches both legacy "seg-N" (batch path) and "stream-N" (DashScope streaming path).
-  const m = /^(?:seg|stream)-(\d+)$/.exec(segmentId)
-  if (!m) return Number.MAX_SAFE_INTEGER
-  return Number(m[1])
-}
-
-/** Tokens for overlap: Latin words + short CJK runs (no pure startsWith-only). */
-function v2RoughTokens(s: string): string[] {
-  const t = s.toLowerCase().trim()
-  const out: string[] = []
-  for (const w of t.split(/[^a-z0-9]+/)) {
-    if (w.length > 1) out.push(w)
-  }
-  for (const m of t.match(/[\u4e00-\u9fff]{1,14}/g) || []) {
-    out.push(m)
-  }
-  return out
-}
-
-function v2LexicalOverlapRatio(a: string, b: string): number {
-  const ta = v2RoughTokens(a)
-  const tb = v2RoughTokens(b)
-  if (ta.length === 0 || tb.length === 0) return 0
-  const sa = new Set(ta)
-  const sb = new Set(tb)
-  let inter = 0
-  for (const x of sb) {
-    if (sa.has(x)) inter += 1
-  }
-  return inter / Math.min(sa.size, sb.size)
-}
-
-function v2LcpRatio(a: string, b: string): number {
-  const p = a.trim().toLowerCase().replace(/\s+/g, ' ')
-  const n = b.trim().toLowerCase().replace(/\s+/g, ' ')
-  const max = Math.min(p.length, n.length)
-  if (max === 0) return 0
-  let i = 0
-  while (i < max && p[i] === n[i]) i += 1
-  return i / max
-}
-
-/**
- * True if `next` is a revision / paraphrase of `prev` (same semantic chunk), not a new sentence.
- * Used to avoid polluting committed history with many near-duplicates when ASR/VAD flushes often.
- */
-function v2IsSameSemanticChunk(prev: string, next: string): boolean {
-  const p = prev.trim()
-  const n = next.trim()
-  if (!p || !n) return false
-  if (p === n) return true
-  const pl = p.toLowerCase()
-  const nl = n.toLowerCase()
-  if (pl === nl) return true
-  if (nl.startsWith(pl) || pl.startsWith(nl)) return true
-  const compactP = pl.replace(/\s+/g, '')
-  const compactN = nl.replace(/\s+/g, '')
-  const minCompact = Math.min(compactP.length, compactN.length)
-  if (minCompact < 8) {
-    return compactN.startsWith(compactP) || compactP.startsWith(compactN)
-  }
-  const ov = v2LexicalOverlapRatio(p, n)
-  if (ov >= 0.5) {
-    const maxL = Math.max(p.length, n.length)
-    const minL = Math.min(p.length, n.length)
-    // Avoid merging a short name/phrase into a much longer unrelated sentence that merely repeats an entity.
-    if (maxL > 55 && minL > 0 && maxL / minL > 3.2 && !nl.startsWith(pl) && !pl.startsWith(nl)) {
-      return false
-    }
-    return true
-  }
-  if (minCompact >= 14 && v2LcpRatio(pl, nl) >= 0.55) return true
-  return false
-}
-
-/** Gray restarts mid-utterance with a long prefix already contained in the last committed chunk (TOEFL-style ASR). */
-function v2DraftEmbedsInLastChunk(last: string, draft: string): boolean {
-  const d = draft.trim()
-  if (d.length < 40) return false
-  const l = last.toLowerCase().replace(/\s+/g, ' ')
-  const probe = d
-    .slice(0, Math.min(120, d.length))
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-  return probe.length >= 40 && l.includes(probe)
-}
-
-function v2NormLooseForGrayDup(s: string): string {
-  return s.toLowerCase().replace(/\s+/g, ' ').trim()
-}
-
-/** Remove gray leading text that duplicates any substring already shown in committed black (hard mutual exclusion). */
-function v2StripLeadingGrayIfDuplicateInBlack(blackFull: string, gray: string): string {
-  const g = gray.trim()
-  if (!g || !blackFull.trim()) return gray
-  const b = v2NormLooseForGrayDup(blackFull)
-  let bestLen = 0
-  const maxProbe = Math.min(g.length, Math.max(blackFull.length, 480))
-  for (let len = maxProbe; len >= 18; len--) {
-    const sub = v2NormLooseForGrayDup(g.slice(0, len))
-    if (sub.length >= 18 && b.includes(sub)) {
-      bestLen = len
-      break
-    }
-  }
-  if (bestLen === 0) {
-    const maxK = Math.min(blackFull.length, g.length, 240)
-    for (let k = maxK; k >= 10; k--) {
-      const bs = v2NormLooseForGrayDup(blackFull.slice(-k))
-      const gp = v2NormLooseForGrayDup(g.slice(0, k))
-      if (bs === gp) {
-        bestLen = k
-        break
-      }
-    }
-  }
-  if (bestLen === 0) return gray
-  return g.slice(bestLen).trimStart()
-}
-
-function v2PickRicherRevision(prev: string, next: string): string {
-  const p = prev.trim()
-  const n = next.trim()
-  if (!p) return n
-  if (!n) return p
-  if (n.startsWith(p) || p.startsWith(n)) return n.length >= p.length ? n : p
-  return n.length >= p.length ? n : p
-}
-
-/** Append to committed chunk list, or replace last chunk when semantically the same utterance. */
-function v2MergeChunkIntoHistory(chunks: string[], incoming: string) {
-  const t = incoming.trim()
-  if (!t) return
-  if (chunks.length === 0) {
-    chunks.push(t)
-    return
-  }
-  const last = chunks[chunks.length - 1]!
-  if (v2IsSameSemanticChunk(last, t)) {
-    chunks[chunks.length - 1] = v2PickRicherRevision(last, t)
-    return
-  }
-  chunks.push(t)
-}
-
-function v2SyncCommittedStringsFromChunks(
-  enChunks: string[],
-  zhChunks: string[],
-  committedEnRef: { current: string },
-  zhFullRef: { current: string },
-) {
-  committedEnRef.current = enChunks.join(' ').trim()
-  zhFullRef.current = zhChunks.join(' ').trim()
-}
-
-/** Black-line display: hide last committed chunk when gray draft is the same utterance (revision / extension). */
-function v2CommittedForBlackDisplay(chunks: readonly string[], draft: string): string {
-  const d = draft.trim()
-  if (chunks.length === 0) return ''
-  const last = chunks[chunks.length - 1]!
-  if (!d) return chunks.join(' ').trim()
-  if (v2IsSameSemanticChunk(last, d) || v2DraftEmbedsInLastChunk(last, d)) {
-    return chunks.slice(0, -1).join(' ').trim()
-  }
-  return chunks.join(' ').trim()
-}
-
-function v2WindowCaptionWords(full: string, maxWords = 150): string {
-  const t = full.trim()
-  if (!t) return ''
-  const words = t.split(/\s+/)
-  return words.length > maxWords ? words.slice(-maxWords).join(' ') : t
-}
-
-/** Full transcript for save: merge last chunk with draft when semantic duplicate (no "chunk + same chunk"). */
-function v2JoinForPersist(chunks: readonly string[], draft: string): string {
-  const ch = [...chunks]
-  const d = draft.trim()
-  if (ch.length === 0) return d
-  if (!d) return ch.join(' ').trim()
-  const last = ch[ch.length - 1]!
-  if (v2IsSameSemanticChunk(last, d)) {
-    ch[ch.length - 1] = v2PickRicherRevision(last, d)
-    return ch.join(' ').trim()
-  }
-  return `${ch.join(' ')} ${d}`.trim()
-}
-
-/** After this much quiet time, move the open utterance from draft → committed (black). */
-const V2_UTTERANCE_IDLE_FLUSH_MS = 1000
-
-/** English gray line: phrase-level display (avoid token-by-token React updates). */
-const V2_EN_PHRASE_MIN_CHARS = 7
-const V2_EN_PHRASE_MAX_WAIT_MS = 140
-const V2_EN_PHRASE_STALE_MIN_DELTA = 2
-const V2_EN_PHRASE_FIRST_MIN_CHARS = 4
-const V2_EN_PHRASE_FIRST_WAIT_MS = 70
-const V2_EN_PHRASE_TICK_MS = 50
-
-function v2EnEndsPhraseBoundary(s: string): boolean {
-  const t = s.trimEnd()
-  return /[.!?,;:\u2026]\s*$/.test(t)
 }
 
 type LibraryDropId = string | 'unfiled'
@@ -1158,50 +953,10 @@ function RecordingWorkspace({
   const onFinalPhraseRef = useRef<((phrase: string) => void) | null>(null)
   const onDraftPhraseRef = useRef<((phrase: string) => void) | null>(null)
   const liveEngineRef = useRef<LiveEngine | null>(null)
-  /** Committed English (black / history only) — never mutated by interim refinements. */
+  /** LiveEngine v2: single session model (EN/ZH each = committed[] + current|null). */
+  const liveCaptionSessionRef = useRef(new LiveCaptionSessionModel())
+  /** Joined committed EN text mirror (save / diagnostics). */
   const v2CommittedEnRef = useRef('')
-  /** Chunk list backing `v2CommittedEnRef` — merged for semantic de-duplication on flush. */
-  const v2CommittedEnChunksRef = useRef<string[]>([])
-  /** Chunk list backing `secondaryCaptionFullRef` for zh committed history. */
-  const v2CommittedZhChunksRef = useRef<string[]>([])
-  /** Single open English utterance (gray) — replaced by interims/finals until flush. */
-  const v2CurrentEnUtteranceRef = useRef('')
-  /** Single open Chinese utterance (gray), aligned to the same logical utterance as EN. */
-  const v2CurrentZhUtteranceRef = useRef('')
-  /** `segmentSeq(segmentId)` for the utterance currently in the draft slots; -1 = none. */
-  const v2OpenUtteranceSeqRef = useRef(-1)
-  const v2UtteranceIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** Per segmentId: last applied en_interim rev (drops duplicate/out-of-order within segment only). */
-  const v2LastEnInterimRevBySegRef = useRef(new Map<string, number>())
-  /** Per segmentId: last applied zh_interim rev (drops stale/out-of-order interim translations). */
-  const v2LastZhInterimRevBySegRef = useRef(new Map<string, number>())
-  /** Latest English draft text (ref mirror for save path). */
-  const v2EnDraftTextRef = useRef('')
-  const v2EnDraftRafRef = useRef<number | null>(null)
-  const v2ZhDraftTextRef = useRef('')
-  const v2ZhDraftRafRef = useRef<number | null>(null)
-  // Tracks segments whose zh_final has already committed. Used to discard in-flight
-  // stale zh_interim translations that resolve after zh_final for the same segment.
-  const v2FinalizedZhSegIds = useRef(new Set<string>())
-  /** Gray EN phrase display: last segmentId we applied phrase state for. */
-  const v2EnPhraseLastSegmentIdRef = useRef('')
-  /** Length of `v2EnDraftTextRef` last pushed to `primaryCaptionDraft`. */
-  const v2EnPhraseDisplayedLenRef = useRef(0)
-  const v2EnPhraseLastFlushAtRef = useRef(0)
-  const v2EnPhraseTickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** Last raw EN string passed to `setPrimaryCaptionDraft` (what the user actually sees in gray). */
-  const v2EnGrayVisibleRef = useRef('')
-  /** Buffered zh_interim until gray EN (sanitized) covers the translation source. */
-  const v2PendingZhInterimRef = useRef<{
-    segmentId: string
-    sourceEn: string
-    text: string
-    rev: number
-  } | null>(null)
-  /** Sanitized EN final text per segment — must match zh_final.sourceEn before committing ZH. */
-  const v2LastEnFinalSanitizedBySegRef = useRef(new Map<string, string>())
-  /** After first ZH line matched lecture-instruction style, strip repeated Chinese intro mirrors. */
-  const v2ZhMirrorBoilerplateStripEnabledRef = useRef(false)
 
   // Retained for future use (paragraph block separation, currently disabled).
   const lastFinalTimestampRef = useRef(0)
@@ -1211,6 +966,22 @@ function RecordingWorkspace({
   const primaryCaptionRef = useRef('')
   /** Full zh transcript for live v2 (state is windowed to 150 words). */
   const secondaryCaptionFullRef = useRef('')
+
+  const syncLiveCaptionViewFromModel = useCallback((v: LiveCaptionView) => {
+    primaryCaptionRef.current = v.persistPrimaryFull
+    secondaryCaptionFullRef.current = v.persistSecondaryFull
+    v2CommittedEnRef.current = v.committedEnJoin
+    setPrimaryCaption(v.primaryBlack)
+    setPrimaryCaptionDraft(v.primaryGray)
+    setSecondaryCaption(v.secondaryBlack)
+    setSecondaryCaptionDraft(v.secondaryGray)
+  }, [])
+
+  const resetLiveCaptionSessionUi = useCallback(() => {
+    liveCaptionSessionRef.current.reset()
+    syncLiveCaptionViewFromModel(liveCaptionSessionRef.current.getView())
+  }, [syncLiveCaptionViewFromModel])
+
   /** Session-level banners are derived in `liveCaptionSessionSurface`; this is only for per-chunk issues. */
   const [liveCaptionChunkNotice, setLiveCaptionChunkNotice] = useState<{
     kind: 'soft' | 'fatal'
@@ -1218,7 +989,6 @@ function RecordingWorkspace({
   } | null>(null)
   const liveChunkFailStreakRef = useRef(0)
   const [liveCaptionPendingSlices, setLiveCaptionPendingSlices] = useState(0)
-  const v2PushCountRef = useRef(0)
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false)
 
   useEffect(() => {
@@ -1273,12 +1043,8 @@ function RecordingWorkspace({
   }, [liveCaptionsPipelineEnabled])
 
   useEffect(() => {
-    setSecondaryCaption('')
-    setSecondaryCaptionDraft('')
-    secondaryCaptionFullRef.current = ''
-    v2CommittedZhChunksRef.current = []
-    v2CurrentZhUtteranceRef.current = ''
-  }, [translateTarget])
+    resetLiveCaptionSessionUi()
+  }, [translateTarget, resetLiveCaptionSessionUi])
 
   useEffect(() => {
     if (liveCaptionSessionActive) return
@@ -1819,264 +1585,9 @@ function RecordingWorkspace({
     liveRouteDiagLog('[LiveEngine][diag] LiveEngine.start()')
     const engine = new LiveEngine()
     liveEngineRef.current = engine
-    v2PushCountRef.current = 0
-    v2CurrentEnUtteranceRef.current = ''
-    v2CurrentZhUtteranceRef.current = ''
-    v2OpenUtteranceSeqRef.current = -1
-    if (v2UtteranceIdleTimerRef.current != null) {
-      clearTimeout(v2UtteranceIdleTimerRef.current)
-      v2UtteranceIdleTimerRef.current = null
-    }
-    v2LastEnInterimRevBySegRef.current.clear()
-    v2LastZhInterimRevBySegRef.current.clear()
-    v2FinalizedZhSegIds.current.clear()
+    liveCaptionSessionRef.current.reset()
     lastFinalTimestampRef.current = 0
-    v2EnPhraseLastSegmentIdRef.current = ''
-    v2EnPhraseDisplayedLenRef.current = 0
-    v2EnPhraseLastFlushAtRef.current = Date.now()
-    v2EnGrayVisibleRef.current = ''
-    v2PendingZhInterimRef.current = null
-    v2LastEnFinalSanitizedBySegRef.current.clear()
-    v2ZhMirrorBoilerplateStripEnabledRef.current = false
-
-    const clearEnPhraseTick = () => {
-      if (v2EnPhraseTickTimerRef.current != null) {
-        clearTimeout(v2EnPhraseTickTimerRef.current)
-        v2EnPhraseTickTimerRef.current = null
-      }
-    }
-
-    /** Committed EN + current interim (or post-final gray hold) as one string for ZH gating. */
-    const v2EnMergedOpenForGate = (): string => {
-      const base = v2CommittedEnChunksRef.current.join(' ').trim()
-      const cur = v2CurrentEnUtteranceRef.current.trim()
-      const gray = v2EnGrayVisibleRef.current.trim()
-      const open = cur || gray
-      return `${base} ${open}`.trim()
-    }
-
-    /** Sanitized EN coverage (black + open) must cover full translate `sourceEn` — not gray alone. */
-    const v2EnCoverageCoversSourceEn = (sourceEn: string): boolean => {
-      const s = normCaptionSpaces(sourceEn).toLowerCase()
-      if (!s) return true
-      const merged = normCaptionSpaces(sanitizeEnglishForZhTranslate(v2EnMergedOpenForGate())).toLowerCase()
-      if (!merged) return false
-      return merged.length >= s.length && merged.startsWith(s)
-    }
-
-    const v2SourceEnStillPlausible = (latestRawEn: string, sourceEn: string): boolean => {
-      const s = normCaptionSpaces(sourceEn).toLowerCase()
-      if (!s) return false
-      if (latestRawEn.trim()) {
-        const L = normCaptionSpaces(sanitizeEnglishForZhTranslate(latestRawEn)).toLowerCase()
-        return L.startsWith(s) || (s.startsWith(L) && L.length > 0)
-      }
-      const C = normCaptionSpaces(sanitizeEnglishForZhTranslate(v2EnMergedOpenForGate())).toLowerCase()
-      return C.startsWith(s) || (s.startsWith(C) && C.length > 0)
-    }
-
-    const clearV2IdleTimer = () => {
-      if (v2UtteranceIdleTimerRef.current != null) {
-        clearTimeout(v2UtteranceIdleTimerRef.current)
-        v2UtteranceIdleTimerRef.current = null
-      }
-    }
-
-    const syncPrimaryCaptionSaveRef = () => {
-      primaryCaptionRef.current = v2JoinForPersist(
-        v2CommittedEnChunksRef.current,
-        v2CurrentEnUtteranceRef.current,
-      )
-    }
-
-    const applyWindowedPrimaryCommitted = () => {
-      const black = v2CommittedForBlackDisplay(
-        v2CommittedEnChunksRef.current,
-        v2CurrentEnUtteranceRef.current,
-      )
-      setPrimaryCaption(black ? v2WindowCaptionWords(black) : '')
-    }
-
-    const applyWindowedSecondaryCommitted = () => {
-      const black = v2CommittedForBlackDisplay(
-        v2CommittedZhChunksRef.current,
-        v2CurrentZhUtteranceRef.current,
-      )
-      setSecondaryCaption(black ? v2WindowCaptionWords(black) : '')
-    }
-
-    const flushV2OpenUtterance = () => {
-      clearV2IdleTimer()
-      clearEnPhraseTick()
-      const en = v2CurrentEnUtteranceRef.current.trim()
-      const zh = v2CurrentZhUtteranceRef.current.trim()
-      if (!en && !zh) {
-        v2OpenUtteranceSeqRef.current = -1
-        syncPrimaryCaptionSaveRef()
-        applyWindowedPrimaryCommitted()
-        applyWindowedSecondaryCommitted()
-        return
-      }
-      if (en) {
-        v2MergeChunkIntoHistory(v2CommittedEnChunksRef.current, en)
-      }
-      if (zh) {
-        v2MergeChunkIntoHistory(v2CommittedZhChunksRef.current, zh)
-      }
-      v2SyncCommittedStringsFromChunks(
-        v2CommittedEnChunksRef.current,
-        v2CommittedZhChunksRef.current,
-        v2CommittedEnRef,
-        secondaryCaptionFullRef,
-      )
-      v2CurrentEnUtteranceRef.current = ''
-      v2CurrentZhUtteranceRef.current = ''
-      v2OpenUtteranceSeqRef.current = -1
-      v2PendingZhInterimRef.current = null
-      v2EnGrayVisibleRef.current = ''
-      setPrimaryCaptionDraft('')
-      setSecondaryCaptionDraft('')
-      v2EnPhraseLastSegmentIdRef.current = ''
-      v2EnPhraseDisplayedLenRef.current = 0
-      applyWindowedPrimaryCommitted()
-      applyWindowedSecondaryCommitted()
-      syncPrimaryCaptionSaveRef()
-    }
-
-    const scheduleV2UtteranceIdleFlush = () => {
-      clearV2IdleTimer()
-      v2UtteranceIdleTimerRef.current = window.setTimeout(() => {
-        v2UtteranceIdleTimerRef.current = null
-        flushV2OpenUtterance()
-      }, V2_UTTERANCE_IDLE_FLUSH_MS)
-    }
-
-    const v2GateZhMirrorBoilerplate = (raw: string): string => {
-      const z = raw.trim()
-      if (!z) return raw
-      const head = z.slice(0, 120)
-      const looksLikeLectureIntro =
-        head.startsWith('\u542c') &&
-        /[\u8bb2\u5ea7\u8bfe\u7a0b\u8bfe\u5802\u6d77\u6d0b\u751f\u7269\u5b66]/.test(head)
-      if (looksLikeLectureIntro) {
-        if (v2ZhMirrorBoilerplateStripEnabledRef.current) {
-          return stripRepeatedZhLectureIntroMirror(raw)
-        }
-        v2ZhMirrorBoilerplateStripEnabledRef.current = true
-      }
-      return raw
-    }
-
-    const applyZhInterimToUi = (segmentId: string, rev: number, text: string) => {
-      const gated = v2GateZhMirrorBoilerplate(text)
-      v2LastZhInterimRevBySegRef.current.set(segmentId, rev)
-      if (v2LastZhInterimRevBySegRef.current.size > 48) {
-        const first = v2LastZhInterimRevBySegRef.current.keys().next().value
-        if (first !== undefined) v2LastZhInterimRevBySegRef.current.delete(first)
-      }
-      v2CurrentZhUtteranceRef.current = gated.trim()
-      v2ZhDraftTextRef.current = gated
-      applyWindowedSecondaryCommitted()
-      if (v2ZhDraftRafRef.current == null) {
-        v2ZhDraftRafRef.current = requestAnimationFrame(() => {
-          v2ZhDraftRafRef.current = null
-          setSecondaryCaptionDraft(v2ZhDraftTextRef.current)
-          applyWindowedSecondaryCommitted()
-        })
-      }
-    }
-
-    const flushPendingZhInterimIfReady = () => {
-      const p = v2PendingZhInterimRef.current
-      if (!p) return
-      if (v2FinalizedZhSegIds.current.has(p.segmentId)) {
-        v2PendingZhInterimRef.current = null
-        return
-      }
-      if (v2OpenUtteranceSeqRef.current !== segmentSeq(p.segmentId)) {
-        v2PendingZhInterimRef.current = null
-        return
-      }
-      const latestRaw = v2CurrentEnUtteranceRef.current
-      if (!v2SourceEnStillPlausible(latestRaw, p.sourceEn)) {
-        v2PendingZhInterimRef.current = null
-        return
-      }
-      if (!v2EnCoverageCoversSourceEn(p.sourceEn)) return
-      v2PendingZhInterimRef.current = null
-      liveRouteDiagLog(
-        '[LiveEngine][App] zh_interim (from pending)',
-        JSON.stringify({ segmentId: p.segmentId, rev: p.rev }),
-      )
-      applyZhInterimToUi(p.segmentId, p.rev, p.text)
-      scheduleV2UtteranceIdleFlush()
-    }
-
-    const commitEnGrayDraft = (full: string, now: number) => {
-      const blackJoin = v2CommittedEnChunksRef.current.join(' ').trim()
-      let displayGray = v2StripLeadingGrayIfDuplicateInBlack(blackJoin, full)
-      if (full.trim() && !displayGray.trim()) displayGray = full.trim()
-      setPrimaryCaptionDraft(displayGray)
-      v2EnGrayVisibleRef.current = displayGray
-      v2EnPhraseDisplayedLenRef.current = full.length
-      v2EnPhraseLastFlushAtRef.current = now
-      flushPendingZhInterimIfReady()
-    }
-
-    const tryFlushEnPhraseDisplay = (force: boolean) => {
-      const full = v2EnDraftTextRef.current
-      const now = Date.now()
-      const shownLen = v2EnPhraseDisplayedLenRef.current
-      const lastAt = v2EnPhraseLastFlushAtRef.current
-
-      if (force) {
-        commitEnGrayDraft(full, now)
-        return
-      }
-
-      if (!full.trim()) return
-
-      const delta = full.length - shownLen
-      const timeSince = now - lastAt
-
-      if (shownLen === 0) {
-        if (v2EnEndsPhraseBoundary(full)) {
-          commitEnGrayDraft(full, now)
-        } else if (full.trim().length >= V2_EN_PHRASE_FIRST_MIN_CHARS) {
-          commitEnGrayDraft(full, now)
-        } else if (timeSince >= V2_EN_PHRASE_FIRST_WAIT_MS && full.trim().length >= 2) {
-          commitEnGrayDraft(full, now)
-        }
-        return
-      }
-
-      if (delta <= 0) return
-
-      if (v2EnEndsPhraseBoundary(full)) {
-        commitEnGrayDraft(full, now)
-        return
-      }
-
-      if (delta >= V2_EN_PHRASE_MIN_CHARS) {
-        commitEnGrayDraft(full, now)
-        return
-      }
-
-      if (timeSince >= V2_EN_PHRASE_MAX_WAIT_MS && delta >= V2_EN_PHRASE_STALE_MIN_DELTA) {
-        commitEnGrayDraft(full, now)
-      }
-    }
-
-    const scheduleEnPhraseTick = () => {
-      clearEnPhraseTick()
-      v2EnPhraseTickTimerRef.current = window.setTimeout(() => {
-        v2EnPhraseTickTimerRef.current = null
-        tryFlushEnPhraseDisplay(false)
-        if (v2EnDraftTextRef.current.length > v2EnPhraseDisplayedLenRef.current) {
-          scheduleEnPhraseTick()
-        }
-      }, V2_EN_PHRASE_TICK_MS)
-    }
+    syncLiveCaptionViewFromModel(liveCaptionSessionRef.current.getView())
 
     engine.onEvent((ev) => {
       if (ev.type === 'status') {
@@ -2110,190 +1621,29 @@ function RecordingWorkspace({
       }
       if (ev.type === 'en_interim') {
         liveRouteDiagLog('[LiveEngine][App] en_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
-        const seq = segmentSeq(ev.segmentId)
-        const open = v2OpenUtteranceSeqRef.current
-        // Drop only *late* packets from an older stream-N than the utterance slot (not global max N —
-        // that discarded valid interims after any out-of-order higher segment and caused gray to lag speech).
-        if (open >= 0 && seq < open) return
-        const prevRev = v2LastEnInterimRevBySegRef.current.get(ev.segmentId) ?? 0
-        if (ev.rev <= prevRev) return
-        v2LastEnInterimRevBySegRef.current.set(ev.segmentId, ev.rev)
-        if (v2LastEnInterimRevBySegRef.current.size > 48) {
-          const first = v2LastEnInterimRevBySegRef.current.keys().next().value
-          if (first !== undefined) v2LastEnInterimRevBySegRef.current.delete(first)
-        }
-        const isNewEnSegment = v2EnPhraseLastSegmentIdRef.current !== ev.segmentId
-        if (open >= 0 && seq !== open) flushV2OpenUtterance()
-        v2OpenUtteranceSeqRef.current = seq
-        const prevEn = v2CurrentEnUtteranceRef.current.trim()
-        const t = ev.text.trim()
-        if (prevEn.length && t.length) {
-          const nonlinear = !t.startsWith(prevEn) && !prevEn.startsWith(t)
-          if (nonlinear) {
-            v2PendingZhInterimRef.current = null
-            v2CurrentZhUtteranceRef.current = ''
-            v2ZhDraftTextRef.current = ''
-            if (v2ZhDraftRafRef.current != null) {
-              cancelAnimationFrame(v2ZhDraftRafRef.current)
-              v2ZhDraftRafRef.current = null
-            }
-            setSecondaryCaptionDraft('')
-            applyWindowedSecondaryCommitted()
-          }
-        }
-        v2CurrentEnUtteranceRef.current = t
-        v2EnDraftTextRef.current = ev.text
-        if (isNewEnSegment) {
-          v2EnPhraseLastSegmentIdRef.current = ev.segmentId
-          v2EnPhraseDisplayedLenRef.current = 0
-          v2EnPhraseLastFlushAtRef.current = Date.now()
-          v2PendingZhInterimRef.current = null
-        }
-        applyWindowedPrimaryCommitted()
-        tryFlushEnPhraseDisplay(isNewEnSegment)
-        scheduleEnPhraseTick()
-        syncPrimaryCaptionSaveRef()
-        scheduleV2UtteranceIdleFlush()
+        const cap = liveCaptionEventFromEngine(ev)
+        if (cap) syncLiveCaptionViewFromModel(liveCaptionSessionRef.current.apply(cap))
         return
       }
       if (ev.type === 'en_final') {
-        clearEnPhraseTick()
-        if (v2EnDraftRafRef.current != null) {
-          cancelAnimationFrame(v2EnDraftRafRef.current)
-          v2EnDraftRafRef.current = null
-        }
         liveRouteDiagLog('[LiveEngine][App] en_final', JSON.stringify({ segmentId: ev.segmentId }))
         setLiveCaptionPendingSlices((n) => Math.max(0, n - 1))
-        const seq = segmentSeq(ev.segmentId)
-        const text = ev.text.trim()
-        const open = v2OpenUtteranceSeqRef.current
-        if (open !== -1 && seq < open) return
-        if (open !== -1 && seq > open) flushV2OpenUtterance()
-        v2OpenUtteranceSeqRef.current = seq
-        // Commit EN final into black-line history immediately. Gray stays for true interims only;
-        // avoids long "final stuck in draft" and reduces reliance on v2CommittedForBlackDisplay heuristics.
-        if (text) {
-          v2LastEnFinalSanitizedBySegRef.current.set(
-            ev.segmentId,
-            sanitizeEnglishForZhTranslate(text),
-          )
-          v2MergeChunkIntoHistory(v2CommittedEnChunksRef.current, text)
-          v2SyncCommittedStringsFromChunks(
-            v2CommittedEnChunksRef.current,
-            v2CommittedZhChunksRef.current,
-            v2CommittedEnRef,
-            secondaryCaptionFullRef,
-          )
-        }
-        v2PendingZhInterimRef.current = null
-        v2CurrentEnUtteranceRef.current = ''
-        v2EnDraftTextRef.current = ''
-        v2EnPhraseLastSegmentIdRef.current = ''
-        v2EnPhraseDisplayedLenRef.current = 0
-        // Keep gray showing the finalized line until the next segment interim arrives (no empty slot).
-        const blackJoin = v2CommittedEnChunksRef.current.join(' ').trim()
-        let grayHold = ''
-        if (text) {
-          grayHold = v2StripLeadingGrayIfDuplicateInBlack(blackJoin, text)
-          if (!grayHold.trim()) grayHold = text
-        }
-        v2EnGrayVisibleRef.current = grayHold
-        setPrimaryCaptionDraft(grayHold)
-        flushPendingZhInterimIfReady()
-        applyWindowedPrimaryCommitted()
-        syncPrimaryCaptionSaveRef()
-        // Idle flush still drains ZH draft → committed when translation settles (EN slot already empty).
-        scheduleV2UtteranceIdleFlush()
+        const cap = liveCaptionEventFromEngine(ev)
+        if (cap) syncLiveCaptionViewFromModel(liveCaptionSessionRef.current.apply(cap))
         return
       }
       if (ev.type === 'zh_interim') {
-        // Discard stale in-flight interim translation that resolved after zh_final for this segment.
-        // Log is intentionally AFTER the guard so Console only shows interims that reach the UI.
-        if (v2FinalizedZhSegIds.current.has(ev.segmentId)) return
-        const seq = segmentSeq(ev.segmentId)
-        const open = v2OpenUtteranceSeqRef.current
-        if (open === -1 || seq !== open) return
-        const prevZhRev = v2LastZhInterimRevBySegRef.current.get(ev.segmentId) ?? 0
-        if (ev.rev <= prevZhRev) return
-        const src = ev.sourceEn.trim()
-        const latestRaw = v2CurrentEnUtteranceRef.current
-        if (!v2SourceEnStillPlausible(latestRaw, src)) return
-        const pending = v2PendingZhInterimRef.current
-        if (!v2EnCoverageCoversSourceEn(src)) {
-          if (!pending || pending.segmentId !== ev.segmentId || ev.rev > pending.rev) {
-            v2PendingZhInterimRef.current = {
-              segmentId: ev.segmentId,
-              sourceEn: src,
-              text: ev.text,
-              rev: ev.rev,
-            }
-          }
-          scheduleV2UtteranceIdleFlush()
-          return
+        const cap = liveCaptionEventFromEngine(ev)
+        if (cap) {
+          syncLiveCaptionViewFromModel(liveCaptionSessionRef.current.apply(cap))
+          liveRouteDiagLog('[LiveEngine][App] zh_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
         }
-        liveRouteDiagLog('[LiveEngine][App] zh_interim', JSON.stringify({ segmentId: ev.segmentId, rev: ev.rev }))
-        applyZhInterimToUi(ev.segmentId, ev.rev, ev.text)
-        scheduleV2UtteranceIdleFlush()
         return
       }
       if (ev.type === 'zh_final') {
-        if (v2ZhDraftRafRef.current != null) {
-          cancelAnimationFrame(v2ZhDraftRafRef.current)
-          v2ZhDraftRafRef.current = null
-        }
         liveRouteDiagLog('[LiveEngine][App] zh_final', JSON.stringify({ segmentId: ev.segmentId }))
-        v2PendingZhInterimRef.current = null
-        const expectedSan = normCaptionSpaces(
-          v2LastEnFinalSanitizedBySegRef.current.get(ev.segmentId) ?? '',
-        ).toLowerCase()
-        const srcSan = normCaptionSpaces(ev.sourceEn).toLowerCase()
-        if (expectedSan && srcSan && expectedSan !== srcSan) {
-          liveRouteDiagLog(
-            '[LiveEngine][App] zh_final dropped (sourceEn mismatch)',
-            JSON.stringify({ segmentId: ev.segmentId }),
-          )
-          v2LastEnFinalSanitizedBySegRef.current.delete(ev.segmentId)
-          return
-        }
-        v2LastEnFinalSanitizedBySegRef.current.delete(ev.segmentId)
-        v2FinalizedZhSegIds.current.add(ev.segmentId)
-        const seq = segmentSeq(ev.segmentId)
-        const text = v2GateZhMirrorBoilerplate(ev.text).trim()
-        const open = v2OpenUtteranceSeqRef.current
-        if (text) {
-          if (open !== -1 && seq === open) {
-            v2MergeChunkIntoHistory(v2CommittedZhChunksRef.current, text)
-            v2SyncCommittedStringsFromChunks(
-              v2CommittedEnChunksRef.current,
-              v2CommittedZhChunksRef.current,
-              v2CommittedEnRef,
-              secondaryCaptionFullRef,
-            )
-            v2CurrentZhUtteranceRef.current = ''
-            v2ZhDraftTextRef.current = ''
-            setSecondaryCaptionDraft('')
-            applyWindowedSecondaryCommitted()
-          } else {
-            v2MergeChunkIntoHistory(v2CommittedZhChunksRef.current, text)
-            v2SyncCommittedStringsFromChunks(
-              v2CommittedEnChunksRef.current,
-              v2CommittedZhChunksRef.current,
-              v2CommittedEnRef,
-              secondaryCaptionFullRef,
-            )
-            applyWindowedSecondaryCommitted()
-          }
-        }
-        if (!v2CurrentEnUtteranceRef.current.trim() && !v2CurrentZhUtteranceRef.current.trim()) {
-          v2OpenUtteranceSeqRef.current = -1
-          clearV2IdleTimer()
-        } else {
-          scheduleV2UtteranceIdleFlush()
-        }
-        if (v2FinalizedZhSegIds.current.size > 80) {
-          const entries = [...v2FinalizedZhSegIds.current]
-          v2FinalizedZhSegIds.current = new Set(entries.slice(-40))
-        }
+        const cap = liveCaptionEventFromEngine(ev)
+        if (cap) syncLiveCaptionViewFromModel(liveCaptionSessionRef.current.apply(cap))
       }
     })
 
@@ -2305,22 +1655,6 @@ function RecordingWorkspace({
     onLiveAudioChunkRef.current = null
 
     return () => {
-      if (v2UtteranceIdleTimerRef.current != null) {
-        clearTimeout(v2UtteranceIdleTimerRef.current)
-        v2UtteranceIdleTimerRef.current = null
-      }
-      if (v2EnPhraseTickTimerRef.current != null) {
-        clearTimeout(v2EnPhraseTickTimerRef.current)
-        v2EnPhraseTickTimerRef.current = null
-      }
-      if (v2EnDraftRafRef.current != null) {
-        cancelAnimationFrame(v2EnDraftRafRef.current)
-        v2EnDraftRafRef.current = null
-      }
-      if (v2ZhDraftRafRef.current != null) {
-        cancelAnimationFrame(v2ZhDraftRafRef.current)
-        v2ZhDraftRafRef.current = null
-      }
       onLivePcmChunkRef.current = null
       onLiveAudioChunkRef.current = null
       engine.stop()
@@ -2333,6 +1667,7 @@ function RecordingWorkspace({
     liveCaptionsPipelineEnabled,
     usesHosted,
     translateTarget,
+    syncLiveCaptionViewFromModel,
   ])
 
   const [recordings, setRecordings] = useState<Recording[]>([])
@@ -2383,24 +1718,8 @@ function RecordingWorkspace({
     transcribeActionLockRef.current = false
     setTranscribeSubmitPending(false)
     if (recorder.status === 'idle') {
-      primaryCaptionRef.current = ''
       lastFinalTimestampRef.current = 0
-      setPrimaryCaption('')
-      setPrimaryCaptionDraft('')
-      setSecondaryCaption('')
-      setSecondaryCaptionDraft('')
-      secondaryCaptionFullRef.current = ''
-      v2CommittedEnRef.current = ''
-      v2CommittedEnChunksRef.current = []
-      v2CommittedZhChunksRef.current = []
-      v2CurrentEnUtteranceRef.current = ''
-      v2CurrentZhUtteranceRef.current = ''
-      v2OpenUtteranceSeqRef.current = -1
-      if (v2UtteranceIdleTimerRef.current != null) {
-        clearTimeout(v2UtteranceIdleTimerRef.current)
-        v2UtteranceIdleTimerRef.current = null
-      }
-      v2LastEnInterimRevBySegRef.current.clear()
+      resetLiveCaptionSessionUi()
       liveCaptionSessionIdRef.current = null
       youmiLiveBatchPartsRef.current = []
       youmiLiveBatchBytesRef.current = 0
@@ -2413,7 +1732,7 @@ function RecordingWorkspace({
       }
       resetLiveTranscribeRuntime()
     }
-  }, [aiStoreTick, recorder.status, resetLiveTranscribeRuntime])
+  }, [aiStoreTick, recorder.status, resetLiveTranscribeRuntime, resetLiveCaptionSessionUi])
 
   const aiPipelineBusy =
     transcribeSubmitPending ||
@@ -2698,25 +2017,9 @@ function RecordingWorkspace({
       youmiLiveBatchFlushTimerRef.current = null
     }
     resetLiveTranscribeRuntime()
-    primaryCaptionRef.current = ''
     lastFinalTimestampRef.current = 0
-    setPrimaryCaption('')
-    setPrimaryCaptionDraft('')
     setLiveCaptionChunkNotice(null)
-    setSecondaryCaption('')
-    setSecondaryCaptionDraft('')
-    secondaryCaptionFullRef.current = ''
-    v2CommittedEnRef.current = ''
-    v2CommittedEnChunksRef.current = []
-    v2CommittedZhChunksRef.current = []
-    v2CurrentEnUtteranceRef.current = ''
-    v2CurrentZhUtteranceRef.current = ''
-    v2OpenUtteranceSeqRef.current = -1
-    if (v2UtteranceIdleTimerRef.current != null) {
-      clearTimeout(v2UtteranceIdleTimerRef.current)
-      v2UtteranceIdleTimerRef.current = null
-    }
-    v2LastEnInterimRevBySegRef.current.clear()
+    resetLiveCaptionSessionUi()
     if (typeof document !== 'undefined') {
       document.documentElement.lang = liveLang
     }
@@ -2737,25 +2040,9 @@ function RecordingWorkspace({
     }
     recorder.cancel()
     resetLiveTranscribeRuntime()
-    primaryCaptionRef.current = ''
     lastFinalTimestampRef.current = 0
-    setPrimaryCaption('')
-    setPrimaryCaptionDraft('')
     setLiveCaptionChunkNotice(null)
-    setSecondaryCaption('')
-    setSecondaryCaptionDraft('')
-    secondaryCaptionFullRef.current = ''
-    v2CommittedEnRef.current = ''
-    v2CommittedEnChunksRef.current = []
-    v2CommittedZhChunksRef.current = []
-    v2CurrentEnUtteranceRef.current = ''
-    v2CurrentZhUtteranceRef.current = ''
-    v2OpenUtteranceSeqRef.current = -1
-    if (v2UtteranceIdleTimerRef.current != null) {
-      clearTimeout(v2UtteranceIdleTimerRef.current)
-      v2UtteranceIdleTimerRef.current = null
-    }
-    v2LastEnInterimRevBySegRef.current.clear()
+    resetLiveCaptionSessionUi()
   }
 
   const pauseRecording = () => {
@@ -2822,14 +2109,9 @@ function RecordingWorkspace({
       ) {
         await new Promise((r) => window.setTimeout(r, 90))
       }
-      const primary = (
-        useLiveEngineV2
-          ? v2JoinForPersist(v2CommittedEnChunksRef.current, v2CurrentEnUtteranceRef.current)
-          : primaryCaptionRef.current
-      ).trim()
-      const secondary = useLiveEngineV2
-        ? v2JoinForPersist(v2CommittedZhChunksRef.current, v2CurrentZhUtteranceRef.current)
-        : secondaryCaption.trim()
+      const capSnap = useLiveEngineV2 ? liveCaptionSessionRef.current.getView() : null
+      const primary = (useLiveEngineV2 ? capSnap!.persistPrimaryFull : primaryCaptionRef.current).trim()
+      const secondary = (useLiveEngineV2 ? capSnap!.persistSecondaryFull : secondaryCaption.trim()).trim()
       const liveText =
         translateTarget === 'off'
           ? primary
@@ -3038,25 +2320,9 @@ function RecordingWorkspace({
         ledgerClear(recordingId)
       }
 
-      primaryCaptionRef.current = ''
       lastFinalTimestampRef.current = 0
-      setPrimaryCaption('')
-      setPrimaryCaptionDraft('')
       setLiveCaptionChunkNotice(null)
-      setSecondaryCaption('')
-      setSecondaryCaptionDraft('')
-      secondaryCaptionFullRef.current = ''
-      v2CommittedEnRef.current = ''
-      v2CommittedEnChunksRef.current = []
-      v2CommittedZhChunksRef.current = []
-      v2CurrentEnUtteranceRef.current = ''
-      v2CurrentZhUtteranceRef.current = ''
-      v2OpenUtteranceSeqRef.current = -1
-      if (v2UtteranceIdleTimerRef.current != null) {
-        clearTimeout(v2UtteranceIdleTimerRef.current)
-        v2UtteranceIdleTimerRef.current = null
-      }
-      v2LastEnInterimRevBySegRef.current.clear()
+      resetLiveCaptionSessionUi()
       setSelectedId(recordingId)
       setTitle('')
     } catch (e) {
