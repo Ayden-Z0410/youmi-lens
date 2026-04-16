@@ -390,8 +390,8 @@ function LoginScreen({ auth }: { auth: ReturnType<typeof useAuth> }) {
               lineHeight: t.lineHeight.relaxed,
             }}
           >
-            Recordings are stored in your Supabase project and tied to your account. Sign in on any device
-            with the same account to access them.
+            Recordings and transcripts sync to your Youmi Lens account. Sign in on any device with the same
+            email to access them.
           </p>
 
           <label
@@ -457,9 +457,23 @@ function LoginScreen({ auth }: { auth: ReturnType<typeof useAuth> }) {
   )
 }
 
-function CloudSetupSplash({ onUseLocal }: { onUseLocal: () => void }) {
+function CloudSetupSplash({
+  onUseLocal,
+  onBack,
+}: {
+  onUseLocal: () => void
+  /** Developer-only: return to the product-facing gate. */
+  onBack?: () => void
+}) {
   return (
     <div className="app narrow">
+      {onBack ? (
+        <p style={{ margin: '0.75rem 0 0' }}>
+          <button type="button" className="btn ghost small" onClick={onBack}>
+            ← Back
+          </button>
+        </p>
+      ) : null}
       <header className="hero">
         <p className="eyebrow">Youmi Lens</p>
         <h1>Save recordings with an account (recommended)</h1>
@@ -517,18 +531,128 @@ VITE_SUPABASE_ANON_KEY=eyJhbG...`}
   )
 }
 
+/** When cloud env vars are missing: product-facing path only (no self-hosted setup as default). */
+function UnconfiguredCloudGate({
+  onUseLocal,
+  onOpenDeveloperSetup,
+}: {
+  onUseLocal: () => void
+  onOpenDeveloperSetup?: () => void
+}) {
+  const t = designTokens
+  const px = (n: number) => `${n}px`
+  return (
+    <div
+      className="ds-root login-screen"
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        padding: px(t.spacing[8]),
+        boxSizing: 'border-box',
+      }}
+    >
+      <header
+        style={{
+          marginBottom: px(t.spacing[8]),
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: px(t.spacing[4]),
+        }}
+      >
+        <YoumiLensMonogramY size={32} color={t.colors.primary} aria-hidden />
+        <span
+          style={{
+            fontSize: t.fontSize.xl,
+            fontWeight: 600,
+            letterSpacing: '-0.035em',
+            color: t.colors.primary,
+          }}
+        >
+          Youmi Lens
+        </span>
+      </header>
+
+      <div style={{ width: '100%', maxWidth: 400, position: 'relative', zIndex: 1 }}>
+        <div
+          className="ds-card login-screen__card"
+          style={{
+            padding: `${px(t.spacing[6])} ${px(t.spacing[8])}`,
+            border: `1px solid ${t.colors.border}`,
+            background: t.colors.surface,
+          }}
+        >
+          <h1
+            style={{
+              margin: `0 0 ${px(t.spacing[3])}`,
+              fontSize: t.fontSize.md,
+              fontWeight: 600,
+              color: t.colors.text,
+              letterSpacing: '-0.02em',
+            }}
+          >
+            Sign in to Youmi Lens
+          </h1>
+          <p
+            style={{
+              margin: `0 0 ${px(t.spacing[4])}`,
+              fontSize: t.fontSize.sm,
+              color: t.colors.textMuted,
+              lineHeight: t.lineHeight.relaxed,
+            }}
+          >
+            This copy of the app isn&apos;t connected to Youmi Lens cloud, so email sign-in can&apos;t start
+            here. Use an official release from your team, or continue on this device only.
+          </p>
+          <p
+            style={{
+              margin: `0 0 ${px(t.spacing[4])}`,
+              fontSize: t.fontSize.sm,
+              color: t.colors.textMuted,
+              lineHeight: t.lineHeight.relaxed,
+            }}
+          >
+            Offline mode keeps recordings and transcripts in this browser only. Export ZIP backups from the
+            library when you use it.
+          </p>
+          <button type="button" className="ds-btn ds-btn--primary" style={{ width: '100%' }} onClick={onUseLocal}>
+            Continue without an account
+          </button>
+        </div>
+        {onOpenDeveloperSetup ? (
+          <p
+            style={{
+              marginTop: px(t.spacing[4]),
+              textAlign: 'center',
+              fontSize: t.fontSize.sm,
+              color: t.colors.textMuted,
+            }}
+          >
+            <button type="button" className="btn ghost small" onClick={onOpenDeveloperSetup}>
+              Developer: local Supabase setup
+            </button>
+          </p>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const auth = useAuth()
   const supabase = getSupabase()
   const cloudReady = isSupabaseConfigured()
   const [forceLocalWithoutCloud, setForceLocalWithoutCloud] = useState(readForceLocalPreference)
+  const [devCloudSetupVisible, setDevCloudSetupVisible] = useState(false)
 
   const authUiGateLogged = useRef<string>('')
   useEffect(() => {
     let gate: string
     let detail: Record<string, unknown>
     if (!cloudReady) {
-      gate = 'cloud-setup-or-local'
+      gate = 'unconfigured-cloud-or-local'
       detail = { screen: gate, cloudReady: false }
     } else if (auth.loading) {
       gate = 'loading-session'
@@ -553,8 +677,24 @@ export default function App() {
 
   if (!cloudReady) {
     if (!forceLocalWithoutCloud) {
+      if (import.meta.env.DEV && devCloudSetupVisible) {
+        return (
+          <CloudSetupSplash
+            onBack={() => setDevCloudSetupVisible(false)}
+            onUseLocal={() => {
+              try {
+                localStorage.setItem(LC_USE_LOCAL_KEY, '1')
+              } catch {
+                /* ignore */
+              }
+              setDevCloudSetupVisible(false)
+              setForceLocalWithoutCloud(true)
+            }}
+          />
+        )
+      }
       return (
-        <CloudSetupSplash
+        <UnconfiguredCloudGate
           onUseLocal={() => {
             try {
               localStorage.setItem(LC_USE_LOCAL_KEY, '1')
@@ -563,6 +703,9 @@ export default function App() {
             }
             setForceLocalWithoutCloud(true)
           }}
+          onOpenDeveloperSetup={
+            import.meta.env.DEV ? () => setDevCloudSetupVisible(true) : undefined
+          }
         />
       )
     }
@@ -2904,8 +3047,8 @@ function RecordingWorkspace({
           <span style={{ color: 'rgba(248,250,252,0.9)', fontSize: '0.8rem', lineHeight: 1.45 }}>
             {localOnly ? (
               <>
-                <strong>{userLabel}</strong>. Data stays in this browser only: export ZIP backups below, or add
-                Supabase in <code>.env</code> and restart to use cloud sync.
+                <strong>{userLabel}</strong>. Data stays in this browser only — export ZIP backups from the
+                library. Reload after installing a cloud-enabled build to sign in and sync.
                 {onReloadAfterCloudEnv && (
                   <>
                     {' '}
@@ -2922,7 +3065,7 @@ function RecordingWorkspace({
                         window.location.reload()
                       }}
                     >
-                      Supabase configured — reload to sign in
+                      Reload to try cloud sign-in
                     </button>
                   </>
                 )}

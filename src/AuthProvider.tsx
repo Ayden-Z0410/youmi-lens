@@ -299,7 +299,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithEmailOtp = useCallback(
     async (email: string) => {
-      if (!supabase) return { error: 'Supabase is not configured.' }
+      if (!supabase) {
+        return {
+          error:
+            'Cloud sign-in isn’t available in this build. Use an official Youmi Lens release, or continue without an account.',
+        }
+      }
       const trimmed = email.trim()
       if (!trimmed) return { error: 'Enter your email address.' }
       const { error } = await supabase.auth.signInWithOtp({
