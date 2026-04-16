@@ -1,5 +1,9 @@
 import { translateLiveCaption } from '../aiClient'
-import { sanitizeEnglishForZhTranslate } from '../liveCaptionSanitize'
+import {
+  containsListenLectureBoilerplate,
+  sanitizeEnglishForZhTranslate,
+  stripLeadingListenBoilerplateRepeated,
+} from '../liveCaptionSanitize'
 import { YoumiLiveAdapter } from './adapters/youmiAdapter'
 import type { LiveEngineEvent, LiveEngineListener } from './types'
 
@@ -51,6 +55,17 @@ export class LiveEngine {
 
   // Session-level timing for long-run diagnostics: ms since engine.start()
   private sessionStartMs = 0
+  /** After first EN packet containing TOEFL-style “listen to a lecture…”, strip repeats on later packets. */
+  private listenLectureBoilerplateIntroEmitted = false
+
+  private gateListenBoilerplate(text: string): string {
+    if (!containsListenLectureBoilerplate(text)) return text
+    if (this.listenLectureBoilerplateIntroEmitted) {
+      return stripLeadingListenBoilerplateRepeated(text)
+    }
+    this.listenLectureBoilerplateIntroEmitted = true
+    return text
+  }
 
   private elapsed(): number {
     return this.sessionStartMs ? Date.now() - this.sessionStartMs : 0
@@ -73,6 +88,7 @@ export class LiveEngine {
     this.translationQueue = []
     this.activeTranslations = 0
     this.sessionStartMs = Date.now()
+    this.listenLectureBoilerplateIntroEmitted = false
     log('start')
     this.emit({ type: 'status', status: 'starting' })
     const adapter = new YoumiLiveAdapter()
@@ -102,8 +118,9 @@ export class LiveEngine {
       if (ev.type === 'en_interim') {
         // Do not emit status:'streaming' on every interim — it triggered App setState each time and
         // queued behind hundreds of draft updates (first word fast, then UI fell behind speech).
-        this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: ev.text })
-        this.latestEnInterimBySeg.set(ev.segmentId, ev.text)
+        const gated = this.gateListenBoilerplate(ev.text)
+        this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: gated })
+        this.latestEnInterimBySeg.set(ev.segmentId, gated)
         // Cancel any pending interim debounce — prevents stale zh_interim after zh_final
         if (this.interimTranslateTimer) {
           clearTimeout(this.interimTranslateTimer)
@@ -135,8 +152,9 @@ export class LiveEngine {
           translationQueueDepth: this.translationQueue.length,
           activeTranslations: this.activeTranslations,
         })
-        this.emit({ type: 'en_final', segmentId: ev.segmentId, text: ev.text })
-        this.enqueueTranslation(ev.segmentId, ev.text)
+        const gatedFinal = this.gateListenBoilerplate(ev.text)
+        this.emit({ type: 'en_final', segmentId: ev.segmentId, text: gatedFinal })
+        this.enqueueTranslation(ev.segmentId, gatedFinal)
       }
     })
     adapter.start()

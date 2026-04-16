@@ -115,7 +115,11 @@ import {
 import { transcribeHostedLiveCaptionChunk } from './lib/liveCaptionHostedTranscribe'
 import { transcribeHostedLiveRealtime } from './lib/liveCaptionRealtime'
 import { LiveEngine } from './lib/liveEngine/engine'
-import { normCaptionSpaces, sanitizeEnglishForZhTranslate } from './lib/liveCaptionSanitize'
+import {
+  normCaptionSpaces,
+  sanitizeEnglishForZhTranslate,
+  stripRepeatedZhLectureIntroMirror,
+} from './lib/liveCaptionSanitize'
 import { canonicalizeLectureTranscript } from './lib/transcriptCanonical'
 import { youmiLiveLog } from './lib/youmiLiveDebug'
 import type { Recording, RecordingDetail } from './types'
@@ -298,6 +302,51 @@ function v2IsSameSemanticChunk(prev: string, next: string): boolean {
   return false
 }
 
+/** Gray restarts mid-utterance with a long prefix already contained in the last committed chunk (TOEFL-style ASR). */
+function v2DraftEmbedsInLastChunk(last: string, draft: string): boolean {
+  const d = draft.trim()
+  if (d.length < 40) return false
+  const l = last.toLowerCase().replace(/\s+/g, ' ')
+  const probe = d
+    .slice(0, Math.min(120, d.length))
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+  return probe.length >= 40 && l.includes(probe)
+}
+
+function v2NormLooseForGrayDup(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+/** Remove gray leading text that duplicates any substring already shown in committed black (hard mutual exclusion). */
+function v2StripLeadingGrayIfDuplicateInBlack(blackFull: string, gray: string): string {
+  const g = gray.trim()
+  if (!g || !blackFull.trim()) return gray
+  const b = v2NormLooseForGrayDup(blackFull)
+  let bestLen = 0
+  const maxProbe = Math.min(g.length, Math.max(blackFull.length, 480))
+  for (let len = maxProbe; len >= 18; len--) {
+    const sub = v2NormLooseForGrayDup(g.slice(0, len))
+    if (sub.length >= 18 && b.includes(sub)) {
+      bestLen = len
+      break
+    }
+  }
+  if (bestLen === 0) {
+    const maxK = Math.min(blackFull.length, g.length, 240)
+    for (let k = maxK; k >= 10; k--) {
+      const bs = v2NormLooseForGrayDup(blackFull.slice(-k))
+      const gp = v2NormLooseForGrayDup(g.slice(0, k))
+      if (bs === gp) {
+        bestLen = k
+        break
+      }
+    }
+  }
+  if (bestLen === 0) return gray
+  return g.slice(bestLen).trimStart()
+}
+
 function v2PickRicherRevision(prev: string, next: string): string {
   const p = prev.trim()
   const n = next.trim()
@@ -338,7 +387,10 @@ function v2CommittedForBlackDisplay(chunks: readonly string[], draft: string): s
   const d = draft.trim()
   if (chunks.length === 0) return ''
   const last = chunks[chunks.length - 1]!
-  if (d && v2IsSameSemanticChunk(last, d)) return chunks.slice(0, -1).join(' ').trim()
+  if (!d) return chunks.join(' ').trim()
+  if (v2IsSameSemanticChunk(last, d) || v2DraftEmbedsInLastChunk(last, d)) {
+    return chunks.slice(0, -1).join(' ').trim()
+  }
   return chunks.join(' ').trim()
 }
 
@@ -1148,6 +1200,8 @@ function RecordingWorkspace({
   } | null>(null)
   /** Sanitized EN final text per segment — must match zh_final.sourceEn before committing ZH. */
   const v2LastEnFinalSanitizedBySegRef = useRef(new Map<string, string>())
+  /** After first ZH line matched lecture-instruction style, strip repeated Chinese intro mirrors. */
+  const v2ZhMirrorBoilerplateStripEnabledRef = useRef(false)
 
   // Retained for future use (paragraph block separation, currently disabled).
   const lastFinalTimestampRef = useRef(0)
@@ -1783,6 +1837,7 @@ function RecordingWorkspace({
     v2EnGrayVisibleRef.current = ''
     v2PendingZhInterimRef.current = null
     v2LastEnFinalSanitizedBySegRef.current.clear()
+    v2ZhMirrorBoilerplateStripEnabledRef.current = false
 
     const clearEnPhraseTick = () => {
       if (v2EnPhraseTickTimerRef.current != null) {
@@ -1883,14 +1938,31 @@ function RecordingWorkspace({
       }, V2_UTTERANCE_IDLE_FLUSH_MS)
     }
 
+    const v2GateZhMirrorBoilerplate = (raw: string): string => {
+      const z = raw.trim()
+      if (!z) return raw
+      const head = z.slice(0, 120)
+      const looksLikeLectureIntro =
+        head.startsWith('\u542c') &&
+        /[\u8bb2\u5ea7\u8bfe\u7a0b\u8bfe\u5802\u6d77\u6d0b\u751f\u7269\u5b66]/.test(head)
+      if (looksLikeLectureIntro) {
+        if (v2ZhMirrorBoilerplateStripEnabledRef.current) {
+          return stripRepeatedZhLectureIntroMirror(raw)
+        }
+        v2ZhMirrorBoilerplateStripEnabledRef.current = true
+      }
+      return raw
+    }
+
     const applyZhInterimToUi = (segmentId: string, rev: number, text: string) => {
+      const gated = v2GateZhMirrorBoilerplate(text)
       v2LastZhInterimRevBySegRef.current.set(segmentId, rev)
       if (v2LastZhInterimRevBySegRef.current.size > 48) {
         const first = v2LastZhInterimRevBySegRef.current.keys().next().value
         if (first !== undefined) v2LastZhInterimRevBySegRef.current.delete(first)
       }
-      v2CurrentZhUtteranceRef.current = text.trim()
-      v2ZhDraftTextRef.current = text
+      v2CurrentZhUtteranceRef.current = gated.trim()
+      v2ZhDraftTextRef.current = gated
       applyWindowedSecondaryCommitted()
       if (v2ZhDraftRafRef.current == null) {
         v2ZhDraftRafRef.current = requestAnimationFrame(() => {
@@ -1929,8 +2001,10 @@ function RecordingWorkspace({
     }
 
     const commitEnGrayDraft = (full: string, now: number) => {
-      setPrimaryCaptionDraft(full)
-      v2EnGrayVisibleRef.current = full
+      const blackJoin = v2CommittedEnChunksRef.current.join(' ').trim()
+      const displayGray = v2StripLeadingGrayIfDuplicateInBlack(blackJoin, full)
+      setPrimaryCaptionDraft(displayGray)
+      v2EnGrayVisibleRef.current = displayGray
       v2EnPhraseDisplayedLenRef.current = full.length
       v2EnPhraseLastFlushAtRef.current = now
       flushPendingZhInterimIfReady()
@@ -2164,7 +2238,7 @@ function RecordingWorkspace({
         v2LastEnFinalSanitizedBySegRef.current.delete(ev.segmentId)
         v2FinalizedZhSegIds.current.add(ev.segmentId)
         const seq = segmentSeq(ev.segmentId)
-        const text = ev.text.trim()
+        const text = v2GateZhMirrorBoilerplate(ev.text).trim()
         const open = v2OpenUtteranceSeqRef.current
         if (text) {
           if (open !== -1 && seq === open) {
