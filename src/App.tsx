@@ -1846,20 +1846,33 @@ function RecordingWorkspace({
       }
     }
 
-    /** Gray EN (sanitized) must cover the full `sourceEn` string that was sent to translate. */
-    const v2SanitizedGrayCoversSourceEn = (grayRaw: string, sourceEn: string): boolean => {
+    /** Committed EN + current interim (or post-final gray hold) as one string for ZH gating. */
+    const v2EnMergedOpenForGate = (): string => {
+      const base = v2CommittedEnChunksRef.current.join(' ').trim()
+      const cur = v2CurrentEnUtteranceRef.current.trim()
+      const gray = v2EnGrayVisibleRef.current.trim()
+      const open = cur || gray
+      return `${base} ${open}`.trim()
+    }
+
+    /** Sanitized EN coverage (black + open) must cover full translate `sourceEn` — not gray alone. */
+    const v2EnCoverageCoversSourceEn = (sourceEn: string): boolean => {
       const s = normCaptionSpaces(sourceEn).toLowerCase()
       if (!s) return true
-      const g = normCaptionSpaces(sanitizeEnglishForZhTranslate(grayRaw)).toLowerCase()
-      if (!g) return false
-      return g.length >= s.length && g.startsWith(s)
+      const merged = normCaptionSpaces(sanitizeEnglishForZhTranslate(v2EnMergedOpenForGate())).toLowerCase()
+      if (!merged) return false
+      return merged.length >= s.length && merged.startsWith(s)
     }
 
     const v2SourceEnStillPlausible = (latestRawEn: string, sourceEn: string): boolean => {
-      const L = normCaptionSpaces(sanitizeEnglishForZhTranslate(latestRawEn)).toLowerCase()
       const s = normCaptionSpaces(sourceEn).toLowerCase()
       if (!s) return false
-      return L.startsWith(s) || (s.startsWith(L) && L.length > 0)
+      if (latestRawEn.trim()) {
+        const L = normCaptionSpaces(sanitizeEnglishForZhTranslate(latestRawEn)).toLowerCase()
+        return L.startsWith(s) || (s.startsWith(L) && L.length > 0)
+      }
+      const C = normCaptionSpaces(sanitizeEnglishForZhTranslate(v2EnMergedOpenForGate())).toLowerCase()
+      return C.startsWith(s) || (s.startsWith(C) && C.length > 0)
     }
 
     const clearV2IdleTimer = () => {
@@ -1989,8 +2002,7 @@ function RecordingWorkspace({
         v2PendingZhInterimRef.current = null
         return
       }
-      const gray = v2EnGrayVisibleRef.current
-      if (!v2SanitizedGrayCoversSourceEn(gray, p.sourceEn)) return
+      if (!v2EnCoverageCoversSourceEn(p.sourceEn)) return
       v2PendingZhInterimRef.current = null
       liveRouteDiagLog(
         '[LiveEngine][App] zh_interim (from pending)',
@@ -2002,7 +2014,8 @@ function RecordingWorkspace({
 
     const commitEnGrayDraft = (full: string, now: number) => {
       const blackJoin = v2CommittedEnChunksRef.current.join(' ').trim()
-      const displayGray = v2StripLeadingGrayIfDuplicateInBlack(blackJoin, full)
+      let displayGray = v2StripLeadingGrayIfDuplicateInBlack(blackJoin, full)
+      if (full.trim() && !displayGray.trim()) displayGray = full.trim()
       setPrimaryCaptionDraft(displayGray)
       v2EnGrayVisibleRef.current = displayGray
       v2EnPhraseDisplayedLenRef.current = full.length
@@ -2109,6 +2122,7 @@ function RecordingWorkspace({
           const first = v2LastEnInterimRevBySegRef.current.keys().next().value
           if (first !== undefined) v2LastEnInterimRevBySegRef.current.delete(first)
         }
+        const isNewEnSegment = v2EnPhraseLastSegmentIdRef.current !== ev.segmentId
         if (open >= 0 && seq !== open) flushV2OpenUtterance()
         v2OpenUtteranceSeqRef.current = seq
         const prevEn = v2CurrentEnUtteranceRef.current.trim()
@@ -2129,14 +2143,14 @@ function RecordingWorkspace({
         }
         v2CurrentEnUtteranceRef.current = t
         v2EnDraftTextRef.current = ev.text
-        if (v2EnPhraseLastSegmentIdRef.current !== ev.segmentId) {
+        if (isNewEnSegment) {
           v2EnPhraseLastSegmentIdRef.current = ev.segmentId
           v2EnPhraseDisplayedLenRef.current = 0
           v2EnPhraseLastFlushAtRef.current = Date.now()
           v2PendingZhInterimRef.current = null
         }
         applyWindowedPrimaryCommitted()
-        tryFlushEnPhraseDisplay(false)
+        tryFlushEnPhraseDisplay(isNewEnSegment)
         scheduleEnPhraseTick()
         syncPrimaryCaptionSaveRef()
         scheduleV2UtteranceIdleFlush()
@@ -2176,8 +2190,15 @@ function RecordingWorkspace({
         v2EnDraftTextRef.current = ''
         v2EnPhraseLastSegmentIdRef.current = ''
         v2EnPhraseDisplayedLenRef.current = 0
-        v2EnGrayVisibleRef.current = ''
-        setPrimaryCaptionDraft('')
+        // Keep gray showing the finalized line until the next segment interim arrives (no empty slot).
+        const blackJoin = v2CommittedEnChunksRef.current.join(' ').trim()
+        let grayHold = ''
+        if (text) {
+          grayHold = v2StripLeadingGrayIfDuplicateInBlack(blackJoin, text)
+          if (!grayHold.trim()) grayHold = text
+        }
+        v2EnGrayVisibleRef.current = grayHold
+        setPrimaryCaptionDraft(grayHold)
         flushPendingZhInterimIfReady()
         applyWindowedPrimaryCommitted()
         syncPrimaryCaptionSaveRef()
@@ -2197,9 +2218,8 @@ function RecordingWorkspace({
         const src = ev.sourceEn.trim()
         const latestRaw = v2CurrentEnUtteranceRef.current
         if (!v2SourceEnStillPlausible(latestRaw, src)) return
-        const gray = v2EnGrayVisibleRef.current
         const pending = v2PendingZhInterimRef.current
-        if (!v2SanitizedGrayCoversSourceEn(gray, src)) {
+        if (!v2EnCoverageCoversSourceEn(src)) {
           if (!pending || pending.segmentId !== ev.segmentId || ev.rev > pending.rev) {
             v2PendingZhInterimRef.current = {
               segmentId: ev.segmentId,
