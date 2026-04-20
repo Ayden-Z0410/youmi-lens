@@ -3,6 +3,7 @@
  * **translation-from-text** via HTTP. Post-class transcription/summary stay out of this module.
  */
 import { translateLiveCaption } from '../aiClient'
+import { compactLiveEnglishSnapshot } from '../liveCaptionCompaction'
 import {
   normalizeEnglishPrimaryPayloadOrReject,
   normalizeZhPayloadOrReject,
@@ -109,10 +110,12 @@ export class LiveEngine {
       if (ev.type === 'en_interim') {
         const clean = normalizeEnglishPrimaryPayloadOrReject(ev.text)
         if (!clean) return
+        const snapshot =
+          (compactLiveEnglishSnapshot(clean) || '').trim() || clean
         // Do not emit status:'streaming' on every interim — it triggered App setState each time and
         // queued behind hundreds of draft updates (first word fast, then UI fell behind speech).
-        this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: clean })
-        this.latestEnInterimBySeg.set(ev.segmentId, clean)
+        this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: snapshot })
+        this.latestEnInterimBySeg.set(ev.segmentId, snapshot)
         // Cancel any pending interim debounce — prevents stale zh_interim after zh_final
         if (this.interimTranslateTimer) {
           clearTimeout(this.interimTranslateTimer)
