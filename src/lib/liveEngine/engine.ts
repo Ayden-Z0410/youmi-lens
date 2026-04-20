@@ -3,7 +3,11 @@
  * **translation-from-text** via HTTP. Post-class transcription/summary stay out of this module.
  */
 import { translateLiveCaption } from '../aiClient'
-import { sanitizeEnglishForZhTranslate } from '../liveCaptionSanitize'
+import {
+  normalizeEnglishPrimaryPayloadOrReject,
+  normalizeZhPayloadOrReject,
+  sanitizeEnglishForZhTranslate,
+} from '../liveCaptionSanitize'
 import { YoumiLiveAdapter } from './adapters/youmiAdapter'
 import type { LiveEngineEvent, LiveEngineListener } from './types'
 
@@ -103,10 +107,12 @@ export class LiveEngine {
         return
       }
       if (ev.type === 'en_interim') {
+        const clean = normalizeEnglishPrimaryPayloadOrReject(ev.text)
+        if (!clean) return
         // Do not emit status:'streaming' on every interim — it triggered App setState each time and
         // queued behind hundreds of draft updates (first word fast, then UI fell behind speech).
-        this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: ev.text })
-        this.latestEnInterimBySeg.set(ev.segmentId, ev.text)
+        this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: clean })
+        this.latestEnInterimBySeg.set(ev.segmentId, clean)
         // Cancel any pending interim debounce — prevents stale zh_interim after zh_final
         if (this.interimTranslateTimer) {
           clearTimeout(this.interimTranslateTimer)
@@ -131,15 +137,17 @@ export class LiveEngine {
         this.zhInterimGenBySeg.set(sid, (this.zhInterimGenBySeg.get(sid) ?? 0) + 1)
         this.lastZhInterimChunkEnBySeg.delete(sid)
         this.lastZhInterimChunkAtMsBySeg.delete(sid)
+        const cleanFinal = normalizeEnglishPrimaryPayloadOrReject(ev.text)
+        if (!cleanFinal) return
         log('en_final', {
           segmentId: ev.segmentId,
-          len: ev.text.length,
+          len: cleanFinal.length,
           sessionMs: this.elapsed(),
           translationQueueDepth: this.translationQueue.length,
           activeTranslations: this.activeTranslations,
         })
-        this.emit({ type: 'en_final', segmentId: ev.segmentId, text: ev.text })
-        this.enqueueTranslation(ev.segmentId, ev.text)
+        this.emit({ type: 'en_final', segmentId: ev.segmentId, text: cleanFinal })
+        this.enqueueTranslation(ev.segmentId, cleanFinal)
       }
     })
     adapter.start()
@@ -248,7 +256,8 @@ export class LiveEngine {
     if (!t) return
     if (!this.shouldEmitZhInterimForChunk(segmentId, t)) return
     try {
-      const zh = (await translateLiveCaption(t, { target: this.translateTarget })).trim()
+      const zhRaw = (await translateLiveCaption(t, { target: this.translateTarget })).trim()
+      const zh = normalizeZhPayloadOrReject(zhRaw, this.translateTarget)
       if (!zh || !this.running) return
       if ((this.zhInterimGenBySeg.get(segmentId) ?? 0) !== expectedGen) return
       const rev = (this.zhRevBySeg.get(segmentId) ?? 0) + 1
@@ -280,7 +289,8 @@ export class LiveEngine {
     if (!t) return
     const t0 = Date.now()
     try {
-      const zh = (await translateLiveCaption(t, { target: this.translateTarget })).trim()
+      const zhRaw = (await translateLiveCaption(t, { target: this.translateTarget })).trim()
+      const zh = normalizeZhPayloadOrReject(zhRaw, this.translateTarget)
       const latencyMs = Date.now() - t0
       const queueWaitMs = enqueuedAt ? t0 - enqueuedAt : 0
       if (rev !== undefined) {
@@ -291,7 +301,7 @@ export class LiveEngine {
         }
       }
       // Timing log: visible in Console over time to spot Qwen API degradation
-      log('zh_final', { segmentId, len: zh.length, latencyMs, queueWaitMs, sessionMs: this.elapsed() })
+      log('zh_final', { segmentId, len: zh?.length ?? 0, latencyMs, queueWaitMs, sessionMs: this.elapsed() })
       if (!zh || !this.running) return
       this.emit({ type: 'zh_final', segmentId, text: zh, sourceEn: t })
     } catch (e) {

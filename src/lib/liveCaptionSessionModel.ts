@@ -3,7 +3,12 @@
  * Two slots each language: committed (history) + current (single replaceable line).
  * Stale translation / ASR results are dropped by utterance id + monotonic rev, not string heuristics.
  */
-import { normCaptionSpaces, sanitizeEnglishForZhTranslate } from './liveCaptionSanitize'
+import {
+  isGarbledMixedScriptLine,
+  normCaptionSpaces,
+  normalizeEnglishPrimaryPayloadOrReject,
+  sanitizeEnglishForZhTranslate,
+} from './liveCaptionSanitize'
 import type { LiveEngineEvent } from './liveEngine/types'
 
 export type UtteranceId = string
@@ -157,6 +162,10 @@ export class LiveCaptionSessionModel {
     const open = this.s.openUtteranceSeq
 
     if (ev.type === 'en_interim') {
+      const normalizedEn = normalizeEnglishPrimaryPayloadOrReject(ev.text)
+      if (!normalizedEn) {
+        return projectView(this.s)
+      }
       if (open >= 0 && seq < open) {
         return projectView(this.s)
       }
@@ -164,7 +173,7 @@ export class LiveCaptionSessionModel {
       if (ev.rev <= prev) {
         return projectView(this.s)
       }
-      const nextText = ev.text.trim()
+      const nextText = normalizedEn
       const sameSeg = this.s.currentEn?.id === ev.segmentId
       if (sameSeg && this.s.currentEn && !enInterimIsNonRegressive(this.s.currentEn.text, nextText)) {
         return projectView(this.s)
@@ -187,10 +196,14 @@ export class LiveCaptionSessionModel {
     }
 
     if (ev.type === 'en_final') {
+      const normalizedFinal = normalizeEnglishPrimaryPayloadOrReject(ev.text)
+      if (!normalizedFinal) {
+        return projectView(this.s)
+      }
       if (open >= 0 && seq < open) {
         return projectView(this.s)
       }
-      const text = ev.text.trim()
+      const text = normalizedFinal
       if (text) {
         this.s.lastEnFinalSanitizedById.set(ev.segmentId, sanitizeEnglishForZhTranslate(text))
         const idx = this.s.committedEn.findIndex((x) => x.id === ev.segmentId)
@@ -209,6 +222,9 @@ export class LiveCaptionSessionModel {
     }
 
     if (ev.type === 'zh_interim') {
+      if (isGarbledMixedScriptLine(ev.text)) {
+        return projectView(this.s)
+      }
       if (this.s.finalizedZhIds.has(ev.segmentId)) {
         return projectView(this.s)
       }
@@ -233,6 +249,9 @@ export class LiveCaptionSessionModel {
     }
 
     if (ev.type === 'zh_final') {
+      if (isGarbledMixedScriptLine(ev.text)) {
+        return projectView(this.s)
+      }
       if (this.s.finalizedZhIds.has(ev.segmentId)) {
         return projectView(this.s)
       }
