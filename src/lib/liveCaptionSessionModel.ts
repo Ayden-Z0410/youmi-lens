@@ -78,13 +78,17 @@ function initialState(): LiveCaptionSessionState {
 function projectView(s: LiveCaptionSessionState): LiveCaptionView {
   const committedEnJoin = joinLines(s.committedEn)
   const committedZhJoin = joinLines(s.committedZh)
-  const persistPrimaryFull = [committedEnJoin, s.currentEn?.text ?? ''].filter(Boolean).join(' ').trim()
-  const persistSecondaryFull = [committedZhJoin, s.currentZh?.text ?? ''].filter(Boolean).join(' ').trim()
+  const rawGrayEn = s.currentEn?.text ?? ''
+  const rawGrayZh = s.currentZh?.text ?? ''
+  const primaryGray = grayIfNotDuplicateOfCommitted(committedEnJoin, rawGrayEn)
+  const secondaryGray = grayIfNotDuplicateOfCommitted(committedZhJoin, rawGrayZh)
+  const persistPrimaryFull = [committedEnJoin, rawGrayEn].filter(Boolean).join(' ').trim()
+  const persistSecondaryFull = [committedZhJoin, rawGrayZh].filter(Boolean).join(' ').trim()
   return {
     primaryBlack: committedEnJoin ? windowCaptionWords(committedEnJoin) : '',
-    primaryGray: s.currentEn?.text ?? '',
+    primaryGray,
     secondaryBlack: committedZhJoin ? windowCaptionWords(committedZhJoin) : '',
-    secondaryGray: s.currentZh?.text ?? '',
+    secondaryGray,
     persistPrimaryFull,
     persistSecondaryFull,
     committedEnJoin,
@@ -97,6 +101,30 @@ function zhSourceMatchesCurrentEn(currentEn: NonNullable<LiveCaptionCurrentEn>, 
   if (!src) return false
   if (src.length > cur.length) return false
   return cur === src || cur.startsWith(src)
+}
+
+/** Gray line must not repeat text already shown in committed (black) history. */
+function grayIfNotDuplicateOfCommitted(committedJoin: string, gray: string): string {
+  const g = gray.trim()
+  if (!g) return ''
+  const c = committedJoin.trim()
+  if (!c) return gray
+  if (c === g || c.endsWith(g)) return ''
+  return gray
+}
+
+/**
+ * Same-segment EN interim: allow strict extension (`next` starts with `prev`) or same/longer rewrites;
+ * reject shorter non-extensions (ASR jitter / rollback).
+ */
+function enInterimIsNonRegressive(prevText: string, nextText: string): boolean {
+  const a = prevText.trim()
+  const b = nextText.trim()
+  if (!a) return true
+  if (!b) return false
+  if (b.startsWith(a)) return true
+  if (b.length >= a.length) return true
+  return false
 }
 
 export type LiveCaptionEngineApplyEvent =
@@ -136,13 +164,22 @@ export class LiveCaptionSessionModel {
       if (ev.rev <= prev) {
         return projectView(this.s)
       }
+      const nextText = ev.text.trim()
+      const sameSeg = this.s.currentEn?.id === ev.segmentId
+      if (sameSeg && this.s.currentEn && !enInterimIsNonRegressive(this.s.currentEn.text, nextText)) {
+        return projectView(this.s)
+      }
       if (open >= 0 && seq > open && this.s.currentZh && this.s.currentZh.id !== ev.segmentId) {
         this.s.currentZh = null
       }
       this.s.lastEnInterimRevById.set(ev.segmentId, ev.rev)
       trimRevMap(this.s.lastEnInterimRevById)
-      this.s.currentEn = { id: ev.segmentId, rev: ev.rev, text: ev.text.trim() }
+      this.s.currentEn = { id: ev.segmentId, rev: ev.rev, text: nextText }
       if (this.s.currentZh && this.s.currentZh.id !== ev.segmentId) {
+        this.s.currentZh = null
+      }
+      // EN current changed: drop ZH current for this segment so translator must re-bind to fresh sourceEn.
+      if (this.s.currentZh?.id === ev.segmentId) {
         this.s.currentZh = null
       }
       this.s.openUtteranceSeq = seq
