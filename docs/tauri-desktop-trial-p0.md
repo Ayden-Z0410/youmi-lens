@@ -27,7 +27,7 @@ If `VITE_API_BASE_URL` is missing in a Tauri production build, `getAiApiBase()` 
 All hosted AI traffic uses `getAiApiBase()`:
 
 - HTTP: transcribe, summarize, translate-caption, health, process-recording, live-transcribe-url, etc.
-- WebSocket (live realtime): `liveCaptionRealtime.ts` derives `ws(s)://�/api/live-realtime-ws` from the same base.
+- WebSocket (live realtime): `StreamingWsSession` builds `ws(s)://…/api/live-realtime-ws` from the same base.
 
 ## Dev unchanged
 

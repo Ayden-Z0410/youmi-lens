@@ -9,7 +9,14 @@ import {
 import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
 
 /**
- * Live realtime ASR — product main line is **always** DashScope (no env-based provider switching).
+ * `/api/live-realtime-ws` — **single default realtime semantics** (Phase 1+2):
+ *
+ * 1. **Streaming (product):** JSON `stream_start` / `stream_stop` + **binary PCM frames** → upstream
+ *    streaming ASR (DashScope by default; Volc only via `YOUMI_LIVE_ASR_EXPERIMENT`) → `stream_interim` /
+ *    `stream_final` to the browser.
+ * 2. **Legacy JSON `transcribe` + base64 audio:** OFF by default so this socket is not a second realtime
+ *    protocol. Enable only for internal diagnostics: `YOUMI_LIVE_LEGACY_WS_TRANSCRIBE=1`.
+ *
  * Volcengine streaming exists only when `YOUMI_LIVE_ASR_EXPERIMENT=volcengine|volc|vol` (internal experiment).
  * @returns {'dashscope' | 'volcengine'}
  */
@@ -20,6 +27,8 @@ function resolveLiveAsrProvider() {
 }
 
 const SRV_LIVE_VERBOSE = process.env.YOUMI_LIVE_VERBOSE === '1'
+/** When unset/false, reject JSON `transcribe` on this WebSocket (binary PCM streaming only). */
+const LEGACY_WS_TRANSCRIBE = process.env.YOUMI_LIVE_LEGACY_WS_TRANSCRIBE === '1'
 
 function safeSend(ws, payload) {
   try {
@@ -95,6 +104,11 @@ export function attachLiveRealtimeWs(server) {
   console.info(
     `[YoumiLive][srv] live-realtime-ws ready (ASR=${activeProvider}; YOUMI_LIVE_VERBOSE=1 for per-chunk logs)`,
   )
+  if (!LEGACY_WS_TRANSCRIBE) {
+    console.info(
+      '[YoumiLive][srv] legacy WS transcribe (JSON base64) disabled — use PCM streaming only, or set YOUMI_LIVE_LEGACY_WS_TRANSCRIBE=1 for diagnostics',
+    )
+  }
 
   wss.on('connection', (ws) => {
     const wsSessionId = crypto.randomUUID().slice(-12)
@@ -320,9 +334,14 @@ export function attachLiveRealtimeWs(server) {
         return
       }
 
-      // ── Legacy chunk-based transcription (after-class path, unchanged) ──
+      // ── Legacy JSON transcribe (diagnostic only; default off — do not mix with streaming PCM protocol) ──
       if (!msg || msg.type !== 'transcribe') return
       const id = typeof msg.id === 'string' ? msg.id : ''
+      const passEarly = msg.pass === 'draft' ? 'draft' : 'final'
+      if (!LEGACY_WS_TRANSCRIBE) {
+        safeSend(ws, { type: 'result', id, pass: passEarly, error: 'legacy_ws_transcribe_disabled' })
+        return
+      }
       const mime = typeof msg.mime === 'string' ? msg.mime : 'audio/webm'
       const audioBase64 = typeof msg.audioBase64 === 'string' ? msg.audioBase64 : ''
       const pass = msg.pass === 'draft' ? 'draft' : 'final'

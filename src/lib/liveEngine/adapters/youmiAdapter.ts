@@ -1,5 +1,6 @@
 /**
- * YoumiLiveAdapter — PCM → server /api/live-realtime-ws (product main line: DashScope; Volc only server-side experiment).
+ * YoumiLiveAdapter — **default realtime main line only:** PCM → `/api/live-realtime-ws` → streaming ASR
+ * (DashScope by default; Volc only via server `YOUMI_LIVE_ASR_EXPERIMENT`). No blob/base64 transcribe on this path.
  *
  * Design principles:
  *   • Provider delivers natural clause boundaries via VAD (definite:true = final).

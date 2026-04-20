@@ -9,7 +9,7 @@
  *   5. Receive { type: 'stream_final', text } for completed sentences
  *   6. Send { type: 'stream_stop' } when recording ends
  *
- * Current server-side provider: Tencent Cloud Real-Time Speech Recognition.
+ * Server-side ASR: DashScope streaming by default (see `server/liveRealtimeWs.mjs`).
  */
 
 import { getAiApiBase } from '../ai/apiBase'

@@ -1,3 +1,7 @@
+/**
+ * LiveEngine — consumes **streaming ASR text** from `YoumiLiveAdapter` (`en_interim` / `en_final`), then
+ * **translation-from-text** via HTTP. Post-class transcription/summary stay out of this module.
+ */
 import { translateLiveCaption } from '../aiClient'
 import { sanitizeEnglishForZhTranslate } from '../liveCaptionSanitize'
 import { YoumiLiveAdapter } from './adapters/youmiAdapter'

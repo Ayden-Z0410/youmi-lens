@@ -113,7 +113,6 @@ import {
   uploadLectureAudio,
 } from './lib/recordingsRepo'
 import { transcribeHostedLiveCaptionChunk } from './lib/liveCaptionHostedTranscribe'
-import { transcribeHostedLiveRealtime } from './lib/liveCaptionRealtime'
 import { LiveEngine } from './lib/liveEngine/engine'
 import {
   LiveCaptionSessionModel,
@@ -179,7 +178,10 @@ const LIVE_WHISPER_SLICE_SEC = LIVE_WHISPER_SLICE_MS / 1000
 /** Live caption chunk failures: never flash a global red error if captions are already streaming. */
 const LIVE_CHUNK_SOFT_STREAK = 4
 const LIVE_CHUNK_FATAL_STREAK = 8
-/** Default on for hosted builds; set `VITE_USE_LIVE_ENGINE_V2=false` to force legacy slice path. */
+/**
+ * Dev-only escape: set `VITE_USE_LIVE_ENGINE_V2=false` to exercise legacy MediaRecorder slice + HTTP chunk path.
+ * **Production + Youmi hosted:** always uses PCM → WebSocket → streaming ASR (this flag ignored).
+ */
 const USE_LIVE_ENGINE_V2 = import.meta.env.VITE_USE_LIVE_ENGINE_V2 !== 'false'
 
 /** Trial builds: hide route/engine labels in UI. Dev still shows unless trial or set false explicitly. */
@@ -1017,11 +1019,13 @@ function RecordingWorkspace({
   /** Local A/B: set `VITE_EXPERIMENT_SKIP_YOUMI_LIVE_SLICE=true` to disable only the live slice loop in Youmi AI mode (main track unchanged). */
   const experimentSkipYoumiLiveSlice =
     import.meta.env.VITE_EXPERIMENT_SKIP_YOUMI_LIVE_SLICE === 'true'
+  /** Default realtime for Youmi hosted: PCM → `/api/live-realtime-ws` → DashScope streaming ASR. Prod always on. */
+  const useLiveEngineV2ForHosted = usesHosted && (import.meta.env.PROD || USE_LIVE_ENGINE_V2)
   const recorder = useRecorder({
     onLiveAudioChunkRef,
     onPcmChunkRef: onLivePcmChunkRef,
     // Skip the MediaRecorder blob-slice cycle when PCM streaming drives the live engine (v2 path).
-    experimentalSkipLiveSlice: (USE_LIVE_ENGINE_V2 && usesHosted) || (experimentSkipYoumiLiveSlice && usesHosted),
+    experimentalSkipLiveSlice: useLiveEngineV2ForHosted || (experimentSkipYoumiLiveSlice && usesHosted),
   })
 
   const [flow, dispatchFlow] = useReducer(recordingFlowReducer, initialRecordingFlow)
@@ -1033,7 +1037,7 @@ function RecordingWorkspace({
 
   const liveCaptionSessionActive =
     recorder.status === 'recording' || recorder.status === 'paused'
-  const useLiveEngineV2 = USE_LIVE_ENGINE_V2 && usesHosted
+  const useLiveEngineV2 = useLiveEngineV2ForHosted
   const [liveRouteState, setLiveRouteState] = useState<LiveRouteState>('legacy')
 
   const liveCaptionSessionSurface = useMemo(() => {
@@ -1137,7 +1141,7 @@ function RecordingWorkspace({
   useEffect(() => {
     if (!LIVE_ROUTE_DIAG_ENABLED) return
     const snapshot = {
-      USE_LIVE_ENGINE_V2,
+      VITE_USE_LIVE_ENGINE_V2_flag: USE_LIVE_ENGINE_V2,
       useLiveEngineV2,
       usesHosted,
       liveCaptionsPipelineEnabled,
@@ -1344,52 +1348,30 @@ function RecordingWorkspace({
                 language: langHint,
               })
             } else if (usesHosted && !localOnly && supabase && userId) {
-              if (blob.size > 10_000) {
-                try {
-                  const draftSliceBytes = Math.max(6000, Math.floor(blob.size * 0.52))
-                  const draftBlob = blob.slice(0, draftSliceBytes, mime)
-                  const draftText = (await transcribeHostedLiveRealtime(draftBlob, mime, 'draft')).trim()
-                  if (draftText) {
-                    setPrimaryCaptionDraft(draftText)
-                    onDraftPhraseRef.current?.(draftText)
-                  }
-                } catch (e) {
-                  youmiLiveLog('srv', 'realtime draft ws failed; continue final path', {
-                    message: e instanceof Error ? e.message : String(e),
-                  })
-                }
-              }
-
-              try {
-                t = await transcribeHostedLiveRealtime(blob, mime, 'final')
-              } catch (e) {
-                youmiLiveLog('srv', 'realtime final ws failed; fallback to live-transcribe-url', {
-                  message: e instanceof Error ? e.message : String(e),
-                })
-                const { data: sess } = await supabase.auth.getSession()
-                const tok = sess.session?.access_token
-                if (!tok) throw new Error('Sign in again to use live captions.')
-                const chunkIdx = liveChunkIndexRef.current++
-                const sid = liveCaptionSessionIdRef.current
-                if (!sid) throw new Error('Live caption session not ready.')
-                youmiLiveLog('srv', 'sending hosted live chunk to server', {
-                  chunkIndex: chunkIdx,
-                  bytes: blob.size,
-                  mime,
-                  seq,
-                  reason,
-                })
-                t = await transcribeHostedLiveCaptionChunk({
-                  supabase,
-                  accessToken: tok,
-                  userId,
-                  sessionId: sid,
-                  chunkIndex: chunkIdx,
-                  blob,
-                  mime,
-                  filename: `live.${ext}`,
-                })
-              }
+              /** Legacy hosted slice path (dev only when v2 off): HTTP Storage+signed URL chunk — never WS base64 transcribe. */
+              const { data: sess } = await supabase.auth.getSession()
+              const tok = sess.session?.access_token
+              if (!tok) throw new Error('Sign in again to use live captions.')
+              const chunkIdx = liveChunkIndexRef.current++
+              const sid = liveCaptionSessionIdRef.current
+              if (!sid) throw new Error('Live caption session not ready.')
+              youmiLiveLog('srv', 'hosted live chunk (HTTP)', {
+                chunkIndex: chunkIdx,
+                bytes: blob.size,
+                mime,
+                seq,
+                reason,
+              })
+              t = await transcribeHostedLiveCaptionChunk({
+                supabase,
+                accessToken: tok,
+                userId,
+                sessionId: sid,
+                chunkIndex: chunkIdx,
+                blob,
+                mime,
+                filename: `live.${ext}`,
+              })
             } else {
               t = await transcribeRecording(blob, `live.${ext}`, {
                 language: langHint,

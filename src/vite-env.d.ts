@@ -23,6 +23,11 @@ interface ImportMetaEnv {
   readonly VITE_AUTH_BRIDGE_ORIGIN?: string
   /** Dev/local A/B: `true` = Youmi AI mode skips live slice cycle only; main recording unchanged. */
   readonly VITE_EXPERIMENT_SKIP_YOUMI_LIVE_SLICE?: string
+  /**
+   * Dev: set `false` to use legacy MediaRecorder slice + HTTP chunk captions for Youmi hosted.
+   * **Production:** ignored — hosted always uses PCM → WebSocket streaming ASR.
+   */
+  readonly VITE_USE_LIVE_ENGINE_V2?: string
 }
 
 interface ImportMeta {
