@@ -193,7 +193,13 @@ export class LiveCaptionSessionModel {
       const text = ev.text.trim()
       if (text) {
         this.s.lastEnFinalSanitizedById.set(ev.segmentId, sanitizeEnglishForZhTranslate(text))
-        this.s.committedEn = [...this.s.committedEn, { id: ev.segmentId, text }]
+        const idx = this.s.committedEn.findIndex((x) => x.id === ev.segmentId)
+        if (idx >= 0) {
+          /** Idempotent finalize: engine/ASR may emit duplicate stream_final for one utterance — replace, never append. */
+          this.s.committedEn = this.s.committedEn.map((x, i) => (i === idx ? { id: ev.segmentId, text } : x))
+        } else {
+          this.s.committedEn = [...this.s.committedEn, { id: ev.segmentId, text }]
+        }
       }
       if (this.s.currentEn?.id === ev.segmentId) {
         this.s.currentEn = null
@@ -240,7 +246,12 @@ export class LiveCaptionSessionModel {
       this.s.finalizedZhIds.add(ev.segmentId)
       const text = ev.text.trim()
       if (text) {
-        this.s.committedZh = [...this.s.committedZh, { id: ev.segmentId, text }]
+        const zidx = this.s.committedZh.findIndex((x) => x.id === ev.segmentId)
+        if (zidx >= 0) {
+          this.s.committedZh = this.s.committedZh.map((x, i) => (i === zidx ? { id: ev.segmentId, text } : x))
+        } else {
+          this.s.committedZh = [...this.s.committedZh, { id: ev.segmentId, text }]
+        }
       }
       if (this.s.currentZh?.id === ev.segmentId) {
         this.s.currentZh = null
