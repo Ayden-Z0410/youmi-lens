@@ -94,11 +94,11 @@ function projectView(s: LiveCaptionSessionState): LiveCaptionView {
   const fullCurrentEn = s.currentEn?.text ?? ''
   const fullCurrentZh = s.currentZh?.text ?? ''
 
-  // Promoted prefix is only meaningful while a current interim is active.
+  // Promoted prefix = already seen by the user, hide it from display entirely.
   const promotedEn = s.currentEn ? s.interimPromotedEn : ''
   const promotedZh = s.currentZh ? s.interimPromotedZh : ''
 
-  // Delta: only the tail the user has not seen yet.
+  // Gray = only the tail the user has NOT seen yet.
   const deltaEn =
     promotedEn && fullCurrentEn.startsWith(promotedEn)
       ? fullCurrentEn.slice(promotedEn.length).trim()
@@ -108,21 +108,21 @@ function projectView(s: LiveCaptionSessionState): LiveCaptionView {
       ? fullCurrentZh.slice(promotedZh.length).trim()
       : fullCurrentZh
 
-  // Black = committed + promoted interim prefix (already-displayed stable part).
-  const blackEn = [committedEnJoin, promotedEn].filter(Boolean).join(' ').trim()
-  const blackZh = [committedZhJoin, promotedZh].filter(Boolean).join(' ').trim()
-
-  const primaryGray = grayIfNotDuplicateOfCommitted(blackEn, deltaEn)
-  const secondaryGray = grayIfNotDuplicateOfCommitted(blackZh, deltaZh)
+  // Black = committed finals only. Promoted interim prefix is NOT shown again.
+  // Window gray to keep the live display compact (recent tail only).
+  const windowedDeltaEn = windowCaptionWords(deltaEn, 40)
+  const windowedDeltaZh = windowCaptionWords(deltaZh, 40)
+  const primaryGray = grayIfNotDuplicateOfCommitted(committedEnJoin, windowedDeltaEn)
+  const secondaryGray = grayIfNotDuplicateOfCommitted(committedZhJoin, windowedDeltaZh)
 
   // Persist uses full content (for transcript save).
   const persistPrimaryFull = [committedEnJoin, fullCurrentEn].filter(Boolean).join(' ').trim()
   const persistSecondaryFull = [committedZhJoin, fullCurrentZh].filter(Boolean).join(' ').trim()
 
   return {
-    primaryBlack: blackEn ? windowCaptionWords(blackEn) : '',
+    primaryBlack: committedEnJoin ? windowCaptionWords(committedEnJoin) : '',
     primaryGray,
-    secondaryBlack: blackZh ? windowCaptionWords(blackZh) : '',
+    secondaryBlack: committedZhJoin ? windowCaptionWords(committedZhJoin) : '',
     secondaryGray,
     persistPrimaryFull,
     persistSecondaryFull,
@@ -226,11 +226,8 @@ export class LiveCaptionSessionModel {
         this.s.currentZh = null
         this.s.interimPromotedZh = ''
       }
-      // EN current changed: drop ZH current for this segment so translator must re-bind to fresh sourceEn.
-      if (this.s.currentZh?.id === ev.segmentId) {
-        this.s.currentZh = null
-        this.s.interimPromotedZh = ''
-      }
+      // ZH current for same segment is kept — it will be superseded by the next zh_interim
+      // from the translator, and the delta display handles progressive promotion.
       this.s.openUtteranceSeq = seq
       return projectView(this.s)
     }
