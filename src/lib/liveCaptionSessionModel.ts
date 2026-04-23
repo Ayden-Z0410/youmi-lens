@@ -24,6 +24,10 @@ export type LiveCaptionSessionState = {
   currentEn: LiveCaptionCurrentEn
   committedZh: LiveCaptionCommittedLine[]
   currentZh: LiveCaptionCurrentZh
+  /** Portion of the current EN interim already promoted to black display. */
+  interimPromotedEn: string
+  /** Portion of the current ZH interim already promoted to black display. */
+  interimPromotedZh: string
   lastEnInterimRevById: Map<string, number>
   lastZhInterimRevById: Map<string, number>
   finalizedZhIds: Set<string>
@@ -73,6 +77,8 @@ function initialState(): LiveCaptionSessionState {
     currentEn: null,
     committedZh: [],
     currentZh: null,
+    interimPromotedEn: '',
+    interimPromotedZh: '',
     lastEnInterimRevById: new Map(),
     lastZhInterimRevById: new Map(),
     finalizedZhIds: new Set(),
@@ -84,16 +90,39 @@ function initialState(): LiveCaptionSessionState {
 function projectView(s: LiveCaptionSessionState): LiveCaptionView {
   const committedEnJoin = joinLines(s.committedEn)
   const committedZhJoin = joinLines(s.committedZh)
-  const rawGrayEn = s.currentEn?.text ?? ''
-  const rawGrayZh = s.currentZh?.text ?? ''
-  const primaryGray = grayIfNotDuplicateOfCommitted(committedEnJoin, rawGrayEn)
-  const secondaryGray = grayIfNotDuplicateOfCommitted(committedZhJoin, rawGrayZh)
-  const persistPrimaryFull = [committedEnJoin, rawGrayEn].filter(Boolean).join(' ').trim()
-  const persistSecondaryFull = [committedZhJoin, rawGrayZh].filter(Boolean).join(' ').trim()
+
+  const fullCurrentEn = s.currentEn?.text ?? ''
+  const fullCurrentZh = s.currentZh?.text ?? ''
+
+  // Promoted prefix is only meaningful while a current interim is active.
+  const promotedEn = s.currentEn ? s.interimPromotedEn : ''
+  const promotedZh = s.currentZh ? s.interimPromotedZh : ''
+
+  // Delta: only the tail the user has not seen yet.
+  const deltaEn =
+    promotedEn && fullCurrentEn.startsWith(promotedEn)
+      ? fullCurrentEn.slice(promotedEn.length).trim()
+      : fullCurrentEn
+  const deltaZh =
+    promotedZh && fullCurrentZh.startsWith(promotedZh)
+      ? fullCurrentZh.slice(promotedZh.length).trim()
+      : fullCurrentZh
+
+  // Black = committed + promoted interim prefix (already-displayed stable part).
+  const blackEn = [committedEnJoin, promotedEn].filter(Boolean).join(' ').trim()
+  const blackZh = [committedZhJoin, promotedZh].filter(Boolean).join(' ').trim()
+
+  const primaryGray = grayIfNotDuplicateOfCommitted(blackEn, deltaEn)
+  const secondaryGray = grayIfNotDuplicateOfCommitted(blackZh, deltaZh)
+
+  // Persist uses full content (for transcript save).
+  const persistPrimaryFull = [committedEnJoin, fullCurrentEn].filter(Boolean).join(' ').trim()
+  const persistSecondaryFull = [committedZhJoin, fullCurrentZh].filter(Boolean).join(' ').trim()
+
   return {
-    primaryBlack: committedEnJoin ? windowCaptionWords(committedEnJoin) : '',
+    primaryBlack: blackEn ? windowCaptionWords(blackEn) : '',
     primaryGray,
-    secondaryBlack: committedZhJoin ? windowCaptionWords(committedZhJoin) : '',
+    secondaryBlack: blackZh ? windowCaptionWords(blackZh) : '',
     secondaryGray,
     persistPrimaryFull,
     persistSecondaryFull,
@@ -182,16 +211,25 @@ export class LiveCaptionSessionModel {
       }
       if (open >= 0 && seq > open && this.s.currentZh && this.s.currentZh.id !== ev.segmentId) {
         this.s.currentZh = null
+        this.s.interimPromotedZh = ''
       }
       this.s.lastEnInterimRevById.set(ev.segmentId, ev.rev)
       trimRevMap(this.s.lastEnInterimRevById)
+      // Delta display: promote previous interim text so black grows, gray = new tail only.
+      if (sameSeg && this.s.currentEn?.text) {
+        this.s.interimPromotedEn = this.s.currentEn.text
+      } else if (!sameSeg) {
+        this.s.interimPromotedEn = ''
+      }
       this.s.currentEn = { id: ev.segmentId, rev: ev.rev, text: nextText }
       if (this.s.currentZh && this.s.currentZh.id !== ev.segmentId) {
         this.s.currentZh = null
+        this.s.interimPromotedZh = ''
       }
       // EN current changed: drop ZH current for this segment so translator must re-bind to fresh sourceEn.
       if (this.s.currentZh?.id === ev.segmentId) {
         this.s.currentZh = null
+        this.s.interimPromotedZh = ''
       }
       this.s.openUtteranceSeq = seq
       return projectView(this.s)
@@ -218,6 +256,7 @@ export class LiveCaptionSessionModel {
       }
       if (this.s.currentEn?.id === ev.segmentId) {
         this.s.currentEn = null
+        this.s.interimPromotedEn = ''
       }
       this.s.openUtteranceSeq = seq
       return projectView(this.s)
@@ -247,6 +286,12 @@ export class LiveCaptionSessionModel {
       this.s.lastZhInterimRevById.set(ev.segmentId, ev.rev)
       trimRevMap(this.s.lastZhInterimRevById)
       const zhLine = (compactLiveZhSnapshot(ev.text.trim()) || '').trim() || ev.text.trim()
+      // Delta display: promote previous ZH interim so black grows.
+      if (this.s.currentZh?.id === ev.segmentId && this.s.currentZh.text) {
+        this.s.interimPromotedZh = this.s.currentZh.text
+      } else {
+        this.s.interimPromotedZh = ''
+      }
       this.s.currentZh = { id: ev.segmentId, rev: ev.rev, text: zhLine }
       return projectView(this.s)
     }
@@ -277,6 +322,7 @@ export class LiveCaptionSessionModel {
       }
       if (this.s.currentZh?.id === ev.segmentId) {
         this.s.currentZh = null
+        this.s.interimPromotedZh = ''
       }
       if (!this.s.currentEn && !this.s.currentZh) {
         this.s.openUtteranceSeq = -1
