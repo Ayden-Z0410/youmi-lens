@@ -121,8 +121,8 @@ export class LiveEngine {
           this.enInterimStabilizeBySeg.get(ev.segmentId) ?? initialEnInterimStabilizeState()
         const { text: snapshot, state: st1 } = stabilizeEnInterimSnapshot(st0, clean)
         this.enInterimStabilizeBySeg.set(ev.segmentId, st1)
-        // Do not emit status:'streaming' on every interim — it triggered App setState each time and
-        // queued behind hundreds of draft updates (first word fast, then UI fell behind speech).
+        const prev = this.latestEnInterimBySeg.get(ev.segmentId) ?? ''
+        if (snapshot === prev) return
         this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: snapshot })
         this.latestEnInterimBySeg.set(ev.segmentId, snapshot)
         // Cancel any pending interim debounce — prevents stale zh_interim after zh_final

@@ -1,144 +1,113 @@
 /**
- * Same-utterance EN interim monotonic stabilization: tame ASR full-snapshot
- * rewrites (A -> A+B -> A'+B) without heavy NLP or whole-text dedup passes.
+ * Same-utterance EN interim locked-prefix stabilization.
+ *
+ * ASR full-snapshot rewrites follow the pattern:
+ *   raw1 = "A B C"
+ *   raw2 = "A B C D E"
+ *   raw3 = "A B C D E  A B C D E F"     (re-expanded from beginning)
+ *   raw4 = "A B C D E F  A B C D E F G"  (again)
+ *
+ * We maintain a lockedText that only grows.  On each new snapshot we search
+ * for the LAST occurrence of our "anchor" (trailing N words of lockedText)
+ * inside the new snapshot; everything after that anchor is the net-new tail.
+ * This strips away the re-expanded prefix wall deterministically.
  */
 import { normCaptionSpaces } from './liveCaptionSanitize'
 
-const DEFAULT_MAX_HISTORY = 5
+// --- State ---
 
 export type EnInterimStabilizeState = {
-  history: string[]
-  lastShown: string
+  lockedText: string
+  lockedWords: string[]
 }
 
 export function initialEnInterimStabilizeState(): EnInterimStabilizeState {
-  return { history: [], lastShown: '' }
+  return { lockedText: '', lockedWords: [] }
 }
 
-export function longestCommonPrefix(a: string, b: string): string {
-  const n = Math.min(a.length, b.length)
-  let i = 0
-  while (i < n && a.charCodeAt(i) === b.charCodeAt(i)) i++
-  return a.slice(0, i)
-}
+// --- Helpers ---
 
-export function longestCommonPrefixMany(strings: readonly string[]): string {
-  if (strings.length === 0) return ''
-  let p = strings[0]!
-  for (let k = 1; k < strings.length; k++) {
-    p = longestCommonPrefix(p, strings[k]!)
-    if (!p) break
-  }
-  return p
-}
-
-function tokenizeWords(s: string): string[] {
-  return normCaptionSpaces(s)
-    .split(/\s+/)
-    .filter(Boolean)
-}
-
-/** True if new tail has a word (4+ chars) not appearing as substring in old tail. */
-export function tailHasNetNewContent(oldTail: string, newTail: string): boolean {
-  const o = oldTail.toLowerCase()
-  const words = tokenizeWords(newTail)
-  for (const w of words) {
-    if (w.length < 4) continue
-    if (!o.includes(w.toLowerCase())) return true
-  }
-  return newTail.trim().length > oldTail.trim().length + 12
+function toWords(s: string): string[] {
+  return normCaptionSpaces(s).split(/\s+/).filter(Boolean)
 }
 
 /**
- * Merge two tails after a shared prefix: prefer extension, else word-overlap bridge,
- * else keep old unless new clearly adds content.
+ * Find the LAST position where needle words appear within haystack words
+ * (case-insensitive).  Returns the index in haystack right AFTER the match
+ * end, or -1 if not found.
  */
-export function mergeTailsByWordOverlap(tailOld: string, tailNew: string): string {
-  const a = tailOld.trim()
-  const b = tailNew.trim()
-  if (!a) return b
-  if (!b) return a
-  if (b.startsWith(a)) return b
-  if (a.startsWith(b)) return a
-  const wa = tokenizeWords(a)
-  const wb = tokenizeWords(b)
-  const maxK = Math.min(wa.length, wb.length)
-  for (let k = maxK; k >= 1; k--) {
-    if (wa.slice(-k).join(' ') === wb.slice(0, k).join(' ')) {
-      return normCaptionSpaces(a + ' ' + wb.slice(k).join(' '))
+function lastIndexAfterWordSequence(haystack: string[], needle: string[]): number {
+  const nLen = needle.length
+  if (nLen === 0 || nLen > haystack.length) return -1
+  for (let start = haystack.length - nLen; start >= 0; start--) {
+    let match = true
+    for (let j = 0; j < nLen; j++) {
+      if (haystack[start + j]!.toLowerCase() !== needle[j]!.toLowerCase()) {
+        match = false
+        break
+      }
+    }
+    if (match) return start + nLen
+  }
+  return -1
+}
+
+/**
+ * Given locked words and new raw words, find the genuinely new tail in raw
+ * that extends beyond what is already in locked.
+ *
+ * Uses the last N words of locked as an "anchor" and searches for the LAST
+ * occurrence of that anchor in raw; everything after that occurrence is new.
+ * Tries progressively shorter anchors (down to 3 words) to handle minor ASR
+ * rewrites at the boundary.
+ */
+function extractNetNewWords(lockedW: string[], rawW: string[]): string[] {
+  const maxAnchor = Math.min(lockedW.length, 20)
+  const minAnchor = 3
+  for (let anchorLen = maxAnchor; anchorLen >= minAnchor; anchorLen--) {
+    const anchor = lockedW.slice(-anchorLen)
+    const afterIdx = lastIndexAfterWordSequence(rawW, anchor)
+    if (afterIdx >= 0) {
+      return rawW.slice(afterIdx)
     }
   }
-  if (tailHasNetNewContent(a, b)) return b
-  return a.length >= b.length ? a : b
+  return []
 }
 
-export type StabilizeEnOptions = { maxHistory?: number }
+// --- Public API ---
 
 /**
- * Turn a raw ASR full snapshot into a monotonic line for one utterance (segmentId):
- * - Keeps a rolling agreement prefix across recent snapshots when it still prefixes `raw` and `lastShown`.
- * - Rejects no-op / shrink-only resends without net-new words.
- * - Builds tail via word-overlap glue so partial rewrites do not prepend a duplicate wall.
+ * Stabilize one EN interim snapshot for a given utterance.
+ *
+ * lockedText only grows; new ASR snapshots can only contribute words that
+ * appear AFTER the last occurrence of our anchor within the snapshot.
  */
 export function stabilizeEnInterimSnapshot(
   state: EnInterimStabilizeState,
   rawIn: string,
-  opts?: StabilizeEnOptions,
 ): { text: string; state: EnInterimStabilizeState } {
-  const maxHistory = opts?.maxHistory ?? DEFAULT_MAX_HISTORY
   const raw = normCaptionSpaces(rawIn)
-  if (!raw) {
-    return { text: state.lastShown, state }
+  if (!raw) return { text: state.lockedText, state }
+
+  if (!state.lockedText) {
+    const w = toWords(raw)
+    return { text: raw, state: { lockedText: raw, lockedWords: w } }
   }
 
-  const lastShown = state.lastShown
-  const history = [...state.history, raw].slice(-maxHistory)
+  const rawW = toWords(raw)
+  const netNew = extractNetNewWords(state.lockedWords, rawW)
 
-  if (!lastShown) {
-    return { text: raw, state: { history, lastShown: raw } }
+  if (netNew.length > 0) {
+    const result = normCaptionSpaces(state.lockedText + ' ' + netNew.join(' '))
+    const rw = toWords(result)
+    return { text: result, state: { lockedText: result, lockedWords: rw } }
   }
 
-  if (raw.startsWith(lastShown)) {
-    return { text: raw, state: { history, lastShown: raw } }
+  // Fallback: anchor search failed but raw is a pure string extension of locked
+  if (raw.startsWith(state.lockedText)) {
+    return { text: raw, state: { lockedText: raw, lockedWords: rawW } }
   }
 
-  const multi =
-    history.length >= 2 ? longestCommonPrefixMany(history) : ''
-  const pair = longestCommonPrefix(lastShown, raw)
-
-  let pref = pair
-  if (
-    multi.length > pair.length &&
-    raw.startsWith(multi) &&
-    lastShown.startsWith(multi)
-  ) {
-    pref = multi
-  }
-
-  const tailNew = raw.slice(pref.length)
-  const tailOld = lastShown.slice(pref.length)
-
-  if (!tailNew.trim()) {
-    return { text: lastShown, state: { history, lastShown } }
-  }
-
-  if (
-    raw.length + 8 < lastShown.length &&
-    !tailHasNetNewContent(tailOld, tailNew)
-  ) {
-    return { text: lastShown, state: { history, lastShown } }
-  }
-
-  const mergedTail = mergeTailsByWordOverlap(tailOld, tailNew)
-  let out = normCaptionSpaces(pref + mergedTail)
-
-  if (
-    out.length < lastShown.length &&
-    !lastShown.startsWith(out) &&
-    !tailHasNetNewContent(lastShown, raw)
-  ) {
-    out = lastShown
-  }
-
-  return { text: out, state: { history, lastShown: out } }
+  // No genuinely new content found -- keep locked unchanged
+  return { text: state.lockedText, state }
 }

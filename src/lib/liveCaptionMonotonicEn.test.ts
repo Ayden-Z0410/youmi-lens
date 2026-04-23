@@ -1,42 +1,94 @@
 import { describe, expect, it } from 'vitest'
 import {
   initialEnInterimStabilizeState,
-  longestCommonPrefix,
   stabilizeEnInterimSnapshot,
 } from './liveCaptionMonotonicEn'
 
-describe('longestCommonPrefix', () => {
-  it('returns shared prefix', () => {
-    expect(longestCommonPrefix('hello world', 'hello there')).toBe('hello ')
-  })
-})
+function apply(
+  state: ReturnType<typeof initialEnInterimStabilizeState>,
+  ...snapshots: string[]
+) {
+  let s = state
+  let text = ''
+  for (const snap of snapshots) {
+    const r = stabilizeEnInterimSnapshot(s, snap)
+    s = r.state
+    text = r.text
+  }
+  return { text, state: s }
+}
 
 describe('stabilizeEnInterimSnapshot', () => {
   it('first frame shows raw', () => {
-    const s0 = initialEnInterimStabilizeState()
-    const r1 = stabilizeEnInterimSnapshot(s0, 'Hello world')
-    expect(r1.text).toBe('Hello world')
+    const r = apply(initialEnInterimStabilizeState(), 'Hello world')
+    expect(r.text).toBe('Hello world')
   })
 
-  it('extends monotonically when raw prefixes lastShown', () => {
-    let st = initialEnInterimStabilizeState()
-    st = stabilizeEnInterimSnapshot(st, 'Hello world').state
-    const r2 = stabilizeEnInterimSnapshot(st, 'Hello world today')
-    expect(r2.text).toBe('Hello world today')
+  it('extends monotonically on pure append', () => {
+    const r = apply(
+      initialEnInterimStabilizeState(),
+      'Hello world',
+      'Hello world today',
+      'Hello world today is great',
+    )
+    expect(r.text).toBe('Hello world today is great')
   })
 
-  it('drops no-op resend (same text)', () => {
-    let st = initialEnInterimStabilizeState()
-    st = stabilizeEnInterimSnapshot(st, 'Alpha beta gamma').state
-    const r2 = stabilizeEnInterimSnapshot(st, 'Alpha beta gamma')
-    expect(r2.text).toBe('Alpha beta gamma')
-    expect(r2.state.lastShown).toBe('Alpha beta gamma')
+  it('keeps locked when snapshot shrinks without new words', () => {
+    const r = apply(
+      initialEnInterimStabilizeState(),
+      'One two three four five six seven',
+      'One two three',
+    )
+    expect(r.text).toBe('One two three four five six seven')
   })
 
-  it('rejects shrink-only resend without new words', () => {
-    let st = initialEnInterimStabilizeState()
-    st = stabilizeEnInterimSnapshot(st, 'One two three four five six seven').state
-    const r2 = stabilizeEnInterimSnapshot(st, 'One two three')
-    expect(r2.text).toBe('One two three four five six seven')
+  it('strips re-expanded prefix wall (core bug)', () => {
+    const intro = 'in an archaeology class a popular misconception about archaeology'
+    const body = 'Some people imagine we just go out into the field with a shovel and start digging'
+    const ext = 'hoping to find something significant'
+    const r = apply(
+      initialEnInterimStabilizeState(),
+      `${intro} ${body}`,
+      // ASR re-expansion: repeats intro+body then adds ext
+      `${intro} ${body} ${intro} ${body} ${ext}`,
+    )
+    expect(r.text).toBe(`${intro} ${body} ${ext}`)
+  })
+
+  it('strips triple re-expansion', () => {
+    const a = 'the quick brown fox jumps over the lazy dog'
+    const r = apply(
+      initialEnInterimStabilizeState(),
+      a,
+      // triple expansion: old + old + old + new tail
+      `${a} ${a} ${a} near the river`,
+    )
+    expect(r.text).toBe(`${a} near the river`)
+  })
+
+  it('handles gradual re-expansion across multiple steps', () => {
+    const a = 'Listen to part of a lecture in archaeology'
+    const b = 'a popular misconception about archaeology'
+    const c = 'some people imagine digging'
+    const r = apply(
+      initialEnInterimStabilizeState(),
+      `${a} ${b}`,
+      // step 2: re-expand from beginning, add c
+      `${a} ${b} ${a} ${b} ${c}`,
+      // step 3: re-expand again, add more
+      `${a} ${b} ${c} ${a} ${b} ${c} with shovels`,
+    )
+    expect(r.text).toBe(`${a} ${b} ${c} with shovels`)
+  })
+
+  it('is idempotent on same snapshot', () => {
+    const r = apply(
+      initialEnInterimStabilizeState(),
+      'Alpha beta gamma delta',
+      'Alpha beta gamma delta',
+      'Alpha beta gamma delta',
+    )
+    expect(r.text).toBe('Alpha beta gamma delta')
   })
 })
