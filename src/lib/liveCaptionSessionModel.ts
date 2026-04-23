@@ -3,7 +3,7 @@
  * Two slots each language: committed (history) + current (single replaceable line).
  * Stale translation / ASR results are dropped by utterance id + monotonic rev, not string heuristics.
  */
-import { compactLiveEnglishSnapshot, compactLiveZhSnapshot } from './liveCaptionCompaction'
+import { compactLiveZhSnapshot } from './liveCaptionCompaction'
 import {
   isGarbledMixedScriptLine,
   normCaptionSpaces,
@@ -174,8 +174,8 @@ export class LiveCaptionSessionModel {
       if (ev.rev <= prev) {
         return projectView(this.s)
       }
-      const nextText =
-        (compactLiveEnglishSnapshot(normalizedEn) || '').trim() || normalizedEn
+      // EN interim text is already monotonic-stabilized in LiveEngine before emit.
+      const nextText = normalizedEn
       const sameSeg = this.s.currentEn?.id === ev.segmentId
       if (sameSeg && this.s.currentEn && !enInterimIsNonRegressive(this.s.currentEn.text, nextText)) {
         return projectView(this.s)
