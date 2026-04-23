@@ -4,11 +4,6 @@
  */
 import { translateLiveCaption } from '../aiClient'
 import {
-  type EnInterimStabilizeState,
-  initialEnInterimStabilizeState,
-  stabilizeEnInterimSnapshot,
-} from '../liveCaptionMonotonicEn'
-import {
   normalizeEnglishPrimaryPayloadOrReject,
   normalizeZhPayloadOrReject,
   sanitizeEnglishForZhTranslate,
@@ -48,8 +43,6 @@ export class LiveEngine {
   private zhInterimGenBySeg = new Map<string, number>()
   /** Latest EN interim text per segment (timer reads this, not a stale closure). */
   private latestEnInterimBySeg = new Map<string, string>()
-  /** Per-segment monotonic stabilization for same-utterance ASR snapshot rewrites. */
-  private enInterimStabilizeBySeg = new Map<string, EnInterimStabilizeState>()
   /** Last EN source we actually translated for zh_interim (phrase-aligned; avoids micro-retranslate). */
   private lastZhInterimChunkEnBySeg = new Map<string, string>()
   private lastZhInterimChunkAtMsBySeg = new Map<string, number>()
@@ -82,7 +75,6 @@ export class LiveEngine {
     this.translateRevBySeg.clear()
     this.zhInterimGenBySeg.clear()
     this.latestEnInterimBySeg.clear()
-    this.enInterimStabilizeBySeg.clear()
     this.lastZhInterimChunkEnBySeg.clear()
     this.lastZhInterimChunkAtMsBySeg.clear()
     this.translationQueue = []
@@ -117,14 +109,10 @@ export class LiveEngine {
       if (ev.type === 'en_interim') {
         const clean = normalizeEnglishPrimaryPayloadOrReject(ev.text)
         if (!clean) return
-        const st0 =
-          this.enInterimStabilizeBySeg.get(ev.segmentId) ?? initialEnInterimStabilizeState()
-        const { text: snapshot, state: st1 } = stabilizeEnInterimSnapshot(st0, clean)
-        this.enInterimStabilizeBySeg.set(ev.segmentId, st1)
         const prev = this.latestEnInterimBySeg.get(ev.segmentId) ?? ''
-        if (snapshot === prev) return
-        this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: snapshot })
-        this.latestEnInterimBySeg.set(ev.segmentId, snapshot)
+        if (clean === prev) return
+        this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: clean })
+        this.latestEnInterimBySeg.set(ev.segmentId, clean)
         // Cancel any pending interim debounce — prevents stale zh_interim after zh_final
         if (this.interimTranslateTimer) {
           clearTimeout(this.interimTranslateTimer)
@@ -146,7 +134,6 @@ export class LiveEngine {
           this.interimTranslateTimer = null
         }
         const sid = ev.segmentId
-        this.enInterimStabilizeBySeg.delete(sid)
         this.zhInterimGenBySeg.set(sid, (this.zhInterimGenBySeg.get(sid) ?? 0) + 1)
         this.lastZhInterimChunkEnBySeg.delete(sid)
         this.lastZhInterimChunkAtMsBySeg.delete(sid)
