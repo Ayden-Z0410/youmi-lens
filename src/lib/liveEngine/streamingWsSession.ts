@@ -13,6 +13,7 @@
  */
 
 import { getAiApiBase } from '../ai/apiBase'
+import { traceWsClosed } from '../liveCaptionTrace'
 
 export type StreamingWsEvents = {
   /** WebSocket connection established; stream_start sent. ASR provider may not be ready yet. */
@@ -136,6 +137,7 @@ export class StreamingWsSession {
       this.ws = null
       if (!this.destroyed) {
         console.info('[StreamingWs] closed')
+        traceWsClosed('ws_onclose')
         this.events.onClose?.()
       }
     }

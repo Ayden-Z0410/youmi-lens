@@ -9,7 +9,15 @@ import {
   normalizeZhPayloadOrReject,
   sanitizeEnglishForZhTranslate,
 } from '../liveCaptionSanitize'
-import { traceDeOverlap, traceEnFinal, traceEnInterim, traceReset } from '../liveCaptionTrace'
+import {
+  bumpEnFinalArrivalWall,
+  bumpEnInterimArrivalWall,
+  traceDeOverlap,
+  traceEnFinal,
+  traceEnInterim,
+  traceInterimPipeline,
+  traceReset,
+} from '../liveCaptionTrace'
 import { YoumiLiveAdapter } from './adapters/youmiAdapter'
 import type { LiveEngineEvent, LiveEngineListener } from './types'
 
@@ -123,7 +131,14 @@ export class LiveEngine {
 
         const deo = deOverlapEnglish(this.committedEnFull, clean)
         traceDeOverlap('en_interim', ev.segmentId, clean.length, deo)
+        const rawTok = clean.split(/\s+/).filter(Boolean).length
+        traceInterimPipeline(ev.segmentId, ev.rev, {
+          rawTok,
+          novelTok: deo.novelTokenCount,
+          shrink6to2: rawTok >= 6 && deo.novelTokenCount <= 2,
+        })
         this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: deo.novelText })
+        bumpEnInterimArrivalWall()
 
         if (this.interimTranslateTimer) {
           clearTimeout(this.interimTranslateTimer)
@@ -178,10 +193,58 @@ export class LiveEngine {
           activeTranslations: this.activeTranslations,
         })
         this.emit({ type: 'en_final', segmentId: ev.segmentId, text: deo.novelText })
+        bumpEnFinalArrivalWall()
         this.enqueueTranslation(ev.segmentId, deo.novelText)
       }
     })
     adapter.start()
+  }
+
+  /**
+   * Call after local microphone capture has stopped so the ASR provider can emit
+   * trailing finals. Does not tear down the adapter (still receives WS messages).
+   */
+  notifyAudioCaptureEnded() {
+    if (!this.running) return
+    log('notifyAudioCaptureEnded')
+    this.flushPendingInterimTranslation()
+    this.adapter?.notifyAudioEnd()
+  }
+
+  /**
+   * Wait for trailing stream_final events and translation jobs after capture end.
+   * `minTailMs` gives ASR time to flush; exit early once translation queue is idle.
+   */
+  async waitAfterCaptureEnd(opts: { minTailMs: number; maxMs: number }): Promise<void> {
+    if (!this.running) return
+    const t0 = Date.now()
+    while (Date.now() - t0 < opts.maxMs) {
+      await new Promise((r) => setTimeout(r, 120))
+      const elapsed = Date.now() - t0
+      const qIdle = this.translationQueue.length === 0 && this.activeTranslations === 0
+      if (elapsed >= opts.minTailMs && qIdle) break
+    }
+    log('waitAfterCaptureEnd', {
+      waitedMs: Date.now() - t0,
+      queueDepth: this.translationQueue.length,
+      activeTranslations: this.activeTranslations,
+    })
+  }
+
+  private flushPendingInterimTranslation() {
+    if (this.interimTranslateTimer) {
+      clearTimeout(this.interimTranslateTimer)
+      this.interimTranslateTimer = null
+    }
+    if (this.translateTarget === 'off' || !this.running) return
+    for (const segId of this.latestEnInterimBySeg.keys()) {
+      const raw = this.latestEnInterimBySeg.get(segId) ?? ''
+      if (!raw.trim()) continue
+      const deo = deOverlapEnglish(this.committedEnFull, raw)
+      if (!deo.novelText.trim()) continue
+      const gen = this.zhInterimGenBySeg.get(segId) ?? 0
+      void this.translateInterim(segId, deo.novelText, gen)
+    }
   }
 
   stop() {

@@ -119,6 +119,7 @@ import {
   liveCaptionEventFromEngine,
   type LiveCaptionView,
 } from './lib/liveCaptionSessionModel'
+import { getEnArrivalWalls, traceCaptionStop } from './lib/liveCaptionTrace'
 import { canonicalizeLectureTranscript } from './lib/transcriptCanonical'
 import { youmiLiveLog } from './lib/youmiLiveDebug'
 import type { Recording, RecordingDetail } from './types'
@@ -1035,8 +1036,10 @@ function RecordingWorkspace({
   /** In-flight capture only; terminal outcomes use `recentCapture` / `recentAi`. */
   const saveOrFinishBusy = isCapturePipelinePhase(flow.phase) || flow.phase === 'stopping'
 
+  /** After Stop, keep LiveEngine mounted briefly so ASR can flush trailing finals into the session. */
+  const [liveEngineDrainPhase, setLiveEngineDrainPhase] = useState(false)
   const liveCaptionSessionActive =
-    recorder.status === 'recording' || recorder.status === 'paused'
+    recorder.status === 'recording' || recorder.status === 'paused' || liveEngineDrainPhase
   const useLiveEngineV2 = useLiveEngineV2ForHosted
   const [liveRouteState, setLiveRouteState] = useState<LiveRouteState>('legacy')
 
@@ -1789,6 +1792,7 @@ function RecordingWorkspace({
   }, [
     useLiveEngineV2,
     liveCaptionSessionActive,
+    liveEngineDrainPhase,
     liveCaptionsPipelineEnabled,
     usesHosted,
     translateTarget,
@@ -2211,9 +2215,26 @@ function RecordingWorkspace({
       if (!localOnly && userId) releaseTabSaveLock(recordingId)
     }
 
+    let liveDrainLatched = false
     try {
+      const useLiveDrain =
+        useLiveEngineV2 && liveCaptionsPipelineEnabled && usesHosted
+      if (useLiveDrain) {
+        flushSync(() => {
+          setLiveEngineDrainPhase(true)
+          liveDrainLatched = true
+        })
+      }
+      traceCaptionStop('stop_click', {
+        useLiveDrain,
+        ...getEnArrivalWalls(),
+      })
+
       const uiElapsedSecBeforeStop = recorder.elapsedSec
       const { blob, mime } = await recorder.stop()
+      traceCaptionStop('after_recorder_stop', {
+        ...getEnArrivalWalls(),
+      })
       if (import.meta.env.DEV) {
         console.warn(
           '[MainRec][save]',
@@ -2227,6 +2248,13 @@ function RecordingWorkspace({
           }),
         )
       }
+      const eng = liveEngineRef.current
+      if (useLiveDrain && eng) {
+        eng.notifyAudioCaptureEnded()
+        traceCaptionStop('after_stream_stop_signal', { ...getEnArrivalWalls() })
+        await eng.waitAfterCaptureEnd({ minTailMs: 2600, maxMs: 6000 })
+        traceCaptionStop('after_drain_wait', { ...getEnArrivalWalls() })
+      }
       const drainUntil = Date.now() + 4500
       while (
         Date.now() < drainUntil &&
@@ -2237,6 +2265,18 @@ function RecordingWorkspace({
       const capSnap = useLiveEngineV2 ? liveCaptionSessionRef.current.getView() : null
       const primary = (useLiveEngineV2 ? capSnap!.persistPrimaryFull : primaryCaptionRef.current).trim()
       const secondary = (useLiveEngineV2 ? capSnap!.persistSecondaryFull : secondaryCaption.trim()).trim()
+      traceCaptionStop('caption_snapshot', {
+        primaryLen: primary.length,
+        secondaryLen: secondary.length,
+        ...getEnArrivalWalls(),
+      })
+      if (liveDrainLatched) {
+        flushSync(() => {
+          setLiveEngineDrainPhase(false)
+          liveDrainLatched = false
+        })
+        traceCaptionStop('drain_phase_off', { ...getEnArrivalWalls() })
+      }
       const liveText =
         translateTarget === 'off'
           ? primary
@@ -2466,6 +2506,12 @@ function RecordingWorkspace({
       })
       ledgerClear(recordingId)
     } finally {
+      if (liveDrainLatched) {
+        flushSync(() => {
+          setLiveEngineDrainPhase(false)
+        })
+        traceCaptionStop('drain_phase_off_error_path', { ...getEnArrivalWalls() })
+      }
       saveInFlightRef.current = false
       releaseLock()
     }

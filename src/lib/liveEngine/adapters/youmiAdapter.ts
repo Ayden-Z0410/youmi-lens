@@ -91,6 +91,16 @@ export class YoumiLiveAdapter {
     this.listener?.({ type: 'connected' })
   }
 
+  /**
+   * Mic / PCM has stopped: ask server ASR to flush remaining audio into finals.
+   * Does not close the WebSocket (caller keeps receiving stream_final for a short drain window).
+   */
+  notifyAudioEnd() {
+    if (this.closed) return
+    log('notifyAudioEnd (stream_stop only)')
+    this.session?.stop()
+  }
+
   stop() {
     this.closed = true
     this.activeRef.active = false

@@ -15,7 +15,7 @@ import {
   normalizeEnglishPrimaryPayloadOrReject,
   sanitizeEnglishForZhTranslate,
 } from './liveCaptionSanitize'
-import { traceView, traceZhFinal, traceZhInterim } from './liveCaptionTrace'
+import { traceDisplayGray, traceView, traceZhFinal, traceZhInterim } from './liveCaptionTrace'
 import type { LiveEngineEvent } from './liveEngine/types'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -30,6 +30,8 @@ export type LiveCaptionCurrentZh = { id: UtteranceId; text: string } | null
 export type LiveCaptionSessionState = {
   committedEn: LiveCaptionCommittedLine[]
   currentEn: LiveCaptionCurrentEn
+  /** Smoothed EN gray for UI only; strict novel for persistence stays in `currentEn.text`. */
+  displayGrayEn: string
   committedZh: LiveCaptionCommittedLine[]
   currentZh: LiveCaptionCurrentZh
   finalizedZhIds: Set<string>
@@ -66,12 +68,31 @@ function joinLines(lines: readonly LiveCaptionCommittedLine[]): string {
   return lines.map((x) => x.text).join(' ').trim()
 }
 
+function tokenCount(s: string): number {
+  const t = s.trim()
+  if (!t) return 0
+  return t.split(/\s+/).length
+}
+
+/** Merge per-interim novel chunks into a readable rolling draft (display only). */
+function mergeRollingGray(prev: string, novel: string): string {
+  const n = novel.trim()
+  if (!n) return prev
+  const p = prev.trimEnd()
+  if (!p) return n
+  if (p === n) return p
+  if (n.startsWith(p)) return n
+  if (p.endsWith(n)) return p
+  return `${p} ${n}`.replace(/\s+/g, ' ').trim()
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 function initialState(): LiveCaptionSessionState {
   return {
     committedEn: [],
     currentEn: null,
+    displayGrayEn: '',
     committedZh: [],
     currentZh: null,
     finalizedZhIds: new Set(),
@@ -88,10 +109,11 @@ function projectView(s: LiveCaptionSessionState): LiveCaptionView {
   const committedEnJoin = joinLines(s.committedEn)
   const committedZhJoin = joinLines(s.committedZh)
 
-  const grayEn = s.currentEn?.text ?? ''
+  const grayEnStrict = s.currentEn?.text ?? ''
+  const grayEn = s.displayGrayEn.trim() ? s.displayGrayEn : grayEnStrict
   const grayZh = s.currentZh?.text ?? ''
 
-  const persistPrimaryFull = [committedEnJoin, grayEn].filter(Boolean).join(' ').trim()
+  const persistPrimaryFull = [committedEnJoin, grayEnStrict].filter(Boolean).join(' ').trim()
   const persistSecondaryFull = [committedZhJoin, grayZh].filter(Boolean).join(' ').trim()
 
   const view = {
@@ -148,7 +170,13 @@ export class LiveCaptionSessionModel {
       if (this.s.currentZh && this.s.currentZh.id !== ev.segmentId) {
         this.s.currentZh = null
       }
+      if (this.s.currentEn?.id !== ev.segmentId) {
+        this.s.displayGrayEn = text
+      } else {
+        this.s.displayGrayEn = mergeRollingGray(this.s.displayGrayEn, text)
+      }
       this.s.currentEn = { id: ev.segmentId, text }
+      traceDisplayGray(ev.segmentId, tokenCount(text), tokenCount(this.s.displayGrayEn))
       this.s.openUtteranceSeq = seq
       return projectView(this.s)
     }
@@ -165,6 +193,7 @@ export class LiveCaptionSessionModel {
       this.s.committedEn = [...this.s.committedEn, { id: ev.segmentId, text }]
       if (this.s.currentEn?.id === ev.segmentId) {
         this.s.currentEn = null
+        this.s.displayGrayEn = ''
       }
       this.s.openUtteranceSeq = seq
       return projectView(this.s)

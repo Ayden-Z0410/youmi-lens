@@ -54,6 +54,12 @@ const segHistoryEn = new Map<string, SegHistory>()
 const segHistoryZh = new Map<string, SegHistory>()
 let sessionStartMs = 0
 
+/** Wall-clock ms of last raw en_interim pipeline sample (for inter-event timing). */
+let lastInterimPipelineWallMs = 0
+/** Last en_interim / en_final arrival (wall ms) for stop-tail diagnosis. */
+let lastEnInterimWallMs = 0
+let lastEnFinalWallMs = 0
+
 function elapsed(): number {
   return sessionStartMs ? Date.now() - sessionStartMs : 0
 }
@@ -75,7 +81,71 @@ export function traceReset() {
   segHistoryEn.clear()
   segHistoryZh.clear()
   sessionStartMs = Date.now()
+  lastInterimPipelineWallMs = 0
+  lastEnInterimWallMs = 0
+  lastEnFinalWallMs = 0
   out('RESET', { sessionStartMs })
+}
+
+export function traceInterimPipeline(
+  segmentId: string,
+  rev: number,
+  fields: {
+    rawTok: number
+    novelTok: number
+    shrink6to2: boolean
+  },
+) {
+  const wall = Date.now()
+  const msSincePrev = lastInterimPipelineWallMs ? wall - lastInterimPipelineWallMs : 0
+  lastInterimPipelineWallMs = wall
+  out('INTERIM_PIPELINE', {
+    ms: elapsed(),
+    wallMs: wall,
+    segmentId,
+    rev,
+    rawTok: fields.rawTok,
+    novelTok: fields.novelTok,
+    msSincePrev,
+    shrink6to2: fields.shrink6to2 || undefined,
+  })
+}
+
+export function traceDisplayGray(segmentId: string, strictTok: number, displayTok: number) {
+  out('DISPLAY_GRAY', {
+    ms: elapsed(),
+    segmentId,
+    strictTok,
+    displayTok,
+    delta: displayTok - strictTok,
+  })
+}
+
+export function bumpEnInterimArrivalWall() {
+  lastEnInterimWallMs = Date.now()
+}
+
+export function bumpEnFinalArrivalWall() {
+  lastEnFinalWallMs = Date.now()
+}
+
+export function getEnArrivalWalls() {
+  return { lastEnInterimWallMs, lastEnFinalWallMs }
+}
+
+export function traceCaptionStop(phase: string, extra?: Record<string, unknown>) {
+  const w = Date.now()
+  out('STOP', {
+    phase,
+    wallMs: w,
+    lastEnInterimWallMs: lastEnInterimWallMs || undefined,
+    lastEnFinalWallMs: lastEnFinalWallMs || undefined,
+    ...extra,
+  })
+}
+
+export function traceWsClosed(reason?: string) {
+  out('WS_CLOSE', { wallMs: Date.now(), ms: elapsed(), reason })
 }
 
 export function traceEnInterim(segmentId: string, rev: number, text: string) {
@@ -215,10 +285,14 @@ export function traceView(view: {
   secondaryBlack: string
   secondaryGray: string
 }) {
+  const grayTok = view.primaryGray.trim()
+    ? view.primaryGray.trim().split(/\s+/).length
+    : 0
   out('VIEW', {
     ms: elapsed(),
     blackEnLen: view.primaryBlack.length,
     grayEnLen: view.primaryGray.length,
+    grayEnTok: grayTok,
     blackZhLen: view.secondaryBlack.length,
     grayZhLen: view.secondaryGray.length,
     grayEnHead: head(view.primaryGray, 80),
