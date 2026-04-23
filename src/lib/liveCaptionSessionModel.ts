@@ -1,17 +1,12 @@
 /**
- * Live-caption display state machine (rewrite).
+ * Live-caption display state machine.
  *
- * Two slots per language:
- *   committed[] -- finalized utterances (black text)
- *   current     -- single replaceable interim (gray text)
+ * The engine performs token-based de-overlap before emitting events, so all
+ * en_interim / en_final text is already "novelText" (only the genuinely new
+ * portion). This model simply accumulates finals and displays the current
+ * interim as-is.
  *
- * Rules:
- *   1. en_interim  -> replace currentEn (pure replace, no accumulation)
- *   2. en_final    -> upsert committedEn by id, clear currentEn
- *   3. zh_interim  -> replace currentZh
- *   4. zh_final    -> upsert committedZh by id, clear currentZh
- *   5. black = committed only
- *   6. gray  = current only
+ * Committed en/zh are append-only (never replaced) to stay monotonic.
  */
 import { compactLiveZhSnapshot } from './liveCaptionCompaction'
 import {
@@ -159,20 +154,15 @@ export class LiveCaptionSessionModel {
     }
 
     // ── en_final ───────────────────────────────────────────────────────────
+    // Text is already de-overlapped novelText from the engine.
+    // Append-only to keep committed monotonic.
     if (ev.type === 'en_final') {
       const text = normalizeEnglishPrimaryPayloadOrReject(ev.text)
       if (!text) return projectView(this.s)
       if (open >= 0 && seq < open) return projectView(this.s)
 
       this.s.lastEnFinalSanitizedById.set(ev.segmentId, sanitizeEnglishForZhTranslate(text))
-      const idx = this.s.committedEn.findIndex((x) => x.id === ev.segmentId)
-      if (idx >= 0) {
-        this.s.committedEn = this.s.committedEn.map((x, i) =>
-          i === idx ? { id: ev.segmentId, text } : x,
-        )
-      } else {
-        this.s.committedEn = [...this.s.committedEn, { id: ev.segmentId, text }]
-      }
+      this.s.committedEn = [...this.s.committedEn, { id: ev.segmentId, text }]
       if (this.s.currentEn?.id === ev.segmentId) {
         this.s.currentEn = null
       }

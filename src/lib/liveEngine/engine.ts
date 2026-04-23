@@ -3,12 +3,13 @@
  * **translation-from-text** via HTTP. Post-class transcription/summary stay out of this module.
  */
 import { translateLiveCaption } from '../aiClient'
+import { deOverlapEnglish } from '../liveCaptionDeOverlap'
 import {
   normalizeEnglishPrimaryPayloadOrReject,
   normalizeZhPayloadOrReject,
   sanitizeEnglishForZhTranslate,
 } from '../liveCaptionSanitize'
-import { traceEnFinal, traceEnInterim, traceReset } from '../liveCaptionTrace'
+import { traceDeOverlap, traceEnFinal, traceEnInterim, traceReset } from '../liveCaptionTrace'
 import { YoumiLiveAdapter } from './adapters/youmiAdapter'
 import type { LiveEngineEvent, LiveEngineListener } from './types'
 
@@ -48,6 +49,9 @@ export class LiveEngine {
   private lastZhInterimChunkEnBySeg = new Map<string, string>()
   private lastZhInterimChunkAtMsBySeg = new Map<string, number>()
 
+  /** Monotonic: only grows via appending de-overlapped novelText from en_final events. */
+  private committedEnFull = ''
+
   // Debounce interim translation: latest interim only, keep secondary line snappy without spamming API.
   private interimTranslateTimer: ReturnType<typeof setTimeout> | null = null
   /** Debounced so zh_interim tracks phrase-level EN, not every ASR partial. */
@@ -78,6 +82,7 @@ export class LiveEngine {
     this.latestEnInterimBySeg.clear()
     this.lastZhInterimChunkEnBySeg.clear()
     this.lastZhInterimChunkAtMsBySeg.clear()
+    this.committedEnFull = ''
     this.translationQueue = []
     this.activeTranslations = 0
     this.sessionStartMs = Date.now()
@@ -114,9 +119,12 @@ export class LiveEngine {
         traceEnInterim(ev.segmentId, ev.rev, clean)
         const prev = this.latestEnInterimBySeg.get(ev.segmentId) ?? ''
         if (clean === prev) return
-        this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: clean })
         this.latestEnInterimBySeg.set(ev.segmentId, clean)
-        // Cancel any pending interim debounce — prevents stale zh_interim after zh_final
+
+        const deo = deOverlapEnglish(this.committedEnFull, clean)
+        traceDeOverlap('en_interim', ev.segmentId, clean.length, deo)
+        this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: deo.novelText })
+
         if (this.interimTranslateTimer) {
           clearTimeout(this.interimTranslateTimer)
           this.interimTranslateTimer = null
@@ -125,13 +133,15 @@ export class LiveEngine {
         const gen = this.zhInterimGenBySeg.get(capturedId) ?? 0
         this.interimTranslateTimer = setTimeout(() => {
           this.interimTranslateTimer = null
-          const latest = this.latestEnInterimBySeg.get(capturedId) ?? ''
-          void this.translateInterim(capturedId, latest, gen)
+          const rawLatest = this.latestEnInterimBySeg.get(capturedId) ?? ''
+          if (!rawLatest) return
+          const latestDeo = deOverlapEnglish(this.committedEnFull, rawLatest)
+          if (!latestDeo.novelText.trim()) return
+          void this.translateInterim(capturedId, latestDeo.novelText, gen)
         }, LiveEngine.INTERIM_TRANSLATE_DEBOUNCE_MS)
         return
       }
       if (ev.type === 'en_final') {
-        // Cancel any pending interim translation debounce before processing the final
         if (this.interimTranslateTimer) {
           clearTimeout(this.interimTranslateTimer)
           this.interimTranslateTimer = null
@@ -143,15 +153,32 @@ export class LiveEngine {
         const cleanFinal = normalizeEnglishPrimaryPayloadOrReject(ev.text)
         if (!cleanFinal) return
         traceEnFinal(ev.segmentId, cleanFinal)
+
+        const deo = deOverlapEnglish(this.committedEnFull, cleanFinal)
+        traceDeOverlap('en_final', ev.segmentId, cleanFinal.length, deo)
+
+        if (!deo.novelText.trim()) {
+          log('en_final skipped (no novel text)', {
+            segmentId: ev.segmentId,
+            incomingLen: cleanFinal.length,
+            overlapTokens: deo.overlapTokenCount,
+            sessionMs: this.elapsed(),
+          })
+          return
+        }
+
+        this.committedEnFull += (this.committedEnFull ? ' ' : '') + deo.novelText
         log('en_final', {
           segmentId: ev.segmentId,
-          len: cleanFinal.length,
+          novelLen: deo.novelText.length,
+          committedLen: this.committedEnFull.length,
+          overlapTokens: deo.overlapTokenCount,
           sessionMs: this.elapsed(),
           translationQueueDepth: this.translationQueue.length,
           activeTranslations: this.activeTranslations,
         })
-        this.emit({ type: 'en_final', segmentId: ev.segmentId, text: cleanFinal })
-        this.enqueueTranslation(ev.segmentId, cleanFinal)
+        this.emit({ type: 'en_final', segmentId: ev.segmentId, text: deo.novelText })
+        this.enqueueTranslation(ev.segmentId, deo.novelText)
       }
     })
     adapter.start()

@@ -173,6 +173,33 @@ export function traceZhFinal(
   if (!dropped) h.prevText = text
 }
 
+export function traceDeOverlap(
+  eventType: string,
+  segmentId: string,
+  incomingLen: number,
+  info: {
+    overlapTokenCount: number
+    incomingTokenCount: number
+    novelTokenCount: number
+    overlapPreview: string
+    novelPreview: string
+    novelText: string
+  },
+) {
+  out('DE_OVERLAP', {
+    ms: elapsed(),
+    event: eventType,
+    segmentId,
+    incomingLen,
+    committedTailLen: info.incomingTokenCount - info.novelTokenCount,
+    overlapTokenCount: info.overlapTokenCount,
+    novelLen: info.novelText.length,
+    novelTokens: info.novelTokenCount,
+    overlapPreview: info.overlapPreview,
+    novelPreview: info.novelPreview,
+  })
+}
+
 export function traceView(view: {
   primaryBlack: string
   primaryGray: string
