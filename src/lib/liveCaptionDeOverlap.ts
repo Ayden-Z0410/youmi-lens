@@ -26,13 +26,20 @@ function norm(token: string): string {
 
 // ?? Public result type ??????????????????????????????????????????????????????
 
+export type DeOverlapVerdict = 'anchor_cut' | 'containment_drop' | 'no_overlap_keep' | 'empty_committed'
+
 export interface DeOverlapResult {
   novelText: string
+  verdict: DeOverlapVerdict
   overlapTokenCount: number
   incomingTokenCount: number
   novelTokenCount: number
   overlapPreview: string
   novelPreview: string
+  matchedAnchorLen: number
+  matchedAnchorText: string
+  suspiciousShortAnchor: boolean
+  containmentRatio: number
 }
 
 // ?? Main entry point ????????????????????????????????????????????????????????
@@ -45,29 +52,34 @@ export function deOverlapEnglish(
 
   if (!committedEnFull.trim() || inTokens.length === 0) {
     const text = incoming.trim()
-    return result(inTokens, 0, text)
+    return buildResult(inTokens, 0, {
+      verdict: 'empty_committed',
+      novelOverride: text,
+    })
   }
 
   const cTokens = tokenize(committedEnFull)
   const normC = cTokens.map(norm)
   const normIn = inTokens.map(norm)
 
-  // ?? Strategy 1: Anchor search ???????????????????????????????????????????
-  // Find the last N tokens of committed somewhere in incoming. Everything in
-  // incoming after the anchor is novel text.
+  // Strategy 1: Anchor search
   const maxAnchor = Math.min(10, normC.length)
   for (let anchorLen = maxAnchor; anchorLen >= 3; anchorLen--) {
     const anchor = normC.slice(-anchorLen)
     const pos = findSubseq(normIn, anchor)
     if (pos >= 0) {
       const overlapEnd = pos + anchorLen
-      return result(inTokens, overlapEnd)
+      const anchorOrigTokens = cTokens.slice(-anchorLen)
+      return buildResult(inTokens, overlapEnd, {
+        verdict: 'anchor_cut',
+        matchedAnchorLen: anchorLen,
+        matchedAnchorText: anchorOrigTokens.join(' '),
+        suspiciousShortAnchor: anchorLen <= 4,
+      })
     }
   }
 
-  // ?? Strategy 2: Containment (bag-of-words) ?????????????????????????????
-  // Handles re-segmented "double finals" where incoming is a subset of
-  // committed but has no clean suffix-prefix alignment.
+  // Strategy 2: Containment (bag-of-words)
   const windowSize = Math.min(normC.length, 250)
   const bag = new Map<string, number>()
   for (let i = normC.length - windowSize; i < normC.length; i++) {
@@ -85,12 +97,20 @@ export function deOverlapEnglish(
     }
   }
 
+  const containmentRatio = normIn.length > 0 ? covered / normIn.length : 0
+
   if (normIn.length >= 5 && covered >= normIn.length * 0.85) {
-    return result(inTokens, inTokens.length, '')
+    return buildResult(inTokens, inTokens.length, {
+      verdict: 'containment_drop',
+      novelOverride: '',
+      containmentRatio,
+    })
   }
 
-  // ?? No significant overlap ?????????????????????????????????????????????
-  return result(inTokens, 0)
+  return buildResult(inTokens, 0, {
+    verdict: 'no_overlap_keep',
+    containmentRatio,
+  })
 }
 
 // ?? Helpers ?????????????????????????????????????????????????????????????????
@@ -107,23 +127,37 @@ function findSubseq(haystack: string[], needle: string[]): number {
   return -1
 }
 
-function result(
+type BuildOpts = {
+  verdict: DeOverlapVerdict
+  novelOverride?: string
+  matchedAnchorLen?: number
+  matchedAnchorText?: string
+  suspiciousShortAnchor?: boolean
+  containmentRatio?: number
+}
+
+function buildResult(
   inTokens: string[],
   overlapEnd: number,
-  novelOverride?: string,
+  opts: BuildOpts,
 ): DeOverlapResult {
   const novelTokens = inTokens.slice(overlapEnd)
-  const novelText = novelOverride !== undefined ? novelOverride : novelTokens.join(' ')
+  const novelText = opts.novelOverride !== undefined ? opts.novelOverride : novelTokens.join(' ')
   const overlapTokens = inTokens.slice(0, overlapEnd)
   const overlapPreview = preview(overlapTokens.join(' '))
   const novelPreview = novelText.slice(0, 120)
   return {
     novelText,
+    verdict: opts.verdict,
     overlapTokenCount: overlapEnd,
     incomingTokenCount: inTokens.length,
     novelTokenCount: novelTokens.length,
     overlapPreview,
     novelPreview,
+    matchedAnchorLen: opts.matchedAnchorLen ?? 0,
+    matchedAnchorText: opts.matchedAnchorText ?? '',
+    suspiciousShortAnchor: opts.suspiciousShortAnchor ?? false,
+    containmentRatio: opts.containmentRatio ?? 0,
   }
 }
 

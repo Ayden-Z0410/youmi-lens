@@ -178,23 +178,32 @@ export function traceDeOverlap(
   segmentId: string,
   incomingLen: number,
   info: {
+    verdict: string
     overlapTokenCount: number
     incomingTokenCount: number
     novelTokenCount: number
     overlapPreview: string
     novelPreview: string
     novelText: string
+    matchedAnchorLen: number
+    matchedAnchorText: string
+    suspiciousShortAnchor: boolean
+    containmentRatio: number
   },
 ) {
   out('DE_OVERLAP', {
     ms: elapsed(),
     event: eventType,
     segmentId,
+    verdict: info.verdict,
     incomingLen,
-    committedTailLen: info.incomingTokenCount - info.novelTokenCount,
     overlapTokenCount: info.overlapTokenCount,
     novelLen: info.novelText.length,
     novelTokens: info.novelTokenCount,
+    matchedAnchorLen: info.matchedAnchorLen,
+    matchedAnchorText: info.matchedAnchorText || undefined,
+    suspiciousShortAnchor: info.suspiciousShortAnchor || undefined,
+    containmentRatio: info.containmentRatio ? +info.containmentRatio.toFixed(3) : undefined,
     overlapPreview: info.overlapPreview,
     novelPreview: info.novelPreview,
   })
