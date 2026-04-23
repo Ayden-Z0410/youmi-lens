@@ -8,6 +8,7 @@ import {
   normalizeZhPayloadOrReject,
   sanitizeEnglishForZhTranslate,
 } from '../liveCaptionSanitize'
+import { traceEnFinal, traceEnInterim, traceReset } from '../liveCaptionTrace'
 import { YoumiLiveAdapter } from './adapters/youmiAdapter'
 import type { LiveEngineEvent, LiveEngineListener } from './types'
 
@@ -80,6 +81,7 @@ export class LiveEngine {
     this.translationQueue = []
     this.activeTranslations = 0
     this.sessionStartMs = Date.now()
+    traceReset()
     log('start')
     this.emit({ type: 'status', status: 'starting' })
     const adapter = new YoumiLiveAdapter()
@@ -109,6 +111,7 @@ export class LiveEngine {
       if (ev.type === 'en_interim') {
         const clean = normalizeEnglishPrimaryPayloadOrReject(ev.text)
         if (!clean) return
+        traceEnInterim(ev.segmentId, ev.rev, clean)
         const prev = this.latestEnInterimBySeg.get(ev.segmentId) ?? ''
         if (clean === prev) return
         this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: clean })
@@ -139,6 +142,7 @@ export class LiveEngine {
         this.lastZhInterimChunkAtMsBySeg.delete(sid)
         const cleanFinal = normalizeEnglishPrimaryPayloadOrReject(ev.text)
         if (!cleanFinal) return
+        traceEnFinal(ev.segmentId, cleanFinal)
         log('en_final', {
           segmentId: ev.segmentId,
           len: cleanFinal.length,

@@ -20,6 +20,7 @@ import {
   normalizeEnglishPrimaryPayloadOrReject,
   sanitizeEnglishForZhTranslate,
 } from './liveCaptionSanitize'
+import { traceView, traceZhFinal, traceZhInterim } from './liveCaptionTrace'
 import type { LiveEngineEvent } from './liveEngine/types'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -86,6 +87,8 @@ function initialState(): LiveCaptionSessionState {
 
 // ── Projection ───────────────────────────────────────────────────────────────
 
+let _viewCallCount = 0
+
 function projectView(s: LiveCaptionSessionState): LiveCaptionView {
   const committedEnJoin = joinLines(s.committedEn)
   const committedZhJoin = joinLines(s.committedZh)
@@ -96,7 +99,7 @@ function projectView(s: LiveCaptionSessionState): LiveCaptionView {
   const persistPrimaryFull = [committedEnJoin, grayEn].filter(Boolean).join(' ').trim()
   const persistSecondaryFull = [committedZhJoin, grayZh].filter(Boolean).join(' ').trim()
 
-  return {
+  const view = {
     primaryBlack: committedEnJoin ? windowTailWords(committedEnJoin, 150) : '',
     primaryGray: grayEn,
     secondaryBlack: committedZhJoin ? windowTailWords(committedZhJoin, 150) : '',
@@ -105,6 +108,8 @@ function projectView(s: LiveCaptionSessionState): LiveCaptionView {
     persistSecondaryFull,
     committedEnJoin,
   }
+  if (++_viewCallCount % 5 === 0) traceView(view)
+  return view
 }
 
 // ── Event types ──────────────────────────────────────────────────────────────
@@ -177,29 +182,44 @@ export class LiveCaptionSessionModel {
 
     // ── zh_interim ─────────────────────────────────────────────────────────
     if (ev.type === 'zh_interim') {
-      if (isGarbledMixedScriptLine(ev.text)) return projectView(this.s)
-      if (this.s.finalizedZhIds.has(ev.segmentId)) return projectView(this.s)
+      if (isGarbledMixedScriptLine(ev.text)) {
+        traceZhInterim(ev.segmentId, ev.rev, ev.text, ev.sourceEn, 'garbled')
+        return projectView(this.s)
+      }
+      if (this.s.finalizedZhIds.has(ev.segmentId)) {
+        traceZhInterim(ev.segmentId, ev.rev, ev.text, ev.sourceEn, 'already_finalized')
+        return projectView(this.s)
+      }
 
       const text = (compactLiveZhSnapshot(ev.text.trim()) || '').trim() || ev.text.trim()
+      traceZhInterim(ev.segmentId, ev.rev, text, ev.sourceEn, null)
       this.s.currentZh = { id: ev.segmentId, text }
       return projectView(this.s)
     }
 
     // ── zh_final ───────────────────────────────────────────────────────────
     if (ev.type === 'zh_final') {
-      if (isGarbledMixedScriptLine(ev.text)) return projectView(this.s)
-      if (this.s.finalizedZhIds.has(ev.segmentId)) return projectView(this.s)
+      if (isGarbledMixedScriptLine(ev.text)) {
+        traceZhFinal(ev.segmentId, ev.text, ev.sourceEn, 'garbled')
+        return projectView(this.s)
+      }
+      if (this.s.finalizedZhIds.has(ev.segmentId)) {
+        traceZhFinal(ev.segmentId, ev.text, ev.sourceEn, 'already_finalized')
+        return projectView(this.s)
+      }
 
       const expectedSan = normCaptionSpaces(
         this.s.lastEnFinalSanitizedById.get(ev.segmentId) ?? '',
       ).toLowerCase()
       const srcSan = normCaptionSpaces(ev.sourceEn).toLowerCase()
       if (expectedSan && srcSan && expectedSan !== srcSan) {
+        traceZhFinal(ev.segmentId, ev.text, ev.sourceEn, 'source_mismatch')
         this.s.lastEnFinalSanitizedById.delete(ev.segmentId)
         return projectView(this.s)
       }
       this.s.lastEnFinalSanitizedById.delete(ev.segmentId)
       this.s.finalizedZhIds.add(ev.segmentId)
+      traceZhFinal(ev.segmentId, ev.text, ev.sourceEn, null)
 
       const text = ev.text.trim()
       if (text) {
