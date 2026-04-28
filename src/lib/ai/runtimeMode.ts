@@ -10,6 +10,27 @@ export type HostedHealthSnapshot = {
    * Independent from post-class pipeline.
    */
   liveCaptions?: boolean
+  /** V1 product hints from `/api/health` (optional on older servers). */
+  product?: {
+    v1PrimaryFlow?: string
+    liveCaptions?: string
+  }
+  /** Provider readiness (secret-safe booleans only). */
+  providerReadiness?: {
+    dashscope?: {
+      configured?: boolean
+      region?: string
+      keySource?: string
+    }
+    openaiFallback?: { configured?: boolean }
+    postClass?: {
+      transcribe?: boolean
+      summarize?: boolean
+      translate?: boolean
+      ready?: boolean
+    }
+    liveRealtimeAsr?: { provider?: string; ready?: boolean }
+  }
   mode?: {
     hostedRuntimeMode?: 'hosted' | 'stub' | 'unconfigured'
     stubAiEnabled?: boolean
@@ -28,6 +49,8 @@ export function hostedHealthFromApiJson(j: unknown): HostedHealthSnapshot | null
   const root = j as { youmiAi?: Record<string, unknown> }
   const ya = root.youmiAi
   if (!ya || typeof ya !== 'object') return null
+  const pr = ya.providerReadiness as HostedHealthSnapshot['providerReadiness'] | undefined
+  const product = ya.product as HostedHealthSnapshot['product'] | undefined
   const caps = ya.capabilities as Record<string, unknown> | undefined
   const live =
     parseOptionalBool(ya.liveCaptions) ?? parseOptionalBool(caps?.liveCaptions)
@@ -46,6 +69,8 @@ export function hostedHealthFromApiJson(j: unknown): HostedHealthSnapshot | null
     ready,
     postClassTranscript: postClass,
     liveCaptions: liveCaptionsResolved,
+    product,
+    providerReadiness: pr,
     mode: ya.mode as HostedHealthSnapshot['mode'],
   }
 }

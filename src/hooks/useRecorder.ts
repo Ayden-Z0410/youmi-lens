@@ -29,6 +29,9 @@ const MIN_LIVE_AUDIO_BYTES = 2048
 /** Live caption slice interval only (separate cloned MediaRecorder; does not use timeslice on main track). */
 export const LIVE_WHISPER_SLICE_MS = 1600
 
+/** After final requestData(), wait briefly so the encoder can append the last chunk before MediaRecorder.stop(). */
+const MAIN_RECORDER_STOP_FLUSH_MS = 140
+
 export function useRecorder(opts?: {
   /** Receives each timed audio slice while recording (cloned track; same mic as main file). */
   onLiveAudioChunkRef?: RefObject<((blob: Blob, mime: string) => void) | null>
@@ -453,7 +456,17 @@ export function useRecorder(opts?: {
           setStatus('idle')
           resolve({ blob, mime })
         }
-        mr.stop()
+        window.setTimeout(() => {
+          try {
+            mr.stop()
+          } catch (stopErr) {
+            mainRecLine('stop', {
+              session: sessionTag,
+              error: stopErr instanceof Error ? stopErr.message : String(stopErr),
+            })
+            reject(stopErr instanceof Error ? stopErr : new Error(String(stopErr)))
+          }
+        }, MAIN_RECORDER_STOP_FLUSH_MS)
       }
 
       if (liveMr && liveMr.state !== 'inactive') {

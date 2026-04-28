@@ -5,7 +5,9 @@
  * - Recorded speech: Paraformer file ASR (async task + result JSON) — official REST API
  *
  * Env (server only):
- * - DASHSCOPE_API_KEY — required for hosted speech (Paraformer) + preferred for chat (Qwen)
+ * - DASHSCOPE_API_KEY — default China-region Model Studio key (Paraformer + Qwen)
+ * - DASHSCOPE_OVERSEAS_API_KEY — optional international (Singapore) key; when set, all DashScope
+ *   calls use intl endpoints with this key (server-side only, never sent to the browser)
  * - YUMI_QWEN_CHAT_MODEL — default qwen-turbo
  * - YUMI_PARAFORMER_MODEL — default paraformer-v2
  * - YUMI_PARAFORMER_LANGUAGE_HINTS — comma list, default zh,en
@@ -18,12 +20,11 @@
  */
 
 import { buildSummarizeMessages } from '../summarizePrompt.mjs'
+import { getDashScopeBases, getDashScopeEffectiveKey, getDashScopeEnvSummary } from '../../dashscopeEnv.mjs'
 
 /** Internal adapter id for logs and metrics (never shown in UI). */
 export const HOSTED_ADAPTER_ID = 'qwenHosted'
 
-const DASHSCOPE_COMPAT_CHAT = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
-const PARAFORMER_SUBMIT = 'https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription'
 const OPENAI_AUDIO = 'https://api.openai.com/v1/audio/transcriptions'
 const OPENAI_CHAT = 'https://api.openai.com/v1/chat/completions'
 
@@ -51,7 +52,7 @@ function parseLanguageHints() {
 }
 
 export function hostedCapabilities() {
-  const hasDash = Boolean(process.env.DASHSCOPE_API_KEY?.trim())
+  const hasDash = Boolean(getDashScopeEffectiveKey())
   const hasOpenaiFallback = Boolean(process.env.OPENAI_API_KEY?.trim())
   if (STUB_ENABLED) {
     return {
@@ -77,14 +78,14 @@ export function hostedCapabilities() {
 
 export function hostedRuntimeMode() {
   if (STUB_ENABLED) return 'stub'
-  if (process.env.DASHSCOPE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim()) return 'hosted'
+  if (getDashScopeEffectiveKey() || process.env.OPENAI_API_KEY?.trim()) return 'hosted'
   return 'unconfigured'
 }
 
 /** Secret-safe env presence diagnostics for server health/logging. */
 export function hostedEnvDiagnostics() {
   return {
-    DASHSCOPE_API_KEY: Boolean(process.env.DASHSCOPE_API_KEY?.trim()),
+    ...getDashScopeEnvSummary(),
     OPENAI_API_KEY: Boolean(process.env.OPENAI_API_KEY?.trim()),
     YUMI_HOSTED_TRANSCRIBE_IMPL: process.env.YUMI_HOSTED_TRANSCRIBE_IMPL || '',
     YUMI_QWEN_CHAT_MODEL: process.env.YUMI_QWEN_CHAT_MODEL || 'qwen-turbo',
@@ -99,9 +100,10 @@ async function stubDelay(ms = 220) {
 
 /** Prefer DashScope (Qwen); fall back to OpenAI chat for legacy / single-key deploys. */
 async function chatCompleteJson(messages, opts = {}) {
-  const dash = process.env.DASHSCOPE_API_KEY?.trim()
+  const dash = getDashScopeEffectiveKey()
   if (dash) {
-    const r = await fetch(DASHSCOPE_COMPAT_CHAT, {
+    const chatUrl = getDashScopeBases().compatChat
+    const r = await fetch(chatUrl, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${dash}`,
@@ -156,7 +158,7 @@ export async function transcribeAudioFromUrl(fileUrl) {
     await stubDelay()
     return `Demo transcript (${new Date().toLocaleTimeString()}): Lecture audio processed in local development mode.`
   }
-  const key = process.env.DASHSCOPE_API_KEY?.trim()
+  const key = getDashScopeEffectiveKey()
   if (key) {
     console.warn('[youmiHosted] transcribeAudioFromUrl paraformer path', { urlHost: safeUrlHost(fileUrl) })
     const taskId = await submitParaformerTask(key, fileUrl)
@@ -179,7 +181,8 @@ export async function transcribeAudioFromUrl(fileUrl) {
 }
 
 async function submitParaformerTask(apiKey, fileUrl) {
-  const r = await fetch(PARAFORMER_SUBMIT, {
+  const submitUrl = getDashScopeBases().paraformerSubmit
+  const r = await fetch(submitUrl, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -213,7 +216,7 @@ async function submitParaformerTask(apiKey, fileUrl) {
 }
 
 async function pollParaformerTask(apiKey, taskId) {
-  const url = `https://dashscope.aliyuncs.com/api/v1/tasks/${taskId}`
+  const url = `${getDashScopeBases().tasksPollBase}/${taskId}`
   const maxMs = Number(process.env.YUMI_PARAFORMER_POLL_MAX_MS || 600_000)
   const intervalMs = Number(process.env.YUMI_PARAFORMER_POLL_INTERVAL_MS || 500)
   const t0 = Date.now()

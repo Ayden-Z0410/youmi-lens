@@ -7,6 +7,7 @@ import {
   DEFAULT_VOLC_ASR_RESOURCE_ID,
 } from './volcengineStreamingAsr.mjs'
 import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
+import { getDashScopeEffectiveKey } from './dashscopeEnv.mjs'
 
 /**
  * `/api/live-realtime-ws` — **single default realtime semantics** (Phase 1+2):
@@ -204,9 +205,9 @@ export function attachLiveRealtimeWs(server) {
         }
 
         if (liveProvider === 'dashscope') {
-          const dsKey = process.env.DASHSCOPE_API_KEY?.trim()
+          const dsKey = getDashScopeEffectiveKey()
           if (!dsKey) {
-            safeSend(ws, { type: 'stream_error', message: 'DASHSCOPE_API_KEY_MISSING' })
+            safeSend(ws, { type: 'stream_error', message: 'DASHSCOPE_KEY_MISSING' })
             return
           }
           if (SRV_LIVE_VERBOSE) {

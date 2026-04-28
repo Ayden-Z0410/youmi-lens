@@ -17,8 +17,7 @@
  */
 
 import { WebSocket } from 'ws'
-
-const DASHSCOPE_WS = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'
+import { getDashScopeBases } from './dashscopeEnv.mjs'
 
 function makeTaskId() {
   // 32-char hex UUID (DashScope requirement)
@@ -56,7 +55,7 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
   let T_first_final = 0
   let interimCount = 0
 
-  /** When DashScope rarely sets sentence_end, interims never become finals ó UI stuck in gray. Commit after brief audio pause. */
+  /** When DashScope rarely sets sentence_end, interims never become finals ù UI stuck in gray. Commit after brief audio pause. */
   const PAUSE_COMMIT_MS = Number(process.env.YOUMI_LIVE_PAUSE_COMMIT_MS || 580)
   let pauseCommitTimer = null
   let latestInterimText = ''
@@ -162,13 +161,14 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
   let taskStartedTimer = setTimeout(() => {
     taskStartedTimer = null
     if (!started) {
-      const msg = `DashScope task-started timeout after ${TASK_STARTED_TIMEOUT_MS}ms ù WS connected but ASR session never confirmed`
+      const msg = `DashScope task-started timeout after ${TASK_STARTED_TIMEOUT_MS}ms -- WS connected but ASR session never confirmed`
       L('task-started TIMEOUT', { sampleRate })
       onError?.(new Error(msg))
     }
   }, TASK_STARTED_TIMEOUT_MS)
 
-  ws = new WebSocket(DASHSCOPE_WS, {
+  const wsUrl = getDashScopeBases().wsInference
+  ws = new WebSocket(wsUrl, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'user-agent': 'youmi-lens-server/1.0',

@@ -200,7 +200,7 @@ function liveRouteDiagLog(...args: unknown[]) {
 }
 
 const LIVE_CAPTIONS_USER_EXPECTATION_EN =
-  'Original captions appear first, followed by translation. Captions are generated in segments as you record.'
+  'Live captions are a beta preview only. Your full lecture transcript and bilingual summaries are produced after you stop (Generate transcript & summaries).'
 
 type LiveRouteState =
   | 'legacy'
@@ -3628,8 +3628,9 @@ function RecordingWorkspace({
               </label>
             </div>
         <p className="hint small" style={{ marginTop: '-0.5rem' }}>
-          <strong>Primary line</strong> is your spoken language (about every {LIVE_WHISPER_SLICE_SEC}s while
-          recording). <strong>Secondary line</strong> is the translation target, line by line, when enabled.
+          <strong>V1:</strong> the reliable path is Stop & save, then open the recording and run{' '}
+          <strong>Generate transcript & summaries</strong> for the full transcript (English + Chinese summaries in
+          Supabase). <strong>Live captions</strong> below are an optional beta preview while you record.
         </p>
         {!postClassAiEnabled ? (
           <p className="hint small" style={{ marginTop: '0.35rem' }}>
@@ -3654,6 +3655,7 @@ function RecordingWorkspace({
             {recentCapture.kind === 'success' && (
               <p className="hint small">
                 Recording saved {localOnly ? 'locally' : 'to the cloud'}. Open it from Recent on the left.
+                {!localOnly ? ' Run Generate transcript & summaries for the full lecture text in Supabase.' : null}
               </p>
             )}
             {recentCapture.kind === 'list_refresh_warn' && (
@@ -3697,7 +3699,12 @@ function RecordingWorkspace({
           <>
             <div className="live-caption live-caption-primary" aria-live="polite">
               <div className="live-caption-head">
-                <div className="live-caption-label">Primary · {spokenLanguageLabel(liveLang)}</div>
+                <div className="live-caption-label">
+                  Primary · {spokenLanguageLabel(liveLang)}{' '}
+                  <span className="live-pill" style={{ fontWeight: 500 }}>
+                    Beta preview
+                  </span>
+                </div>
                 {recorder.status === 'paused' && (
                   <span className="live-pill">Paused — text kept</span>
                 )}
