@@ -20,6 +20,8 @@ export function hostedRecordingAiStatusLabel(status: AiJobStatus | undefined): s
       return 'Youmi AI is transcribing…'
     case 'summarizing':
       return 'Youmi AI is writing bilingual summaries…'
+    case 'transcript_ready':
+      return 'Transcript is ready. Summaries may still be processing.'
     case 'done':
     case 'failed':
     default:

@@ -15,6 +15,7 @@ export async function requestHostedRecordingAi(opts: {
   accessToken: string
   recordingId: string
 }): Promise<{ ok: true } | { ok: false; message: string; debug?: ProcessRecordingErrBody }> {
+  console.warn('[process-recording] start', JSON.stringify({ recordingId: opts.recordingId }))
   const res = await fetch(`${getAiApiBase()}/process-recording`, {
     method: 'POST',
     headers: {
@@ -23,6 +24,22 @@ export async function requestHostedRecordingAi(opts: {
     },
     body: JSON.stringify({ recordingId: opts.recordingId }),
   })
+
+  let bodySnippet: unknown
+  try {
+    bodySnippet = await res.clone().json()
+  } catch {
+    bodySnippet = null
+  }
+  console.warn(
+    '[process-recording] response',
+    JSON.stringify({
+      recordingId: opts.recordingId,
+      status: res.status,
+      ok: res.ok,
+      body: bodySnippet,
+    }),
+  )
 
   if (res.status === 202 || res.status === 200) {
     return { ok: true }
@@ -46,5 +63,6 @@ export async function requestHostedRecordingAi(opts: {
   } catch {
     /* use default */
   }
+  console.warn('[process-recording] enqueue_failed', JSON.stringify({ recordingId: opts.recordingId, message }))
   return { ok: false, message, debug }
 }

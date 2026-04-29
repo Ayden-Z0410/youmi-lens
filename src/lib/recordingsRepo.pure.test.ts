@@ -38,6 +38,7 @@ describe('parseAiJobStatus', () => {
   it('accepts known worker states', () => {
     expect(parseAiJobStatus('done')).toBe('done')
     expect(parseAiJobStatus('failed')).toBe('failed')
+    expect(parseAiJobStatus('transcript_ready')).toBe('transcript_ready')
   })
 })
 

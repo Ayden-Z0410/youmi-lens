@@ -1812,7 +1812,7 @@ function RecordingWorkspace({
     !localOnly &&
     usesHosted &&
     detail &&
-    ['queued', 'transcribing', 'summarizing'].includes(detail.aiStatus ?? '')
+    ['queued', 'transcribing', 'summarizing', 'transcript_ready'].includes(detail.aiStatus ?? '')
 
   const hostedPostClassOutputsComplete = Boolean(
     detail?.transcript?.trim() && detail?.summaryEn?.trim() && detail?.summaryZh?.trim(),
@@ -2087,7 +2087,7 @@ function RecordingWorkspace({
   useEffect(() => {
     if (localOnly || !usesHosted || !selectedId || !supabase || !userId) return
     const st = detail?.aiStatus
-    if (!st || !['queued', 'transcribing', 'summarizing'].includes(st)) {
+    if (!st || !['queued', 'transcribing', 'summarizing', 'transcript_ready'].includes(st)) {
       hostedAiPollStartedAtRef.current = null
       return
     }
@@ -2578,6 +2578,7 @@ function RecordingWorkspace({
         setRecentAi(null)
         const out = await requestHostedRecordingAi({ accessToken: tok, recordingId: detail.id })
         if (!out.ok) {
+          console.warn('[process-recording] save error', JSON.stringify({ recordingId: detail.id, message: out.message, debug: out.debug }))
           setRecentAi({
             kind: 'other',
             recordingId: detail.id,
@@ -2586,6 +2587,7 @@ function RecordingWorkspace({
           })
           return
         }
+        console.warn('[process-recording] save start', JSON.stringify({ recordingId: detail.id, note: 'refresh_detail_after_enqueue' }))
         try {
           const next = await withTimeout(
             getRecordingDetail(supabase!, userId!, detail.id),
@@ -2594,7 +2596,9 @@ function RecordingWorkspace({
           )
           if (next) setDetail(next)
           await refreshList()
-        } catch {
+          console.warn('[process-recording] refresh_ok', JSON.stringify({ recordingId: detail.id }))
+        } catch (e) {
+          console.warn('[process-recording] refresh_error', JSON.stringify({ recordingId: detail.id, message: e instanceof Error ? e.message : String(e) }))
           /* polling will refresh */
         }
         return
@@ -3926,6 +3930,11 @@ function RecordingWorkspace({
                   )}
                 {detail.aiStatus === 'failed' && (
                   <p className="error small" style={{ marginBottom: '0.5rem' }}>
+                    {userFacingHostedJobFailure(detail.aiError)}
+                  </p>
+                )}
+                {detail.aiStatus === 'transcript_ready' && detail.aiError?.trim() && (
+                  <p className="hint small" style={{ marginBottom: '0.5rem' }}>
                     {userFacingHostedJobFailure(detail.aiError)}
                   </p>
                 )}

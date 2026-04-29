@@ -10,6 +10,13 @@ const BUCKET = 'lecture-audio'
 
 const processingIds = new Set()
 
+function v1PipelineLog(event, fields) {
+  console.warn(`[V1Pipeline] ${event}`, JSON.stringify({ ...fields, t: new Date().toISOString() }))
+  if (process.env.YOUMI_PIPELINE_TRACE === '1') {
+    console.info(JSON.stringify({ source: 'v1_pipeline', event, ...fields }))
+  }
+}
+
 /**
  * User-scoped client (JWT) for auth + Storage (RLS). Optional service-role client for `recordings` writes
  * so POST /api/process-recording can persist ai_status / transcript after ownership is verified.
@@ -28,12 +35,14 @@ function createSupabaseClients(supabaseUrl, anonKey, jwt) {
   return { userSb, dbSb, usingServiceRoleForRecordings: Boolean(serviceRole) }
 }
 
-function logPostgrestError(scope, err) {
+function logPostgrestError(scope, err, ctx = {}) {
   if (!err) return
   console.error(
     `[process-recording] ${scope}`,
     JSON.stringify(
       {
+        table: 'recordings',
+        ...ctx,
         message: err.message,
         code: err.code,
         details: err.details,
@@ -46,6 +55,37 @@ function logPostgrestError(scope, err) {
 }
 
 /**
+ * Best-effort write of v1 pipeline columns (requires supabase-migration-v1-pipeline-flags.sql).
+ * Never fails the job — core transcript/summary rows must persist without these columns.
+ */
+async function tryOptionalV1PipelineExtras(dbSb, recordingId, userId, patch, label) {
+  const keys = Object.keys(patch)
+  const { error } = await dbSb
+    .from('recordings')
+    .update(patch)
+    .eq('id', recordingId)
+    .eq('user_id', userId)
+  if (error) {
+    console.warn(
+      `[process-recording] supabase optional_column_update_failed`,
+      JSON.stringify({
+        label,
+        recordingId,
+        userIdPrefix: userId.slice(0, 8),
+        patchKeys: keys,
+        hint: 'Run supabase-migration-v1-pipeline-flags.sql if you need transcript_ready/summary_ready columns.',
+        message: error.message,
+        code: error.code,
+        details: error.details,
+      }),
+    )
+    return false
+  }
+  console.warn(`[process-recording] supabase update_ok`, JSON.stringify({ label, recordingId, patchKeys: keys }))
+  return true
+}
+
+/**
  * POST /api/process-recording
  * Body: { recordingId: string }
  * Header: Authorization: Bearer <Supabase user JWT>
@@ -55,7 +95,16 @@ export async function handleProcessRecording(req, res) {
   const anonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
   const caps = youmiHosted.hostedCapabilities()
 
-  if (!supabaseUrl || !anonKey || !caps.transcribe || !caps.summarize) {
+  console.warn(
+    '[process-recording] received',
+    JSON.stringify({
+      hasRecordingId: Boolean(req.body?.recordingId),
+      transcribeCap: caps.transcribe,
+      marker: process.env.YOUMI_DEPLOY_MARKER || null,
+    }),
+  )
+
+  if (!supabaseUrl || !anonKey || !caps.transcribe) {
     res.status(503).json({ error: CLIENT_SAFE_UNAVAILABLE })
     return
   }
@@ -108,7 +157,19 @@ export async function handleProcessRecording(req, res) {
   )
 
   const now = new Date().toISOString()
+  const enqueuePayloadKeys = ['ai_status', 'ai_error', 'ai_updated_at']
   /** Step: enqueue job — UPDATE ai_status -> queued (fails here => client sees "Could not update recording.") */
+  console.warn(
+    '[process-recording] supabase update start',
+    JSON.stringify({
+      step: 'enqueue_ai_status_queued',
+      recordingId,
+      userIdPrefix: userId.slice(0, 8),
+      table: 'recordings',
+      payloadKeys: enqueuePayloadKeys,
+      usingServiceRoleForRecordings,
+    }),
+  )
   const { error: upErr } = await dbSb
     .from('recordings')
     .update({
@@ -120,7 +181,12 @@ export async function handleProcessRecording(req, res) {
     .eq('user_id', userId)
 
   if (upErr) {
-    logPostgrestError('enqueue update ai_status=queued', upErr)
+    console.warn('[process-recording] supabase update error', JSON.stringify({ step: 'enqueue_ai_status_queued', recordingId }))
+    logPostgrestError('enqueue update ai_status=queued', upErr, {
+      recordingId,
+      userIdPrefix: userId.slice(0, 8),
+      payloadKeys: enqueuePayloadKeys,
+    })
     processingIds.delete(recordingId)
     res.status(500).json({
       error: 'Could not update recording.',
@@ -153,6 +219,8 @@ function jobLog(phase, payload) {
 }
 
 async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRecordings }) {
+  const jobT0 = Date.now()
+
   const markFailed = async (msg) => {
     jobLog('mark_failed', { recordingId, userId: userId.slice(0, 8), message: msg })
     const { error } = await dbSb
@@ -277,30 +345,110 @@ async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRe
       canonicalizeLectureTranscript(transcriptRaw)
     jobLog('canonical_ok', { recordingId, ...canonDiag })
 
-    const { error: txErr } = await dbSb
+    const transcriptReadyMs = Date.now() - jobT0
+    v1PipelineLog('timing', {
+      recordingId,
+      transcript_ready_ms: transcriptReadyMs,
+    })
+
+    jobLog('transcribe_success', { recordingId, textLen: transcriptRaw?.length ?? 0 })
+
+    /** Core columns only — works without v1 migration (no transcript_ready / ai_pipeline_timing columns). */
+    const transcriptSavePayload = {
+      transcript_raw: transcriptRaw,
+      transcript: transcriptCanonical,
+      ai_status: 'transcript_ready',
+      ai_error: null,
+      ai_updated_at: new Date().toISOString(),
+    }
+    const transcriptSaveKeys = Object.keys(transcriptSavePayload)
+    console.warn(
+      '[process-recording] supabase update start',
+      JSON.stringify({
+        step: 'persist_transcript_core',
+        recordingId,
+        userIdPrefix: userId.slice(0, 8),
+        table: 'recordings',
+        payloadKeys: transcriptSaveKeys,
+        usingServiceRoleForRecordings,
+      }),
+    )
+
+    let { error: txErr } = await dbSb
       .from('recordings')
-      .update({
-        transcript_raw: transcriptRaw,
-        transcript: transcriptCanonical,
-        ai_status: 'summarizing',
-        ai_updated_at: new Date().toISOString(),
-      })
+      .update(transcriptSavePayload)
       .eq('id', recordingId)
       .eq('user_id', userId)
     if (txErr) {
-      logPostgrestError('runJob update transcript+summarizing', txErr)
+      const msg = String(txErr.message || '')
+      const looksLikeMissingColumn = /transcript_raw|column/i.test(msg)
+      if (looksLikeMissingColumn) {
+        jobLog('transcript_save_retry_without_transcript_raw', { recordingId, firstError: msg })
+        const minimalPayload = {
+          transcript: transcriptCanonical,
+          ai_status: 'transcript_ready',
+          ai_error: null,
+          ai_updated_at: new Date().toISOString(),
+        }
+        const r2 = await dbSb
+          .from('recordings')
+          .update(minimalPayload)
+          .eq('id', recordingId)
+          .eq('user_id', userId)
+        txErr = r2.error
+        if (!txErr) {
+          console.warn(
+            '[process-recording] transcript_saved_minimal',
+            JSON.stringify({ recordingId, note: 'transcript_raw column missing; run supabase-migration-transcript-canonical.sql' }),
+          )
+        }
+      }
+    }
+    if (txErr) {
+      console.warn('[process-recording] supabase update error', JSON.stringify({ step: 'persist_transcript_core', recordingId }))
+      logPostgrestError('runJob update transcript (core columns)', txErr, {
+        recordingId,
+        userIdPrefix: userId.slice(0, 8),
+        payloadKeys: transcriptSaveKeys,
+      })
       await markFailed('Could not save transcript after transcription.')
       return
     }
 
-    jobLog('status_summarizing', {
+    console.warn('[process-recording] done', JSON.stringify({ phase: 'transcript_saved_core', recordingId }))
+
+    await tryOptionalV1PipelineExtras(
+      dbSb,
       recordingId,
+      userId,
+      {
+        transcript_ready: true,
+        summary_ready: false,
+        translation_ready: false,
+        ai_pipeline_timing: {
+          job_start_to_transcript_ready_ms: transcriptReadyMs,
+        },
+      },
+      'after_transcript_flags',
+    )
+
+    jobLog('status_transcript_ready', {
+      recordingId,
+      transcript_ready_ms: transcriptReadyMs,
       transcriptLen: transcriptCanonical.length,
       transcriptRawLen: transcriptRaw.length,
     })
 
+    const canSummarize = youmiHosted.hostedCapabilities().summarize
+    if (!canSummarize) {
+      jobLog('job_done_no_summarize', { recordingId })
+      v1PipelineLog('job_partial', { recordingId, reason: 'summarize_unconfigured' })
+      return
+    }
+
     let summaryEn
     let summaryZh
+    const summarizeWallT0 = Date.now()
     try {
       jobLog('summarize_begin', { recordingId })
       const s = await youmiHosted.summarizeTranscript(transcriptCanonical, row.course, row.title)
@@ -314,40 +462,111 @@ async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRe
     } catch (e) {
       console.warn('[process-recording] summarize', e)
       jobLog('summarize_error', { recordingId, message: e instanceof Error ? e.message : String(e) })
+      const summarizeFailCore = {
+        ai_status: 'transcript_ready',
+        ai_error:
+          'Summaries did not finish. Your transcript is available — you can try again shortly.',
+        ai_updated_at: new Date().toISOString(),
+      }
+      console.warn(
+        '[process-recording] supabase update start',
+        JSON.stringify({
+          step: 'summarize_fail_core',
+          recordingId,
+          payloadKeys: Object.keys(summarizeFailCore),
+        }),
+      )
       const { error: sumFailErr } = await dbSb
         .from('recordings')
-        .update({
-          transcript_raw: transcriptRaw,
-          transcript: transcriptCanonical,
-          ai_status: 'failed',
-          ai_error:
-            'Summaries did not finish. Your transcript was saved - you can try again shortly.',
-          ai_updated_at: new Date().toISOString(),
-        })
+        .update(summarizeFailCore)
         .eq('id', recordingId)
         .eq('user_id', userId)
-      if (sumFailErr) logPostgrestError('runJob summarize fail persist', sumFailErr)
+      if (sumFailErr) {
+        console.warn('[process-recording] supabase update error', JSON.stringify({ step: 'summarize_fail_core', recordingId }))
+        logPostgrestError('runJob summarize fail persist (core)', sumFailErr, {
+          recordingId,
+          userIdPrefix: userId.slice(0, 8),
+          payloadKeys: Object.keys(summarizeFailCore),
+        })
+      } else {
+        await tryOptionalV1PipelineExtras(
+          dbSb,
+          recordingId,
+          userId,
+          {
+            transcript_ready: true,
+            summary_ready: false,
+            translation_ready: false,
+            ai_pipeline_timing: {
+              job_start_to_transcript_ready_ms: transcriptReadyMs,
+              summarize_failed_ms: Date.now() - jobT0,
+            },
+          },
+          'summarize_fail_flags',
+        )
+      }
+      v1PipelineLog('summary_failed', { recordingId, transcript_ready_ms: transcriptReadyMs })
       return
     }
 
+    const summaryReadyMs = Date.now() - jobT0
+    v1PipelineLog('timing', {
+      recordingId,
+      transcript_ready_ms: transcriptReadyMs,
+      summary_ready_ms: summaryReadyMs,
+      summarize_wall_ms: Date.now() - summarizeWallT0,
+    })
+
+    const summaryOk = Boolean(summaryEn?.trim() && summaryZh?.trim())
+    const doneCorePayload = {
+      transcript_raw: transcriptRaw,
+      transcript: transcriptCanonical,
+      summary_en: summaryEn,
+      summary_zh: summaryZh,
+      ai_status: 'done',
+      ai_error: null,
+      ai_updated_at: new Date().toISOString(),
+    }
+    console.warn(
+      '[process-recording] supabase update start',
+      JSON.stringify({
+        step: 'final_done_core',
+        recordingId,
+        payloadKeys: Object.keys(doneCorePayload),
+      }),
+    )
     const { error: doneErr } = await dbSb
       .from('recordings')
-      .update({
-        transcript_raw: transcriptRaw,
-        transcript: transcriptCanonical,
-        summary_en: summaryEn,
-        summary_zh: summaryZh,
-        ai_status: 'done',
-        ai_error: null,
-        ai_updated_at: new Date().toISOString(),
-      })
+      .update(doneCorePayload)
       .eq('id', recordingId)
       .eq('user_id', userId)
     if (doneErr) {
-      logPostgrestError('runJob final done', doneErr)
+      console.warn('[process-recording] supabase update error', JSON.stringify({ step: 'final_done_core', recordingId }))
+      logPostgrestError('runJob final done (core)', doneErr, {
+        recordingId,
+        userIdPrefix: userId.slice(0, 8),
+        payloadKeys: Object.keys(doneCorePayload),
+      })
       await markFailed('Could not save summaries after processing.')
     } else {
-      jobLog('job_done', { recordingId })
+      await tryOptionalV1PipelineExtras(
+        dbSb,
+        recordingId,
+        userId,
+        {
+          transcript_ready: true,
+          summary_ready: summaryOk,
+          translation_ready: summaryOk,
+          ai_pipeline_timing: {
+            job_start_to_transcript_ready_ms: transcriptReadyMs,
+            job_start_to_summary_ready_ms: summaryReadyMs,
+            summarize_wall_ms: Date.now() - summarizeWallT0,
+          },
+        },
+        'final_done_flags',
+      )
+      jobLog('job_done', { recordingId, summary_ready_ms: summaryReadyMs })
+      console.warn('[process-recording] done', JSON.stringify({ phase: 'job_complete', recordingId }))
     }
   } catch (e) {
     console.warn('[process-recording] job', e)

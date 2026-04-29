@@ -42,6 +42,10 @@ export type RecordingDbRow = {
   ai_status: string | null
   ai_error: string | null
   ai_updated_at: string | null
+  transcript_ready?: boolean | null
+  summary_ready?: boolean | null
+  translation_ready?: boolean | null
+  ai_pipeline_timing?: Record<string, unknown> | null
 }
 
 const AI_STATUSES: AiJobStatus[] = [
@@ -49,6 +53,7 @@ const AI_STATUSES: AiJobStatus[] = [
   'queued',
   'transcribing',
   'summarizing',
+  'transcript_ready',
   'done',
   'failed',
 ]
@@ -76,6 +81,13 @@ export function mapDbRowToRecording(r: RecordingDbRow): Recording {
     aiStatus: parseAiJobStatus(r.ai_status),
     aiError: r.ai_error ?? undefined,
     aiUpdatedAt: r.ai_updated_at ? new Date(r.ai_updated_at).getTime() : undefined,
+    transcriptReady: r.transcript_ready === true ? true : r.transcript_ready === false ? false : undefined,
+    summaryReady: r.summary_ready === true ? true : r.summary_ready === false ? false : undefined,
+    translationReady: r.translation_ready === true ? true : r.translation_ready === false ? false : undefined,
+    aiPipelineTiming:
+      r.ai_pipeline_timing && typeof r.ai_pipeline_timing === 'object'
+        ? (r.ai_pipeline_timing as Recording['aiPipelineTiming'])
+        : undefined,
   }
 }
 
