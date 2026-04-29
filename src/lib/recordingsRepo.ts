@@ -444,3 +444,55 @@ export async function deleteRecordingRemote(
   const { error } = await supabase.from('recordings').delete().eq('id', id).eq('user_id', userId)
   if (error) throw error
 }
+
+/**
+ * Delete one or more cloud or local lecture recordings. Cloud path loads `storage_path` per id then removes Storage + row.
+ * Skips ids missing from DB (logs warning). No Supabase work for `localOnly` (local DB + blob only).
+ */
+export async function deleteLectures(
+  ids: string[],
+  options: {
+    localOnly: boolean
+    supabase: SupabaseClient | null
+    userId: string | null
+    deleteRecordingLocal: (id: string) => Promise<void>
+  },
+): Promise<void> {
+  const unique = [...new Set(ids)].filter(Boolean)
+  if (unique.length === 0) return
+
+  if (options.localOnly) {
+    for (const id of unique) await options.deleteRecordingLocal(id)
+    return
+  }
+
+  const { supabase, userId } = options
+  if (!supabase || !userId) {
+    throw new Error('Not signed in.')
+  }
+
+  const { data, error } = await supabase
+    .from('recordings')
+    .select('id, storage_path')
+    .eq('user_id', userId)
+    .in('id', unique)
+
+  if (error) throw error
+
+  const map = new Map<string, string>()
+  for (const row of data ?? []) {
+    const r = row as { id?: string; storage_path?: string }
+    if (typeof r.id === 'string' && typeof r.storage_path === 'string' && r.storage_path) {
+      map.set(r.id, r.storage_path)
+    }
+  }
+
+  for (const id of unique) {
+    const sp = map.get(id)
+    if (!sp) {
+      console.warn('[deleteLectures] skip — row or storage_path missing', { id })
+      continue
+    }
+    await deleteRecordingRemote(supabase, userId, id, sp)
+  }
+}
