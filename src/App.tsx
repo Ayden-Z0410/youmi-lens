@@ -2865,13 +2865,10 @@ function RecordingWorkspace({
     [localOnly, supabase, userId, refreshList, selectedId],
   )
 
-  const deleteDetailLecture = useCallback(async () => {
-    if (!detail) return
-    await performDeleteLectures([detail.id], 'single')
-  }, [detail, performDeleteLectures])
-
   const handleDeleteSelectedLectures = useCallback(async () => {
+    console.log('[library-delete-selected] clicked')
     const ids = libraryPickedIds
+    console.log('[library-delete-selected] ids', ids)
     if (ids.length === 0) return
     const allIds = new Set(recordings.map((r) => r.id))
     const pickedSet = new Set(ids)
@@ -2879,7 +2876,14 @@ function RecordingWorkspace({
       recordings.length > 0 &&
       ids.length === recordings.length &&
       [...allIds].every((id) => pickedSet.has(id))
-    await performDeleteLectures(ids, isEveryLecture ? 'global' : 'multi')
+    console.log('[library-delete-selected] confirmed')
+    try {
+      await performDeleteLectures(ids, isEveryLecture ? 'global' : 'multi')
+      console.log('[library-delete-selected] done')
+    } catch (err) {
+      console.error('[library-delete-selected] error', err)
+      throw err
+    }
   }, [libraryPickedIds, recordings, performDeleteLectures])
 
   const createFolder = () => {
@@ -2921,9 +2925,15 @@ function RecordingWorkspace({
     setRenameFolderModal(null)
   }
 
-  const deleteFolderIfEmpty = (folderId: string) => {
+  const deleteFolderIfEmpty = (folderId?: string) => {
+    console.log('[library-folder-delete] clicked')
+    if (!folderId) {
+      window.alert('Select a folder first.')
+      return
+    }
     const count = folderRecordingsMap[folderId]?.length ?? 0
     if (count > 0) {
+      console.log('[library-folder-delete] blocked_non_empty', { folderId, count })
       window.alert('Move or delete lectures before deleting this folder.')
       return
     }
@@ -2932,6 +2942,7 @@ function RecordingWorkspace({
     if (libraryActiveScope.kind === 'folder' && libraryActiveScope.folderId === folderId) {
       setLibraryActiveScope({ kind: 'all' })
     }
+    console.log('[library-folder-delete] deleted', { folderId })
   }
 
   const moveLectureToFolder = (recordingId: string, folderId: string) => {
@@ -3021,9 +3032,13 @@ function RecordingWorkspace({
 
   const canRenameLibraryFolder = libraryActiveScope.kind === 'folder' && !libraryPickMode
 
-  const canUseFolderActions = libraryActiveScope.kind === 'folder' && !libraryPickMode
-
   const deleteSelectedEnabled = libraryPickMode && libraryPickedIds.length > 0 && !deleteActionBusy
+  const activeScopeLabel =
+    libraryActiveScope.kind === 'all'
+      ? 'All lectures'
+      : libraryActiveScope.kind === 'unfiled'
+        ? 'Unfiled'
+        : libraryFolders.find((f) => f.id === libraryActiveScope.folderId)?.name ?? 'Folder'
 
   const showAccountPanel =
     !localOnly && supabase && userId && onProfileRowChange
@@ -3232,19 +3247,21 @@ function RecordingWorkspace({
                     <button
                       type="button"
                       className="btn ghost small"
-                      disabled={!canUseFolderActions}
+                      disabled={libraryPickMode}
                       title={
                         libraryActiveScope.kind !== 'folder'
-                          ? 'Select a named folder below to delete it when empty.'
+                          ? 'Select a folder first.'
                           : selectedFolderLectureCount > 0
                             ? 'Only empty folders can be deleted. Move or delete lectures first.'
                             : 'Delete this empty folder'
                       }
-                      onClick={() => {
-                        if (libraryActiveScope.kind === 'folder') {
-                          deleteFolderIfEmpty(libraryActiveScope.folderId)
-                        }
-                      }}
+                      onClick={() =>
+                        deleteFolderIfEmpty(
+                          libraryActiveScope.kind === 'folder'
+                            ? libraryActiveScope.folderId
+                            : undefined,
+                        )
+                      }
                     >
                       Delete folder
                     </button>
@@ -3413,6 +3430,17 @@ function RecordingWorkspace({
                         </span>
                       </button>
                     </DroppableLibraryTarget>
+                  </section>
+
+                  <section className="yl-recent-group">
+                    <div className="yl-recent-group-head is-folder-selected">
+                      <div className="yl-recent-group-head-btn" aria-live="polite">
+                        <span className="yl-recent-group-label">
+                          <span className="yl-recent-course">Current view: {activeScopeLabel}</span>
+                          <span className="yl-recent-count">({scopedLibraryRecordings.length})</span>
+                        </span>
+                      </div>
+                    </div>
                   </section>
 
                   <ul className="rec-list yl-recent-items">
@@ -3910,17 +3938,6 @@ function RecordingWorkspace({
                   <p className="muted">
                     {detail.course} · {formatClock(detail.durationSec)}
                   </p>
-                </div>
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
-                  <button
-                    type="button"
-                    className={`btn ghost small${deleteActionBusy ? ' is-busy' : ''}`}
-                    disabled={deleteActionBusy}
-                    aria-busy={deleteActionBusy}
-                    onClick={() => void deleteDetailLecture()}
-                  >
-                    {deleteActionBusy ? 'Deleting…' : 'Delete'}
-                  </button>
                 </div>
               </div>
 
