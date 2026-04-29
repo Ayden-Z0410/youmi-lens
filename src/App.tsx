@@ -2024,7 +2024,9 @@ function RecordingWorkspace({
 
   const handleLectureRowClick = useCallback(
     (recordingId: string) => (e: MouseEvent<HTMLButtonElement>) => {
-      if (suppressItemClickRef.current) return
+      // DnD-kit can briefly suppress click events after dragging. In pick mode,
+      // we never want that to prevent selection toggling.
+      if (suppressItemClickRef.current && !libraryPickMode) return
       if (libraryPickMode) {
         setLibraryPickedIds((prev) =>
           prev.includes(recordingId) ? prev.filter((x) => x !== recordingId) : [...prev, recordingId],
@@ -2867,6 +2869,7 @@ function RecordingWorkspace({
     const ids = libraryPickedIds.filter((id) => validIdSet.has(id))
     console.log('[library-delete-selected] ids', ids)
     if (ids.length === 0) return
+    window.alert('[library-delete-selected] clicked ids=' + ids.join(','))
     const allIds = new Set(recordings.map((r) => r.id))
     const pickedSet = new Set(ids)
     const isEveryLecture =
@@ -2884,6 +2887,7 @@ function RecordingWorkspace({
 
   const deleteDetailLecture = useCallback(async () => {
     if (!detail) return
+    window.alert('[library-delete-lecture] clicked id=' + detail.id)
     await performDeleteLectures([detail.id], 'single')
   }, [detail, performDeleteLectures])
 
@@ -2928,6 +2932,7 @@ function RecordingWorkspace({
 
   const deleteFolderIfEmpty = (folderId?: string) => {
     console.log('[library-folder-delete] clicked')
+    window.alert('[library-folder-delete] clicked')
     if (!folderId) {
       window.alert('Select a folder first.')
       return
