@@ -23,6 +23,39 @@ function describeUnknown(err: unknown): string {
   return String(err)
 }
 
+/** Pull Storage / fetch error fields Supabase sets on failed uploads. */
+function serializeStorageUploadError(err: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (!err || typeof err !== 'object') {
+    out.raw = String(err)
+    return out
+  }
+  const e = err as Record<string, unknown>
+  if (typeof e.name === 'string') out.name = e.name
+  if (typeof e.message === 'string') out.message = e.message
+  if (typeof e.statusCode === 'number' || typeof e.statusCode === 'string') out.statusCode = e.statusCode
+  if (typeof e.error === 'string') out.error = e.error
+  if (e.__isAuthError === true) out.__isAuthError = true
+  if (e.cause !== undefined) {
+    out.causeMessage =
+      e.cause instanceof Error ? e.cause.message : typeof e.cause === 'object' && e.cause && 'message' in e.cause
+        ? String((e.cause as { message: unknown }).message)
+        : undefined
+  }
+  return out
+}
+
+function userFacingUploadHint(baseMsg: string): string {
+  const lower = baseMsg.toLowerCase()
+  if (/load failed|failed to fetch|networkerror|network request failed/i.test(lower)) {
+    return `${baseMsg} — Check internet/VPN, Desktop WebView permissions, and that your Supabase project URL is reachable (not blocked).`
+  }
+  if (/jwt|expired|session|not authenticated|401|403/i.test(lower)) {
+    return `${baseMsg} — Sign out and sign in again; your session may have expired.`
+  }
+  return baseMsg
+}
+
 /** Shape of `public.recordings` rows from Supabase. */
 export type RecordingDbRow = {
   id: string
@@ -180,27 +213,58 @@ export async function uploadLectureAudio(
   mime: string,
 ): Promise<void> {
   const tail = path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path
+  const userSeg = path.includes('/') ? path.slice(0, path.indexOf('/')) : ''
+  const userIdPrefix = userSeg ? `${userSeg.slice(0, 8)}…` : 'unknown'
+
+  const { data: sessData, error: sessErr } = await supabase.auth.getSession()
+  const hasJwt = Boolean(sessData.session?.access_token)
+  const expiresAt = sessData.session?.expires_at
+
   console.warn(
-    '[MainRec][upload]',
+    '[storage-upload] start',
     JSON.stringify({
+      bucket: BUCKET,
+      storagePath: path,
       storageObjectTail: tail,
+      userIdPrefix,
       clientBlobBytes: blob.size,
       mime: mime || 'audio/webm',
+      hasSession: hasJwt,
+      sessionExpiresAt: expiresAt ?? null,
+      sessionError: sessErr?.message ?? null,
       t: Date.now(),
     }),
   )
+
+  if (!hasJwt) {
+    const msg =
+      'Audio upload failed: Not signed in or session missing. Sign in again, then stop & save.'
+    console.warn('[storage-upload] blocked_no_session', JSON.stringify({ userIdPrefix, pathTail: tail }))
+    throw new SaveRecordingRemoteError('storage_upload', msg, { cause: sessErr ?? undefined })
+  }
+
   const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, blob, {
     contentType: mime || 'audio/webm',
     upsert: true,
   })
   if (upErr) {
-    throw new SaveRecordingRemoteError(
-      'storage_upload',
-      `Audio upload failed: ${describeUnknown(upErr)}`,
-      { cause: upErr },
+    const rawMsg = describeUnknown(upErr)
+    const detail = serializeStorageUploadError(upErr)
+    console.warn(
+      '[storage-upload] supabase_error',
+      JSON.stringify({
+        bucket: BUCKET,
+        storagePath: path,
+        userIdPrefix,
+        blobBytes: blob.size,
+        mime: mime || 'audio/webm',
+        ...detail,
+      }),
     )
+    const friendly = userFacingUploadHint(`Audio upload failed: ${rawMsg}`)
+    throw new SaveRecordingRemoteError('storage_upload', friendly, { cause: upErr })
   }
-  console.warn('[MainRec][upload_ok]', JSON.stringify({ storageObjectTail: tail, t: Date.now() }))
+  console.warn('[storage-upload] ok', JSON.stringify({ storageObjectTail: tail, bucket: BUCKET, t: Date.now() }))
 }
 
 function isUniqueViolation(err: unknown): boolean {
