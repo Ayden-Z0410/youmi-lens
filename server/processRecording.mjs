@@ -73,10 +73,13 @@ async function tryOptionalV1PipelineExtras(dbSb, recordingId, userId, patch, lab
         recordingId,
         userIdPrefix: userId.slice(0, 8),
         patchKeys: keys,
-        hint: 'Run supabase-migration-v1-pipeline-flags.sql if you need transcript_ready/summary_ready columns.',
+        columnNames: keys,
+        migrationHint:
+          'Run supabase-migration-v1-pipeline-flags.sql for transcript_ready/summary_ready/translation_ready/ai_pipeline_timing.',
         message: error.message,
         code: error.code,
         details: error.details,
+        postgrestHint: error.hint,
       }),
     )
     return false
@@ -518,21 +521,29 @@ async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRe
     })
 
     const summaryOk = Boolean(summaryEn?.trim() && summaryZh?.trim())
+    /**
+     * Summary success path: write ONLY core columns present on every greenfield schema.
+     * Do not repeat transcript/transcript_raw here — already persisted; re-including them can fail
+     * on older DBs or widen failure surface. V1 flags/timing follow in tryOptionalV1PipelineExtras.
+     */
     const doneCorePayload = {
-      transcript_raw: transcriptRaw,
-      transcript: transcriptCanonical,
       summary_en: summaryEn,
       summary_zh: summaryZh,
       ai_status: 'done',
       ai_error: null,
       ai_updated_at: new Date().toISOString(),
     }
+    const doneCoreColumns = Object.keys(doneCorePayload)
     console.warn(
       '[process-recording] supabase update start',
       JSON.stringify({
         step: 'final_done_core',
         recordingId,
-        payloadKeys: Object.keys(doneCorePayload),
+        userIdPrefix: userId.slice(0, 8),
+        table: 'recordings',
+        payloadKeys: doneCoreColumns,
+        columnsWritten: doneCoreColumns,
+        usingServiceRoleForRecordings,
       }),
     )
     const { error: doneErr } = await dbSb
@@ -541,11 +552,25 @@ async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRe
       .eq('id', recordingId)
       .eq('user_id', userId)
     if (doneErr) {
-      console.warn('[process-recording] supabase update error', JSON.stringify({ step: 'final_done_core', recordingId }))
-      logPostgrestError('runJob final done (core)', doneErr, {
+      console.warn(
+        '[process-recording] supabase update error',
+        JSON.stringify({
+          step: 'final_done_core',
+          recordingId,
+          userIdPrefix: userId.slice(0, 8),
+          payloadKeys: doneCoreColumns,
+          columnsWritten: doneCoreColumns,
+          message: doneErr.message,
+          code: doneErr.code,
+          details: doneErr.details,
+          hint: doneErr.hint,
+        }),
+      )
+      logPostgrestError('runJob final done (summary core only)', doneErr, {
         recordingId,
         userIdPrefix: userId.slice(0, 8),
-        payloadKeys: Object.keys(doneCorePayload),
+        payloadKeys: doneCoreColumns,
+        columnsWritten: doneCoreColumns,
       })
       await markFailed('Could not save summaries after processing.')
     } else {
