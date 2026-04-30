@@ -31,10 +31,14 @@ import { useAuth } from './useAuth'
 import { useRecorder, LIVE_WHISPER_SLICE_MS } from './hooks/useRecorder'
 import {
   deleteRecordingLocal,
+  deleteTrashRecordingLocalPermanently,
   getAllRecordingsLocalWithBlobs,
   getRecordingDetailLocal,
   getRecordingWithBlob,
   listRecordingsLocal,
+  listTrashRecordingsLocal,
+  moveRecordingsToTrashLocal,
+  restoreRecordingFromTrashLocal,
   saveRecordingLocal,
   updateRecordingLocal,
 } from './lib/db'
@@ -123,10 +127,14 @@ import { getEnArrivalWalls, traceCaptionStop } from './lib/liveCaptionTrace'
 import { canonicalizeLectureTranscript } from './lib/transcriptCanonical'
 import { youmiLiveLog } from './lib/youmiLiveDebug'
 import type { Recording, RecordingDetail } from './types'
+import type { CloudTrashedMeta } from './lib/cloudLectureTrash'
+import { loadCloudTrashRegistry, saveCloudTrashRegistry } from './lib/cloudLectureTrash'
 import {
+  classifyTrashDeletionScope,
   folderNameConflict,
   getScopedRecordingIds,
   type LibraryActiveScope,
+  type TrashDeletionScope,
 } from './lib/lectureLibraryScope'
 import { YoumiLensShell } from './components/YoumiLensShell'
 import { YoumiLensMonogramY } from './branding/YoumiLensMonogramY'
@@ -134,7 +142,18 @@ import { designTokens } from './design-system/tokens'
 import './design-system/tokens.css'
 import './App.css'
 
-const UI_BUILD_MARKER = 'library-delete-debug-v3'
+const UI_BUILD_MARKER = 'SAFE-DELETE-V1'
+
+function trashConfirmPrimaryLine(scope: TrashDeletionScope, count: number): string {
+  const n = count === 1 ? '' : 's'
+  if (scope.kind === 'folder') {
+    return `Delete ${count} lecture${n} from folder "${scope.folderName}"?`
+  }
+  if (scope.kind === 'unfiled') {
+    return `Delete ${count} unfiled lecture${n}?`
+  }
+  return `Delete ${count} lecture${n} across the entire library?`
+}
 
 const KEY_LIVE_LANG = 'lc_live_lang'
 const KEY_TRANSLATE = 'lc_translate_target'
@@ -234,13 +253,6 @@ function formatDate(ts: number): string {
     dateStyle: 'medium',
     timeStyle: 'short',
   })
-}
-
-function formatDebugIds(ids: string[]): string {
-  if (ids.length === 0) return 'none'
-  const shortIds = ids.slice(0, 3).map((id) => id.slice(0, 8))
-  const more = ids.length > shortIds.length ? ` +${ids.length - shortIds.length} more` : ''
-  return `${ids.length}: ${shortIds.join(', ')}${more}`
 }
 
 type LibraryDropId = string | 'unfiled'
@@ -1911,8 +1923,16 @@ function RecordingWorkspace({
   const [backupError, setBackupError] = useState<string | null>(null)
   const [backupMsg, setBackupMsg] = useState<string | null>(null)
   const [deleteActionBusy, setDeleteActionBusy] = useState(false)
-  /** Visible trace for library delete flows (Tauri WebView may not show window.confirm). */
-  const [libraryDeleteDebugMessage, setLibraryDeleteDebugMessage] = useState('')
+  const [cloudTrash, setCloudTrash] = useState<Record<string, CloudTrashedMeta>>({})
+  const [globalSelectArmed, setGlobalSelectArmed] = useState(false)
+  const [trashConfirmModal, setTrashConfirmModal] = useState<{ ids: string[]; scope: TrashDeletionScope } | null>(
+    null,
+  )
+  const [permanentPurgeModal, setPermanentPurgeModal] = useState<string[] | null>(null)
+  const [recentlyDeletedOpen, setRecentlyDeletedOpen] = useState(false)
+  const [localTrashRows, setLocalTrashRows] = useState<Recording[]>([])
+  const [trashRefreshNonce, setTrashRefreshNonce] = useState(0)
+  const [libraryFolderNotice, setLibraryFolderNotice] = useState<string | null>(null)
   const [signOutBusy, setSignOutBusy] = useState(false)
 
   type LibraryFolder = { id: string; name: string; createdAt: number }
@@ -1971,6 +1991,35 @@ function RecordingWorkspace({
     }
   }, [libraryFolders, libraryLectureLocation])
 
+  useEffect(() => {
+    if (!userId || localOnly) {
+      setCloudTrash({})
+      return
+    }
+    setCloudTrash(loadCloudTrashRegistry(userId))
+  }, [userId, localOnly])
+
+  useEffect(() => {
+    setGlobalSelectArmed(false)
+  }, [libraryActiveScope, libraryPickMode])
+
+  useEffect(() => {
+    if (!localOnly) return
+    void listTrashRecordingsLocal().then(setLocalTrashRows)
+  }, [localOnly, trashRefreshNonce])
+
+  useEffect(() => {
+    if (!trashConfirmModal && !permanentPurgeModal) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setTrashConfirmModal(null)
+        setPermanentPurgeModal(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [trashConfirmModal, permanentPurgeModal])
+
 
   const refreshList = useCallback(async (): Promise<Recording[]> => {
     const list = localOnly
@@ -1991,18 +2040,25 @@ function RecordingWorkspace({
     [libraryLectureLocation],
   )
 
+  const recordingsInLibrary = useMemo(() => {
+    if (localOnly) return recordings
+    if (!userId) return recordings
+    const trashed = new Set(Object.keys(cloudTrash))
+    return recordings.filter((r) => !trashed.has(r.id))
+  }, [recordings, cloudTrash, localOnly, userId])
+
   const unfiledRecordings = useMemo(
     () =>
-      recordings
+      recordingsInLibrary
         .filter((r) => lectureLocationFor(r.id) === 'unfiled')
         .sort((a, b) => b.createdAt - a.createdAt),
-    [recordings, lectureLocationFor],
+    [recordingsInLibrary, lectureLocationFor],
   )
 
   const folderRecordingsMap = useMemo(() => {
     const out: Record<string, Recording[]> = {}
     for (const f of libraryFolders) out[f.id] = []
-    for (const r of recordings) {
+    for (const r of recordingsInLibrary) {
       const loc = lectureLocationFor(r.id)
       if (loc !== 'unfiled' && out[loc]) out[loc].push(r)
     }
@@ -2010,16 +2066,16 @@ function RecordingWorkspace({
       out[id].sort((a, b) => b.createdAt - a.createdAt)
     }
     return out
-  }, [libraryFolders, recordings, lectureLocationFor])
+  }, [libraryFolders, recordingsInLibrary, lectureLocationFor])
 
   const recordingIdsInActiveScopeOrdered = useCallback((): string[] => {
     return getScopedRecordingIds(
       libraryActiveScope,
-      recordings,
+      recordingsInLibrary,
       unfiledRecordings,
       folderRecordingsMap,
     )
-  }, [libraryActiveScope, recordings, unfiledRecordings, folderRecordingsMap])
+  }, [libraryActiveScope, recordingsInLibrary, unfiledRecordings, folderRecordingsMap])
 
   const applyShiftPickRange = useCallback(
     (anchorId: string, targetId: string) => {
@@ -2091,11 +2147,11 @@ function RecordingWorkspace({
 
   useEffect(() => {
     if (!selectedId) return
-    if (!recordings.some((r) => r.id === selectedId)) {
+    if (!recordingsInLibrary.some((r) => r.id === selectedId)) {
       setSelectedId(null)
       setDetail(null)
     }
-  }, [recordings, selectedId])
+  }, [recordingsInLibrary, selectedId])
 
   useEffect(() => {
     if (!selectedId) hostedAiPollStartedAtRef.current = null
@@ -2826,49 +2882,46 @@ function RecordingWorkspace({
     }
   }
 
-  const performDeleteLectures = useCallback(
-    async (ids: string[], confirmKind: 'single' | 'multi' | 'global') => {
+  const permanentlyPurgeLectures = useCallback(
+    async (ids: string[]) => {
       const unique = [...new Set(ids)].filter(Boolean)
-      if (unique.length === 0) {
-        setLibraryDeleteDebugMessage(`performDeleteLectures(${confirmKind}): stopped — no ids after dedupe`)
-        return
-      }
-
-      // Bypass window.confirm: macOS Tauri WebView often does not show native confirm; it returns false and skips delete.
-      setLibraryDeleteDebugMessage(
-        `performDeleteLectures(${confirmKind}): delete started — ids=${unique.join(',')} localOnly=${String(localOnly)}`,
-      )
+      if (unique.length === 0) return
 
       setDeleteActionBusy(true)
       try {
-        await deleteLectures(unique, {
-          localOnly,
-          supabase: supabase ?? null,
-          userId: userId ?? null,
-          deleteRecordingLocal,
-        })
-        setLibraryDeleteDebugMessage(
-          `performDeleteLectures(${confirmKind}): deleteLectures returned OK — ids=${unique.join(',')}`,
-        )
-        setLibraryLectureLocation((prev) => {
-          const next = { ...prev }
-          for (const id of unique) delete next[id]
-          return next
-        })
-        const list = await refreshList()
-        setLibraryPickedIds([])
-        if (unique.includes(selectedId ?? '')) {
-          const nextSelection = list.find((r) => !unique.includes(r.id))?.id ?? null
-          setSelectedId(nextSelection)
-          if (!nextSelection) setDetail(null)
+        if (localOnly) {
+          for (const id of unique) await deleteTrashRecordingLocalPermanently(id)
+        } else {
+          await deleteLectures(unique, {
+            localOnly: false,
+            supabase: supabase ?? null,
+            userId: userId ?? null,
+            deleteRecordingLocal,
+          })
+          if (userId) {
+            setCloudTrash((prev) => {
+              const next = { ...prev }
+              for (const id of unique) delete next[id]
+              saveCloudTrashRegistry(userId, next)
+              return next
+            })
+          }
+          setLibraryLectureLocation((prev) => {
+            const next = { ...prev }
+            for (const id of unique) delete next[id]
+            return next
+          })
+          const list = await refreshList()
+          setLibraryPickedIds([])
+          if (unique.includes(selectedId ?? '')) {
+            const nextSelection = list.find((r) => !unique.includes(r.id))?.id ?? null
+            setSelectedId(nextSelection)
+            if (!nextSelection) setDetail(null)
+          }
         }
-        setLibraryDeleteDebugMessage(
-          `performDeleteLectures(${confirmKind}): refresh done — removed ${unique.length} id(s)`,
-        )
+        setTrashRefreshNonce((n) => n + 1)
       } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err)
-        setLibraryDeleteDebugMessage(`performDeleteLectures(${confirmKind}): ERROR ${detail}`)
-        console.error('[library-delete] failed', err)
+        console.error('[library-delete] permanent purge failed', err)
         throw err
       } finally {
         setDeleteActionBusy(false)
@@ -2877,72 +2930,135 @@ function RecordingWorkspace({
     [localOnly, supabase, userId, refreshList, selectedId],
   )
 
-  const handleDeleteSelectedLectures = useCallback(async () => {
-    setLibraryDeleteDebugMessage(
-      `Delete selected: clicked — raw picked count=${libraryPickedIds.length} ids=${libraryPickedIds.join(',')}`,
-    )
-    window.alert('Delete selected handler fired')
-    const validIdSet = new Set(recordings.map((r) => r.id))
+  const commitMoveToTrash = useCallback(
+    async (ids: string[]) => {
+      const unique = [...new Set(ids)].filter(Boolean)
+      if (unique.length === 0) return
+
+      setDeleteActionBusy(true)
+      try {
+        if (localOnly) {
+          await moveRecordingsToTrashLocal(unique)
+        } else if (userId) {
+          setCloudTrash((prev) => {
+            const next = { ...prev }
+            for (const id of unique) {
+              const r = recordings.find((x) => x.id === id)
+              next[id] = {
+                trashedAt: Date.now(),
+                title: r?.title?.trim() || 'Untitled lecture',
+                course: r?.course?.trim() || '',
+              }
+            }
+            saveCloudTrashRegistry(userId, next)
+            return next
+          })
+        }
+        setLibraryLectureLocation((prev) => {
+          const next = { ...prev }
+          for (const id of unique) delete next[id]
+          return next
+        })
+        setLibraryPickedIds([])
+        if (unique.includes(selectedId ?? '')) {
+          setSelectedId(null)
+          setDetail(null)
+        }
+        await refreshList()
+        setTrashRefreshNonce((n) => n + 1)
+      } catch (err) {
+        console.error('[library-trash] move to trash failed', err)
+        setLibraryFolderNotice(err instanceof Error ? err.message : String(err))
+      } finally {
+        setDeleteActionBusy(false)
+      }
+    },
+    [localOnly, userId, recordings, refreshList, selectedId],
+  )
+
+  const restoreLecturesFromTrash = useCallback(
+    async (ids: string[]) => {
+      const unique = [...new Set(ids)].filter(Boolean)
+      if (unique.length === 0) return
+      setDeleteActionBusy(true)
+      try {
+        if (localOnly) {
+          for (const id of unique) await restoreRecordingFromTrashLocal(id)
+        } else if (userId) {
+          setCloudTrash((prev) => {
+            const next = { ...prev }
+            for (const id of unique) delete next[id]
+            saveCloudTrashRegistry(userId, next)
+            return next
+          })
+        }
+        await refreshList()
+        setTrashRefreshNonce((n) => n + 1)
+      } finally {
+        setDeleteActionBusy(false)
+      }
+    },
+    [localOnly, userId, refreshList],
+  )
+
+  const handleDeleteSelectedLectures = useCallback(() => {
+    const validIdSet = new Set(recordingsInLibrary.map((r) => r.id))
     const ids = libraryPickedIds.filter((id) => validIdSet.has(id))
-    if (ids.length === 0) {
-      const msg = `Delete selected: no valid ids (picked ${libraryPickedIds.length}, none match recordings list)`
-      setLibraryDeleteDebugMessage(msg)
-      window.alert(msg)
-      return
-    }
-    setLibraryDeleteDebugMessage(`Delete selected: deleting ids=${ids.join(',')} (${ids.length})`)
-    window.alert(`Deleting ids: ${ids.join(',')}`)
-    const allIds = new Set(recordings.map((r) => r.id))
-    const pickedSet = new Set(ids)
-    const isEveryLecture =
-      recordings.length > 0 &&
-      ids.length === recordings.length &&
-      [...allIds].every((id) => pickedSet.has(id))
-    try {
-      await performDeleteLectures(ids, isEveryLecture ? 'global' : 'multi')
-      setLibraryDeleteDebugMessage(`Delete selected: flow finished OK (${ids.length} id(s))`)
-      window.alert('Delete selected done')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setLibraryDeleteDebugMessage(`Delete selected: ERROR ${msg}`)
-      console.error('[library-delete-selected] error', err)
-      window.alert(`Delete selected error: ${msg}`)
-    }
-  }, [libraryPickedIds, recordings, performDeleteLectures])
+    if (ids.length === 0) return
+    const scope = classifyTrashDeletionScope(
+      ids,
+      libraryActiveScope,
+      unfiledRecordings,
+      folderRecordingsMap,
+      libraryFolders,
+    )
+    setTrashConfirmModal({ ids, scope })
+  }, [
+    libraryPickedIds,
+    recordingsInLibrary,
+    libraryActiveScope,
+    unfiledRecordings,
+    folderRecordingsMap,
+    libraryFolders,
+  ])
 
-  const deleteLectureFromDetailPanel = useCallback(async () => {
-    setLibraryDeleteDebugMessage(`Delete lecture (detail panel): clicked selectedId=${selectedId ?? 'none'}`)
-    if (!selectedId) {
-      setLibraryDeleteDebugMessage('Delete lecture (detail panel): stopped — no selectedId')
-      return
-    }
-    try {
-      await performDeleteLectures([selectedId], 'single')
-      setLibraryDeleteDebugMessage(`Delete lecture (detail panel): done id=${selectedId}`)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setLibraryDeleteDebugMessage(`Delete lecture (detail panel): ERROR ${msg}`)
-      console.error('[library-delete-lecture] error', err)
-      window.alert(`Delete lecture error: ${msg}`)
-    }
-  }, [selectedId, performDeleteLectures])
+  const deleteLectureFromDetailPanel = useCallback(() => {
+    if (!selectedId) return
+    const validIdSet = new Set(recordingsInLibrary.map((r) => r.id))
+    if (!validIdSet.has(selectedId)) return
+    const scope = classifyTrashDeletionScope(
+      [selectedId],
+      libraryActiveScope,
+      unfiledRecordings,
+      folderRecordingsMap,
+      libraryFolders,
+    )
+    setTrashConfirmModal({ ids: [selectedId], scope })
+  }, [
+    selectedId,
+    recordingsInLibrary,
+    libraryActiveScope,
+    unfiledRecordings,
+    folderRecordingsMap,
+    libraryFolders,
+  ])
 
-  const handleDeleteLectureById = useCallback(async (lectureId: string | null | undefined) => {
-    setLibraryDeleteDebugMessage(`Delete lecture (row): clicked id=${lectureId ?? 'none'}`)
-    if (!lectureId) {
-      setLibraryDeleteDebugMessage('Delete lecture (row): stopped — no id')
-      return
-    }
-    try {
-      await performDeleteLectures([lectureId], 'single')
-      setLibraryDeleteDebugMessage(`Delete lecture (row): done id=${lectureId}`)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setLibraryDeleteDebugMessage(`Delete lecture (row): ERROR ${msg}`)
-      console.error('[library-delete-lecture] error', err)
-      window.alert(`Delete lecture error: ${msg}`)
-    }
-  }, [performDeleteLectures])
+  const handleDeleteLectureById = useCallback(
+    (lectureId: string | null | undefined) => {
+      if (!lectureId) return
+      const validIdSet = new Set(recordingsInLibrary.map((r) => r.id))
+      if (!validIdSet.has(lectureId)) return
+      const scope = classifyTrashDeletionScope(
+        [lectureId],
+        libraryActiveScope,
+        unfiledRecordings,
+        folderRecordingsMap,
+        libraryFolders,
+      )
+      setTrashConfirmModal({ ids: [lectureId], scope })
+    },
+    [recordingsInLibrary, libraryActiveScope, unfiledRecordings, folderRecordingsMap, libraryFolders],
+  )
 
   const createFolder = () => {
     setNewFolderInputValue('')
@@ -2984,22 +3100,17 @@ function RecordingWorkspace({
   }
 
   const deleteFolderIfEmpty = (folderId?: string) => {
-    setLibraryDeleteDebugMessage(`Delete folder: clicked folderId=${folderId ?? 'undefined'}`)
+    setLibraryFolderNotice(null)
     if (!folderId) {
-      const msg = 'Delete folder: Select a folder first.'
-      setLibraryDeleteDebugMessage(msg)
-      window.alert('Select a folder first.')
+      setLibraryFolderNotice('Select a folder first.')
       return
     }
     const count = folderRecordingsMap[folderId]?.length ?? 0
     if (count > 0) {
-      const msg = `Delete folder: Move or delete lectures before deleting this folder (${count} lecture(s) in folder).`
-      setLibraryDeleteDebugMessage(msg)
-      window.alert('Move or delete lectures before deleting this folder.')
+      setLibraryFolderNotice('Move or delete lectures before deleting this folder.')
       console.log('[library-folder-delete] blocked_non_empty', { folderId, count })
       return
     }
-    setLibraryDeleteDebugMessage(`Delete folder: removing empty folder ${folderId}`)
     setLibraryFolders((prev) => prev.filter((x) => x.id !== folderId))
     setLibraryLectureLocation((prev) => {
       const next = { ...prev }
@@ -3012,8 +3123,7 @@ function RecordingWorkspace({
       setLibraryActiveScope({ kind: 'all' })
     }
     setLibraryPickedIds([])
-    setLibraryDeleteDebugMessage('Delete folder: Folder deleted.')
-    window.alert('Folder deleted.')
+    setLibraryFolderNotice('Folder deleted.')
     console.log('[library-folder-delete] deleted', { folderId })
   }
 
@@ -3103,16 +3213,29 @@ function RecordingWorkspace({
       : 0
 
   const visibleLectureIds = recordingIdsInActiveScopeOrdered()
-  const libraryActiveScopeLabel =
+
+  const cloudTrashEntriesSorted = useMemo(
+    () =>
+      Object.entries(cloudTrash)
+        .map(([id, meta]) => ({ id, ...meta }))
+        .sort((a, b) => b.trashedAt - a.trashedAt),
+    [cloudTrash],
+  )
+
+  const trashTotalCount = localOnly ? localTrashRows.length : cloudTrashEntriesSorted.length
+
+  const primaryScopedSelectLabel =
     libraryActiveScope.kind === 'folder'
-      ? `folder:${libraryActiveScope.folderId}`
-      : libraryActiveScope.kind
-  const selectedDebugText = formatDebugIds(libraryPickedIds)
-  const visibleDebugText = formatDebugIds(visibleLectureIds)
+      ? 'Select this folder'
+      : libraryActiveScope.kind === 'unfiled'
+        ? 'Select unfiled lectures'
+        : 'Select all lectures'
 
   const canRenameLibraryFolder = libraryActiveScope.kind === 'folder' && !libraryPickMode
 
-  const validPickedLectureCount = libraryPickedIds.filter((id) => recordings.some((r) => r.id === id)).length
+  const validPickedLectureCount = libraryPickedIds.filter((id) =>
+    recordingsInLibrary.some((r) => r.id === id),
+  ).length
   const deleteSelectedEnabled = libraryPickMode && validPickedLectureCount > 0 && !deleteActionBusy
 
   const showAccountPanel =
@@ -3134,6 +3257,151 @@ function RecordingWorkspace({
             onSignOut?.()
           }}
         />
+      ) : null}
+      {trashConfirmModal ? (
+        <div
+          role="presentation"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1250,
+            background: 'rgba(15, 23, 42, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '1rem',
+          }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setTrashConfirmModal(null)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="yl-trash-confirm-title"
+            style={{
+              background: 'var(--yl-card, #fff)',
+              borderRadius: '10px',
+              padding: '1.15rem',
+              maxWidth: 'min(440px, 100%)',
+              boxShadow: '0 12px 40px rgba(0,0,0,0.12)',
+              border:
+                trashConfirmModal.scope.kind === 'global'
+                  ? '2px solid rgba(185, 28, 28, 0.85)'
+                  : '1px solid var(--yl-border, #e2e8f0)',
+            }}
+          >
+            <h3 id="yl-trash-confirm-title" style={{ margin: '0 0 0.65rem', fontSize: '1.05rem' }}>
+              Move to Recently deleted?
+            </h3>
+            <p style={{ margin: '0 0 0.5rem', fontWeight: 600 }}>
+              {trashConfirmPrimaryLine(trashConfirmModal.scope, trashConfirmModal.ids.length)}
+            </p>
+            <p style={{ margin: '0 0 0.65rem', fontSize: '0.875rem', lineHeight: 1.45, color: '#475569' }}>
+              Lectures go to <strong>Recently deleted</strong> first. You can restore them from there, or permanently
+              delete them later.
+            </p>
+            {trashConfirmModal.scope.kind === 'global' ? (
+              <p
+                style={{
+                  margin: '0 0 0.85rem',
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  color: '#b91c1c',
+                }}
+              >
+                Warning: this selection spans beyond your current folder view — it affects multiple areas of your
+                library.
+              </p>
+            ) : null}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <button type="button" className="btn ghost small" onClick={() => setTrashConfirmModal(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn primary small"
+                disabled={deleteActionBusy}
+                aria-busy={deleteActionBusy}
+                onClick={() => {
+                  const ids = trashConfirmModal.ids
+                  void (async () => {
+                    await commitMoveToTrash(ids)
+                    setTrashConfirmModal(null)
+                  })()
+                }}
+              >
+                {deleteActionBusy ? 'Working…' : 'Move to Recently deleted'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {permanentPurgeModal ? (
+        <div
+          role="presentation"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1260,
+            background: 'rgba(15, 23, 42, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '1rem',
+          }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setPermanentPurgeModal(null)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="yl-permanent-purge-title"
+            style={{
+              background: 'var(--yl-card, #fff)',
+              borderRadius: '10px',
+              padding: '1.15rem',
+              maxWidth: 'min(440px, 100%)',
+              boxShadow: '0 12px 40px rgba(0,0,0,0.12)',
+              border: '2px solid rgba(185, 28, 28, 0.85)',
+            }}
+          >
+            <h3 id="yl-permanent-purge-title" style={{ margin: '0 0 0.65rem', fontSize: '1.05rem', color: '#991b1b' }}>
+              Permanently delete?
+            </h3>
+            <p style={{ margin: '0 0 0.65rem', fontSize: '0.875rem', lineHeight: 1.45, color: '#334155' }}>
+              This removes {permanentPurgeModal.length} lecture{permanentPurgeModal.length === 1 ? '' : 's'}{' '}
+              {localOnly ? 'from this device' : 'from your account (database and audio storage)'} — not recoverable from
+              the app.
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <button type="button" className="btn ghost small" onClick={() => setPermanentPurgeModal(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn primary small"
+                style={{ background: '#dc2626', borderColor: '#b91c1c' }}
+                disabled={deleteActionBusy}
+                aria-busy={deleteActionBusy}
+                onClick={() => {
+                  const ids = permanentPurgeModal
+                  void (async () => {
+                    try {
+                      await permanentlyPurgeLectures(ids)
+                      setPermanentPurgeModal(null)
+                    } catch (e) {
+                      setLibraryFolderNotice(e instanceof Error ? e.message : String(e))
+                    }
+                  })()
+                }}
+              >
+                {deleteActionBusy ? 'Working…' : 'Delete forever'}
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
       <YoumiLensShell
       welcomeLine={!localOnly ? welcomeLine : undefined}
@@ -3235,27 +3503,20 @@ function RecordingWorkspace({
                 </button>
               )}
             </div>
-            <div className="yl-library-debug" aria-live="polite">
-              <div>active scope: {libraryActiveScopeLabel}</div>
-              <div>selected recording ids: {selectedDebugText}</div>
-              <div>visible recording ids: {visibleDebugText}</div>
+            {libraryFolderNotice ? (
               <div
+                role="status"
                 style={{
-                  marginTop: 6,
-                  padding: '8px 10px',
-                  borderRadius: 6,
-                  background: 'rgba(254, 243, 199, 0.95)',
-                  border: '1px solid rgba(217, 119, 6, 0.45)',
-                  color: '#78350f',
+                  padding: '6px 10px',
                   fontSize: 12,
-                  lineHeight: 1.45,
-                  wordBreak: 'break-word',
+                  color: '#92400e',
+                  background: '#fffbeb',
+                  borderBottom: '1px solid #fcd34d',
                 }}
               >
-                <strong>Delete debug</strong>
-                {libraryDeleteDebugMessage ? `: ${libraryDeleteDebugMessage}` : ': (no delete action yet)'}
+                {libraryFolderNotice}
               </div>
-            </div>
+            ) : null}
             {newFolderInputVisible && (
               <div style={{ padding: '4px 8px 6px' }}>
                 <input
@@ -3304,17 +3565,10 @@ function RecordingWorkspace({
                   <>
                     <button
                       type="button"
-                      className="btn ghost small"
+                      className="btn primary small"
                       onClick={() => setLibraryPickedIds(visibleLectureIds)}
                     >
-                      Select current view
-                    </button>
-                    <button
-                      type="button"
-                      className="btn ghost small"
-                      onClick={() => setLibraryPickedIds(recordings.map((r) => r.id))}
-                    >
-                      Select all lectures
+                      {primaryScopedSelectLabel}
                     </button>
                     <button type="button" className="btn ghost small" onClick={() => setLibraryPickedIds([])}>
                       Clear
@@ -3323,9 +3577,9 @@ function RecordingWorkspace({
                       type="button"
                       className="btn ghost small"
                       disabled={!deleteSelectedEnabled}
-                      onClick={() => void handleDeleteSelectedLectures()}
+                      onClick={() => handleDeleteSelectedLectures()}
                     >
-                      {deleteActionBusy ? 'Deleting…' : 'Delete selected'}
+                      {deleteActionBusy ? 'Working…' : 'Delete selected…'}
                     </button>
                   </>
                 ) : (
@@ -3367,6 +3621,60 @@ function RecordingWorkspace({
                   </>
                 )}
               </div>
+              {libraryPickMode && libraryActiveScope.kind !== 'all' ? (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: '8px 10px',
+                    borderRadius: 8,
+                    background: globalSelectArmed ? '#fef2f2' : '#f8fafc',
+                    border: globalSelectArmed ? '1px solid #fecaca' : '1px solid var(--yl-border, #e2e8f0)',
+                  }}
+                >
+                  {!globalSelectArmed ? (
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      style={{ color: '#b91c1c', fontWeight: 600 }}
+                      onClick={() => setGlobalSelectArmed(true)}
+                    >
+                      Select all lectures across library…
+                    </button>
+                  ) : (
+                    <>
+                      <p style={{ margin: '0 0 8px', fontSize: 12, lineHeight: 1.45, color: '#991b1b' }}>
+                        This selects every lecture in your library (all folders and unfiled). Tap again only if that is
+                        what you want.
+                      </p>
+                      <button
+                        type="button"
+                        className="btn primary small"
+                        style={{ background: '#dc2626', borderColor: '#b91c1c' }}
+                        onClick={() => {
+                          setLibraryPickedIds(recordingsInLibrary.map((r) => r.id))
+                          setGlobalSelectArmed(false)
+                        }}
+                      >
+                        Select all lectures across library
+                      </button>
+                      <button
+                        type="button"
+                        className="btn ghost small"
+                        style={{ marginLeft: 8 }}
+                        onClick={() => setGlobalSelectArmed(false)}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
+              ) : null}
+              {libraryPickMode && libraryActiveScope.kind === 'all' ? (
+                <p style={{ margin: '8px 0 0', fontSize: 11, color: '#64748b', lineHeight: 1.45 }}>
+                  You are viewing <strong>All lectures</strong>. The green button selects everything currently shown in the
+                  library.
+                </p>
+              ) : null}
               {(libraryPickMode || libraryPickedIds.length > 0) && (
                 <div className="yl-library-multiselect-banner">
                   <span className="yl-library-multiselect-count">
@@ -3377,6 +3685,115 @@ function RecordingWorkspace({
                   </button>
                 </div>
               )}
+            </div>
+
+            <div
+              style={{
+                padding: '8px 8px 6px',
+                borderTop: '1px solid var(--yl-border, #e2e8f0)',
+              }}
+            >
+              <button
+                type="button"
+                className="btn ghost small"
+                style={{ width: '100%', justifyContent: 'space-between', display: 'flex', alignItems: 'center' }}
+                onClick={() => setRecentlyDeletedOpen((o) => !o)}
+              >
+                <span>Recently deleted ({trashTotalCount})</span>
+                <span aria-hidden>{recentlyDeletedOpen ? '▾' : '▸'}</span>
+              </button>
+              {recentlyDeletedOpen ? (
+                <div style={{ marginTop: 10, fontSize: 12, lineHeight: 1.45, color: '#475569' }}>
+                  <p style={{ margin: '0 0 10px' }}>
+                    {localOnly
+                      ? 'Recover full audio and transcripts from this device until you delete forever.'
+                      : 'Hidden on this device only. Lectures stay on your account until you permanently delete them here.'}
+                  </p>
+                  {localOnly ? (
+                    localTrashRows.length === 0 ? (
+                      <p style={{ margin: 0 }}>Trash is empty.</p>
+                    ) : (
+                      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                        {localTrashRows.map((r) => (
+                          <li
+                            key={r.id}
+                            style={{
+                              display: 'flex',
+                              flexWrap: 'wrap',
+                              gap: 6,
+                              alignItems: 'center',
+                              marginBottom: 10,
+                              paddingBottom: 8,
+                              borderBottom: '1px solid var(--yl-border, #e2e8f0)',
+                            }}
+                          >
+                            <span style={{ flex: '1 1 140px', fontWeight: 500, color: '#0f172a' }}>
+                              {r.title?.trim() || 'Untitled lecture'}
+                            </span>
+                            <button
+                              type="button"
+                              className="btn ghost small"
+                              disabled={deleteActionBusy}
+                              onClick={() => void restoreLecturesFromTrash([r.id])}
+                            >
+                              Restore
+                            </button>
+                            <button
+                              type="button"
+                              className="btn ghost small"
+                              disabled={deleteActionBusy}
+                              style={{ color: '#b91c1c' }}
+                              onClick={() => setPermanentPurgeModal([r.id])}
+                            >
+                              Delete forever
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )
+                  ) : cloudTrashEntriesSorted.length === 0 ? (
+                    <p style={{ margin: 0 }}>Trash is empty.</p>
+                  ) : (
+                    <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                      {cloudTrashEntriesSorted.map((row) => (
+                        <li
+                          key={row.id}
+                          style={{
+                            display: 'flex',
+                            flexWrap: 'wrap',
+                            gap: 6,
+                            alignItems: 'center',
+                            marginBottom: 10,
+                            paddingBottom: 8,
+                            borderBottom: '1px solid var(--yl-border, #e2e8f0)',
+                          }}
+                        >
+                          <span style={{ flex: '1 1 140px', fontWeight: 500, color: '#0f172a' }}>
+                            {row.title?.trim() || 'Untitled lecture'}
+                          </span>
+                          <button
+                            type="button"
+                            className="btn ghost small"
+                            disabled={deleteActionBusy}
+                            onClick={() => void restoreLecturesFromTrash([row.id])}
+                          >
+                            Restore
+                          </button>
+                          <button
+                            type="button"
+                            className="btn ghost small"
+                            disabled={deleteActionBusy}
+                            style={{ color: '#b91c1c' }}
+                            onClick={() => setPermanentPurgeModal([row.id])}
+                          >
+                            Delete forever
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
             </div>
 
             {renameFolderModal ? (
@@ -3562,7 +3979,7 @@ function RecordingWorkspace({
                                             void handleDeleteLectureById(r.id)
                                           }}
                                         >
-                                          Delete
+                                          Delete…
                                         </button>
                                       ) : null}
                                     </div>
@@ -3662,7 +4079,7 @@ function RecordingWorkspace({
                                         void handleDeleteLectureById(r.id)
                                       }}
                                     >
-                                      Delete
+                                      Delete…
                                     </button>
                                   ) : null}
                                 </div>
@@ -4142,7 +4559,7 @@ function RecordingWorkspace({
                   aria-busy={deleteActionBusy}
                   onClick={() => void deleteLectureFromDetailPanel()}
                 >
-                  {deleteActionBusy ? 'Deleting…' : 'Delete lecture'}
+                  {deleteActionBusy ? 'Working…' : 'Delete lecture…'}
                 </button>
               </div>
 

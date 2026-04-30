@@ -1,8 +1,9 @@
 import type { Recording, RecordingDetail } from '../types'
 
 const DB_NAME = 'lecture-companion'
-const DB_VERSION = 2
+const DB_VERSION = 3
 const STORE = 'recordings'
+const TRASH_STORE = 'recordings_trash'
 
 export type RecordingWithBlob = Recording & { audioBlob: Blob }
 
@@ -17,6 +18,9 @@ function openDb(): Promise<IDBDatabase> {
       const db = req.result
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE, { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains(TRASH_STORE)) {
+        db.createObjectStore(TRASH_STORE, { keyPath: 'id' })
       }
     }
   })
@@ -120,5 +124,68 @@ export async function deleteRecordingLocal(id: string): Promise<void> {
     tx.oncomplete = () => resolve()
     tx.onerror = () => reject(tx.error)
     tx.objectStore(STORE).delete(id)
+  })
+}
+
+/** Move lectures from the live store into local trash (full row + audio blob). */
+export async function moveRecordingsToTrashLocal(ids: string[]): Promise<void> {
+  const unique = [...new Set(ids)].filter(Boolean)
+  for (const id of unique) {
+    const row = await getRecordingWithBlob(id)
+    if (!row) continue
+    const db = await openDb()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([STORE, TRASH_STORE], 'readwrite')
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+      tx.objectStore(TRASH_STORE).put(row as Row)
+      tx.objectStore(STORE).delete(id)
+    })
+  }
+}
+
+export async function listTrashRecordingsLocal(): Promise<Recording[]> {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TRASH_STORE, 'readonly')
+    const req = tx.objectStore(TRASH_STORE).getAll()
+    req.onsuccess = () => {
+      const rows = (req.result as Row[]).map((r) => {
+        const { audioBlob: _b, ...meta } = r
+        void _b
+        return meta
+      })
+      rows.sort((a, b) => b.createdAt - a.createdAt)
+      resolve(rows)
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
+export async function restoreRecordingFromTrashLocal(id: string): Promise<void> {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE, TRASH_STORE], 'readwrite')
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    const req = tx.objectStore(TRASH_STORE).get(id)
+    req.onsuccess = () => {
+      const row = req.result as Row | undefined
+      if (!row) return
+      tx.objectStore(STORE).put(row)
+      tx.objectStore(TRASH_STORE).delete(id)
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
+/** Remove one lecture blob from local trash permanently (already absent from live store). */
+export async function deleteTrashRecordingLocalPermanently(id: string): Promise<void> {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TRASH_STORE, 'readwrite')
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    tx.objectStore(TRASH_STORE).delete(id)
   })
 }

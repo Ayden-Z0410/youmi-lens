@@ -23,6 +23,11 @@ createRoot(document.getElementById('root')!).render(
       <TauriAuthBridge />
     ) : (
       <AuthProvider>
+        {import.meta.env.DEV ? (
+          <div className="debug-build-banner" aria-hidden="true">
+            DEBUG BUILD V3
+          </div>
+        ) : null}
         <App />
       </AuthProvider>
     )}
