@@ -40,6 +40,38 @@ function safeSend(ws, payload) {
   }
 }
 
+function wsCloseReasonToString(reason) {
+  if (reason === undefined || reason === null) return ''
+  return Buffer.isBuffer(reason) ? reason.toString('utf8') : String(reason)
+}
+
+/** Browser/app closed connection — log RFC close code + reason for stability diagnosis. */
+function logClientDisconnected(wsSessionId, code, reasonBuf, extra = {}) {
+  const reason = wsCloseReasonToString(reasonBuf)
+  console.warn(
+    '[liveRealtimeWs] client_disconnected',
+    JSON.stringify({
+      wsSessionId,
+      closeCode: code,
+      closeReason: reason.slice(0, 500),
+      ...extra,
+    }),
+  )
+}
+
+/** Node server initiates close toward desktop WebView — correlate with client_disconnected codes. */
+function logServerClosingClientWs(wsSessionId, code, reasonText, why) {
+  console.warn(
+    '[liveRealtimeWs] server_closing_client_ws',
+    JSON.stringify({
+      wsSessionId,
+      closeCode: code,
+      closeReason: reasonText.slice(0, 200),
+      why,
+    }),
+  )
+}
+
 function decodeBase64ToArrayBuffer(b64) {
   const buf = Buffer.from(b64, 'base64')
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
@@ -125,6 +157,15 @@ export function attachLiveRealtimeWs(server) {
       console.log('[YoumiLive][srv] realtime ws connected', JSON.stringify({ wsSessionId }))
     }
     safeSend(ws, { type: 'ready' })
+
+    const CLIENT_WS_PING_MS = Number(process.env.YOUMI_LIVE_CLIENT_WS_PING_MS || 20000)
+    const clientWsPingTimer = setInterval(() => {
+      try {
+        if (ws.readyState === ws.OPEN) ws.ping()
+      } catch {
+        /* ignore */
+      }
+    }, CLIENT_WS_PING_MS)
 
     let frameCount = 0
     let streamingSession = null
@@ -278,106 +319,191 @@ export function attachLiveRealtimeWs(server) {
             )
           }
 
-          const HANDSHAKE_MS = 8500
-          let lastHandshakeErr = null
-          for (const att of attempts) {
-            let sessionWrapper = null
+          let reconnectBudget = Number(process.env.YOUMI_LIVE_UPSTREAM_REMOUNT_BUDGET || 12)
+          let attachBusy = false
+          let reconnectAfterAttach = false
+
+          const mkReadySender = () => {
+            let sent = false
+            return () => {
+              if (sent) return
+              sent = true
+              T_streamReadySent = Date.now()
+              console.info(
+                '[live-latency] srv_stream_ready_sent',
+                JSON.stringify({
+                  wsSessionId,
+                  msSinceStreamStartJson: T_streamStartJson ? T_streamReadySent - T_streamStartJson : -1,
+                  msSinceWsAccepted: T_streamReadySent - T_clientAccepted,
+                }),
+              )
+              if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_ready' })
+            }
+          }
+
+          let sendStreamReadyOnce = mkReadySender()
+
+          async function attachDashscopeUpstream() {
+            if (attachBusy) {
+              reconnectAfterAttach = true
+              return
+            }
+            attachBusy = true
+            reconnectAfterAttach = false
             try {
-              const inner = await new Promise((resolve, reject) => {
-                let settled = false
-                /** @type {ReturnType<typeof createDashscopeStreamingSession> | null} */
-                let sess = null
-                const t = setTimeout(() => {
-                  if (settled) return
-                  settled = true
-                  try {
-                    sess?.destroy()
-                  } catch {
-                    /* ignore */
-                  }
-                  reject(new Error('DASHSCOPE_WS_HANDSHAKE_TIMEOUT'))
-                }, HANDSHAKE_MS)
-                sess = createDashscopeStreamingSession(
-                  att.key,
-                  {
-                    sampleRate,
-                    onReady: () => {
+              if (streamingSession) {
+                try {
+                  streamingSession.destroy()
+                } catch {
+                  /* ignore */
+                }
+                streamingSession = null
+              }
+
+              sendStreamReadyOnce = mkReadySender()
+
+              const HANDSHAKE_MS = 8500
+              let lastHandshakeErr = null
+              for (const att of attempts) {
+                let sessionWrapper = null
+                try {
+                  const inner = await new Promise((resolve, reject) => {
+                    let settled = false
+                    /** @type {ReturnType<typeof createDashscopeStreamingSession> | null} */
+                    let sess = null
+                    const t = setTimeout(() => {
                       if (settled) return
                       settled = true
-                      clearTimeout(t)
-                      if (SRV_LIVE_VERBOSE) {
-                        console.log(
-                          '[YoumiLive][srv] dashscope ready → stream_ready',
-                          JSON.stringify({ wsSessionId, attempt: att.tag }),
-                        )
-                      }
-                      sendStreamReadyOnce()
-                      resolve(sess)
-                    },
-                    onInterim: relayInterim,
-                    onFinal: relayFinal,
-                    onError: (err) => {
-                      if (settled) return
-                      settled = true
-                      clearTimeout(t)
                       try {
                         sess?.destroy()
                       } catch {
                         /* ignore */
                       }
-                      reject(err instanceof Error ? err : new Error(String(err)))
-                    },
-                    onClose: (intentional) => {
-                      if (SRV_LIVE_VERBOSE) {
-                        console.log(
-                          '[YoumiLive][srv] live ASR session closed',
-                          JSON.stringify({ wsSessionId, intentional, liveProvider, attempt: att.tag }),
-                        )
-                      }
-                      if (!sessionWrapper || streamingSession !== sessionWrapper) return
-                      streamingSession = null
-                      if (!intentional) {
-                        if (SRV_LIVE_VERBOSE) {
-                          console.log(
-                            '[YoumiLive][srv] unexpected close — closing client WS',
-                            JSON.stringify({ wsSessionId }),
+                      reject(new Error('DASHSCOPE_WS_HANDSHAKE_TIMEOUT'))
+                    }, HANDSHAKE_MS)
+                    sess = createDashscopeStreamingSession(
+                      att.key,
+                      {
+                        sampleRate,
+                        onReady: () => {
+                          if (settled) return
+                          settled = true
+                          clearTimeout(t)
+                          if (SRV_LIVE_VERBOSE) {
+                            console.log(
+                              '[YoumiLive][srv] dashscope ready → stream_ready',
+                              JSON.stringify({ wsSessionId, attempt: att.tag }),
+                            )
+                          }
+                          sendStreamReadyOnce()
+                          resolve(sess)
+                        },
+                        onInterim: relayInterim,
+                        onFinal: relayFinal,
+                        onError: (err) => {
+                          if (settled) return
+                          settled = true
+                          clearTimeout(t)
+                          try {
+                            sess?.destroy()
+                          } catch {
+                            /* ignore */
+                          }
+                          reject(err instanceof Error ? err : new Error(String(err)))
+                        },
+                        onClose: (intentional) => {
+                          if (SRV_LIVE_VERBOSE) {
+                            console.log(
+                              '[YoumiLive][srv] live ASR session closed',
+                              JSON.stringify({ wsSessionId, intentional, liveProvider, attempt: att.tag }),
+                            )
+                          }
+                          if (!sessionWrapper || streamingSession !== sessionWrapper) return
+                          streamingSession = null
+                          if (intentional) return
+
+                          reconnectBudget -= 1
+                          const clientOpen = Boolean(clientRef.ws && clientRef.ws.readyState === clientRef.ws.OPEN)
+                          console.warn(
+                            '[liveRealtimeWs] upstream_session_drop_schedule_remount',
+                            JSON.stringify({
+                              wsSessionId,
+                              reconnectBudgetRemaining: reconnectBudget,
+                              clientWsOpen: clientOpen,
+                            }),
                           )
-                        }
-                        try {
-                          ws.close()
-                        } catch {
-                          /* ignore */
-                        }
-                      }
-                    },
-                  },
-                  { wsUrl: att.bases.wsInference },
-                )
-              })
-              sessionWrapper = {
-                sendPcm: (b) => inner.sendPcm(b),
-                stop: () => inner.finish(),
-                destroy: () => inner.destroy(),
+
+                          if (!clientOpen || reconnectBudget <= 0) {
+                            if (clientOpen) {
+                              safeSend(clientRef.ws, {
+                                type: 'stream_error',
+                                message:
+                                  reconnectBudget <= 0 ? 'UPSTREAM_RECONNECT_EXHAUSTED' : 'UPSTREAM_SESSION_LOST',
+                              })
+                              logServerClosingClientWs(
+                                wsSessionId,
+                                1011,
+                                'upstream_exhausted',
+                                reconnectBudget <= 0
+                                  ? 'dashscope_reconnect_budget_exhausted'
+                                  : 'dashscope_upstream_drop_client_ws_closed',
+                              )
+                              try {
+                                clientRef.ws.close(1011, 'upstream_exhausted')
+                              } catch {
+                                /* ignore */
+                              }
+                            }
+                            return
+                          }
+
+                          void attachDashscopeUpstream()
+                        },
+                      },
+                      { wsUrl: att.bases.wsInference, wsSessionId },
+                    )
+                  })
+                  sessionWrapper = {
+                    sendPcm: (b) => inner.sendPcm(b),
+                    stop: () => inner.finish(),
+                    destroy: () => inner.destroy(),
+                  }
+                  streamingSession = sessionWrapper
+                  console.warn(
+                    '[DashScopeFallback] live_ws ok',
+                    JSON.stringify({ wsSessionId, attempt: att.tag, host: att.bases.wsInference.slice(0, 48) }),
+                  )
+                  flushPendingPcm()
+                  return
+                } catch (e) {
+                  lastHandshakeErr = e
+                  const failMsg = e instanceof Error ? e.message : String(e)
+                  console.warn(
+                    '[DashScopeFallback] live_ws attempt failed',
+                    JSON.stringify({ wsSessionId, attempt: att.tag, message: failMsg.slice(0, 200) }),
+                  )
+                }
               }
-              streamingSession = sessionWrapper
-              console.warn(
-                '[DashScopeFallback] live_ws ok',
-                JSON.stringify({ wsSessionId, attempt: att.tag, host: att.bases.wsInference.slice(0, 48) }),
-              )
-              flushPendingPcm()
-              return
-            } catch (e) {
-              lastHandshakeErr = e
-              const msg = e instanceof Error ? e.message : String(e)
-              console.warn(
-                '[DashScopeFallback] live_ws attempt failed',
-                JSON.stringify({ wsSessionId, attempt: att.tag, message: msg.slice(0, 200) }),
-              )
+              const errMsg =
+                lastHandshakeErr instanceof Error
+                  ? lastHandshakeErr.message
+                  : String(lastHandshakeErr || 'DASHSCOPE_SESSION_FAILED')
+              safeSend(ws, { type: 'stream_error', message: errMsg })
+            } finally {
+              attachBusy = false
+              if (
+                reconnectAfterAttach &&
+                reconnectBudget > 0 &&
+                clientRef.ws &&
+                clientRef.ws.readyState === clientRef.ws.OPEN
+              ) {
+                reconnectAfterAttach = false
+                void attachDashscopeUpstream()
+              }
             }
           }
-          const errMsg =
-            lastHandshakeErr instanceof Error ? lastHandshakeErr.message : String(lastHandshakeErr || 'DASHSCOPE_SESSION_FAILED')
-          safeSend(ws, { type: 'stream_error', message: errMsg })
+
+          void attachDashscopeUpstream()
           return
         }
 
@@ -443,7 +569,12 @@ export function attachLiveRealtimeWs(server) {
               if (SRV_LIVE_VERBOSE) {
                 console.log('[YoumiLive][srv] unexpected close — closing client WS', JSON.stringify({ wsSessionId }))
               }
-              try { ws.close() } catch { /* ignore */ }
+              logServerClosingClientWs(wsSessionId, 1011, 'volc_upstream_drop', 'volcengine_unexpected_upstream_close')
+              try {
+                ws.close(1011, 'volc_upstream_drop')
+              } catch {
+                /* ignore */
+              }
             }
           },
         })
@@ -522,8 +653,22 @@ export function attachLiveRealtimeWs(server) {
       }
     })
 
-    ws.on('close', () => {
-      if (SRV_LIVE_VERBOSE) console.log('[YoumiLive][srv] realtime ws closed', JSON.stringify({ wsSessionId }))
+    ws.on('close', (code, reason) => {
+      clearInterval(clientWsPingTimer)
+      const reasonStr = wsCloseReasonToString(reason)
+      logClientDisconnected(wsSessionId, code, reason, {
+        event: 'ws_closed',
+        note: 'browser_or_proxy_closed_this_socket',
+      })
+      console.warn(
+        '[liveRealtimeWs] ws_closed',
+        JSON.stringify({
+          wsSessionId,
+          closeCode: code,
+          closeReason: reasonStr.slice(0, 500),
+        }),
+      )
+      if (SRV_LIVE_VERBOSE) console.log('[YoumiLive][srv] realtime ws closed', JSON.stringify({ wsSessionId, code }))
       streamingSession?.destroy()
       streamingSession = null
     })

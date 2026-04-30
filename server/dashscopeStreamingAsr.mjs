@@ -34,15 +34,21 @@ function makeTaskId() {
  *   onError?: (err: Error) => void,
  *   onClose?: () => void,
  * }} callbacks
- * @param {{ wsUrl?: string }} [options] � override WS host (e.g. China after intl failure).
+ * @param {{ wsUrl?: string, wsSessionId?: string }} [options] — optional WS host override and server log correlation id.
  * @returns {{ sendPcm(buf: Buffer): void, finish(): void, destroy(): void }}
  */
 export function createDashscopeStreamingSession(apiKey, callbacks = {}, options = {}) {
   const { sampleRate = 48000, onReady, onInterim, onFinal, onError, onClose } = callbacks
   const wsUrlOverride = typeof options.wsUrl === 'string' && options.wsUrl ? options.wsUrl : null
+  const wsSessionId = typeof options.wsSessionId === 'string' ? options.wsSessionId : ''
   const taskId = makeTaskId()
 
   let ws = null
+  /** True only when our code calls `destroy()` → `ws.close()` (diagnose client vs upstream close). */
+  let localDestroyRequested = false
+  let upstreamPingTimer = null
+  const UPSTREAM_PING_MS = Number(process.env.YOUMI_LIVE_UPSTREAM_PING_MS || 25000)
+
   let started = false
   let finished = false
   let taskFinished = false   // set when DashScope sends task-finished (intentional close)
@@ -67,6 +73,18 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}, options 
   const tag = taskId.slice(-8)
   const L = (msg, data) =>
     console.log(`[DashscopeStream][${tag}] ${msg}`, data ? JSON.stringify(data) : '')
+
+  function bufReason(reason) {
+    if (reason === undefined || reason === null) return ''
+    return Buffer.isBuffer(reason) ? reason.toString('utf8') : String(reason)
+  }
+
+  function clearUpstreamPing() {
+    if (upstreamPingTimer) {
+      clearInterval(upstreamPingTimer)
+      upstreamPingTimer = null
+    }
+  }
 
   function truthySentenceEnd(v) {
     return v === true || v === 'true' || v === 1 || v === '1'
@@ -148,8 +166,10 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}, options 
 
   const destroy = () => {
     clearPauseCommitTimer()
+    clearUpstreamPing()
     finished = true
     taskFinished = true  // treat explicit destroy as intentional so onClose doesn't alert client
+    localDestroyRequested = true
     if (taskStartedTimer) { clearTimeout(taskStartedTimer); taskStartedTimer = null }
     pcmQueue.length = 0
     if (ws) {
@@ -180,6 +200,26 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}, options 
   ws.on('open', () => {
     T_ws_open = Date.now()
     L('ws open', { sampleRate, wsConnectMs: T_ws_open - T_create })
+    console.info(
+      '[liveRealtimeWs] upstream_connected',
+      JSON.stringify({
+        wsSessionId,
+        taskTag: tag,
+        sampleRate,
+        wsConnectMs: T_ws_open - T_create,
+        wsUrlHost: String(wsUrl || '').slice(0, 64),
+      }),
+    )
+    clearUpstreamPing()
+    if (UPSTREAM_PING_MS > 0) {
+      upstreamPingTimer = setInterval(() => {
+        try {
+          if (ws && ws.readyState === WebSocket.OPEN) ws.ping()
+        } catch {
+          /* ignore */
+        }
+      }, UPSTREAM_PING_MS)
+    }
     const runTask = {
       header: { action: 'run-task', task_id: taskId, streaming: 'duplex' },
       payload: {
@@ -287,13 +327,36 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}, options 
 
   ws.on('error', (err) => {
     L('ws error', { message: err?.message })
+    console.warn(
+      '[liveRealtimeWs] upstream_error',
+      JSON.stringify({
+        wsSessionId,
+        taskTag: tag,
+        message: err instanceof Error ? err.message : String(err),
+      }),
+    )
     onError?.(err instanceof Error ? err : new Error(String(err)))
   })
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
+    clearUpstreamPing()
+    const reasonStr = bufReason(reason).slice(0, 500)
     // intentional = finished via finish-task (task-finished received) or explicitly destroyed
     const intentional = taskFinished || finished
-    L('ws closed', { intentional })
+    const whoClosed = localDestroyRequested ? 'local_destroy' : 'remote_or_peer_closed_socket'
+    L('ws closed', { intentional, code, reason: reasonStr, whoClosed })
+    console.warn(
+      '[liveRealtimeWs] upstream_closed',
+      JSON.stringify({
+        wsSessionId,
+        taskTag: tag,
+        closeCode: code,
+        closeReason: reasonStr,
+        intentional,
+        protocolFinished: taskFinished,
+        whoClosed,
+      }),
+    )
     onClose?.(intentional)
   })
 

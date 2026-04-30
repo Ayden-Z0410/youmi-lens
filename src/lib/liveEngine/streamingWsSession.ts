@@ -37,11 +37,33 @@ function wsUrl(): string {
   return `${proto}://${window.location.host}${rel}/live-realtime-ws`
 }
 
+/** Human-readable WebSocket close codes (RFC 6455 + common practice). */
+function describeCloseCode(code: number): string {
+  const m: Record<number, string> = {
+    1000: 'normal_closure',
+    1001: 'going_away',
+    1002: 'protocol_error',
+    1003: 'unsupported_data',
+    1006: 'abnormal_closure_no_close_frame',
+    1007: 'invalid_payload_data',
+    1008: 'policy_violation',
+    1009: 'message_too_big',
+    1010: 'mandatory_extension',
+    1011: 'internal_server_error',
+    1012: 'service_restart',
+    1013: 'try_again_later',
+    1015: 'tls_handshake_failure',
+  }
+  return m[code] ?? `code_${code}`
+}
+
 export class StreamingWsSession {
   private ws: WebSocket | null = null
   private events: StreamingWsEvents
   private sampleRate: number
   private destroyed = false
+  /** True after JS calls ws.close() from destroy(); distinguishes client-initiated teardown in onclose. */
+  private clientCloseRequested = false
   private wsReady = false
 
   // Latency instrumentation (all in ms, from Date.now())
@@ -62,48 +84,43 @@ export class StreamingWsSession {
 
   connect() {
     if (this.destroyed) return
+    this.clientCloseRequested = false
     this.T_connect = Date.now()
     this.lastPcmSentAt = 0
     this.pcmFramesSent = 0
     const url = wsUrl()
-    console.info('[StreamingWs] connecting', { url, sampleRate: this.sampleRate })
-    console.info('[live-latency] ws_connect_begin', JSON.stringify({ sampleRate: this.sampleRate, urlHost: (() => { try { return new URL(url.replace(/^ws/i, 'http')).host } catch { return '' } })() }))
+    console.info('[StreamingWs] reconnect_attempt', JSON.stringify({ urlHostHint: url.slice(0, 48), sampleRate: this.sampleRate }))
+    console.info('[StreamingWs] ws_connect_begin', JSON.stringify({ sampleRate: this.sampleRate }))
     const ws = new WebSocket(url)
     this.ws = ws
     ws.binaryType = 'arraybuffer'
 
     ws.onopen = () => {
-      if (this.destroyed) { ws.close(); return }
+      if (this.destroyed) {
+        ws.close(1001, 'destroyed_before_open')
+        return
+      }
       this.T_ws_open = Date.now()
       ws.send(JSON.stringify({ type: 'stream_start', sampleRate: this.sampleRate }))
       this.wsReady = true
-      console.info('[StreamingWs] open -> stream_start sent', {
-        sampleRate: this.sampleRate,
-        wsConnectMs: this.T_ws_open - this.T_connect,
-      })
-      console.info(
-        '[live-latency] stream_start_sent',
-        JSON.stringify({ wsHandshakeMs: this.T_ws_open - this.T_connect, sampleRate: this.sampleRate }),
-      )
+      console.info('[StreamingWs] reconnect_success', JSON.stringify({ wsOpenMs: this.T_ws_open - this.T_connect }))
+      console.info('[StreamingWs] ws_open', JSON.stringify({ sampleRate: this.sampleRate, streamStartSent: true }))
       this.events.onOpen?.()
     }
 
     ws.onmessage = (ev: MessageEvent) => {
       let msg: Record<string, unknown>
-      try { msg = JSON.parse(String(ev.data)) } catch { return }
+      try {
+        msg = JSON.parse(String(ev.data))
+      } catch {
+        return
+      }
 
       if (msg.type === 'stream_ready') {
         this.T_stream_ready = Date.now()
         console.info('[StreamingWs] ASR provider live (stream_ready)', {
           readyMs: this.T_stream_ready - this.T_connect,
         })
-        console.info(
-          '[live-latency] stream_ready_received',
-          JSON.stringify({
-            msSinceConnect: this.T_stream_ready - this.T_connect,
-            msSinceWsOpen: this.T_ws_open ? this.T_stream_ready - this.T_ws_open : -1,
-          }),
-        )
         this.events.onReady?.()
       } else if (msg.type === 'stream_interim' && typeof msg.text === 'string') {
         const now = Date.now()
@@ -111,22 +128,11 @@ export class StreamingWsSession {
         if (!this.T_first_interim) {
           this.T_first_interim = now
           console.info('[StreamingWs] TIMING first-interim', {
-            // KEY METRIC: how long from connect() until first word appears
             connectToFirstInterimMs: now - this.T_connect,
-            // how long DashScope took to produce first result after task-started
             readyToFirstInterimMs: this.T_stream_ready ? now - this.T_stream_ready : -1,
             wsConnectMs: this.T_ws_open - this.T_connect,
             readyMs: this.T_stream_ready ? this.T_stream_ready - this.T_connect : -1,
           })
-          console.info(
-            '[live-latency] client_first_interim',
-            JSON.stringify({
-              connectToFirstInterimMs: now - this.T_connect,
-              readyToFirstInterimMs: this.T_stream_ready ? now - this.T_stream_ready : -1,
-              msSinceLastPcmSent: this.lastPcmSentAt ? now - this.lastPcmSentAt : -1,
-              pcmFramesSentBeforeFirstInterim: this.pcmFramesSent,
-            }),
-          )
         }
         this.events.onInterim?.(msg.text as string)
       } else if (msg.type === 'stream_final' && typeof msg.text === 'string') {
@@ -155,15 +161,38 @@ export class StreamingWsSession {
     }
 
     ws.onerror = () => {
+      console.warn('[StreamingWs] ws_error', JSON.stringify({ destroyed: this.destroyed }))
       if (!this.destroyed) this.events.onError?.('ws_connect_failed')
     }
 
-    ws.onclose = () => {
+    ws.onclose = (ev: CloseEvent) => {
+      const code = ev.code
+      const reason = typeof ev.reason === 'string' ? ev.reason : ''
+      const who =
+        this.clientCloseRequested || this.destroyed
+          ? 'client_js_closed_socket'
+          : ev.wasClean
+            ? 'peer_clean_close'
+            : 'abnormal_or_peer_unclean'
+
+      console.warn(
+        '[StreamingWs] ws_close',
+        JSON.stringify({
+          code,
+          codeLabel: describeCloseCode(code),
+          reason: reason.slice(0, 500),
+          wasClean: ev.wasClean,
+          whoClosed: who,
+          pcmFramesSent: this.pcmFramesSent,
+          lastPcmSentAgeMs: this.lastPcmSentAt ? Date.now() - this.lastPcmSentAt : -1,
+          destroyed: this.destroyed,
+          clientCloseRequested: this.clientCloseRequested,
+        }),
+      )
+
       this.wsReady = false
       this.ws = null
       if (!this.destroyed) {
-        console.info('[StreamingWs] closed')
-        console.info('[live-latency] ws_closed', JSON.stringify({ pcmFramesSent: this.pcmFramesSent }))
         traceWsClosed('ws_onclose')
         this.events.onClose?.()
       }
@@ -178,7 +207,7 @@ export class StreamingWsSession {
     this.pcmFramesSent += 1
     if (this.pcmFramesSent === 1) {
       console.info(
-        '[live-latency] ws_first_pcm_sent',
+        '[StreamingWs] ws_first_pcm_sent',
         JSON.stringify({
           bytes: buffer.byteLength,
           msAfterWsOpen: this.T_ws_open ? now - this.T_ws_open : -1,
@@ -194,14 +223,21 @@ export class StreamingWsSession {
     if (!this.ws || !this.wsReady) return
     try {
       this.ws.send(JSON.stringify({ type: 'stream_stop' }))
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   destroy() {
     this.destroyed = true
     this.wsReady = false
     if (this.ws) {
-      try { this.ws.close() } catch { /* ignore */ }
+      this.clientCloseRequested = true
+      try {
+        this.ws.close(1000, 'client_destroy')
+      } catch {
+        /* ignore */
+      }
       this.ws = null
     }
   }
