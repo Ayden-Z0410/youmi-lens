@@ -21,3 +21,20 @@ export function logMediaEnvironmentOnce(): void {
     )
   }
 }
+
+/** Sample rate the recording AudioContext will use (no mic permission). Falls back to 48000. */
+export function probeDefaultAudioSampleRate(): number {
+  if (typeof window === 'undefined') return 48000
+  try {
+    const Ctor =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!Ctor) return 48000
+    const ctx = new Ctor()
+    const sr = typeof ctx.sampleRate === 'number' && ctx.sampleRate > 0 ? ctx.sampleRate : 48000
+    void ctx.close().catch(() => undefined)
+    return sr
+  } catch {
+    return 48000
+  }
+}

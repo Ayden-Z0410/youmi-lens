@@ -1,5 +1,6 @@
 export type LiveEngineStatus =
   | 'idle'
+  | 'warming'
   | 'starting'
   | 'connected'
   | 'streaming'

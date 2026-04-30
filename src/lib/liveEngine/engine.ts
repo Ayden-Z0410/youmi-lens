@@ -42,6 +42,8 @@ export class LiveEngine {
   private listener: LiveEngineListener | null = null
   private adapter: YoumiLiveAdapter | null = null
   private running = false
+  /** Last successful `warmUpstream()` probe rate — used to re-warm after idle TTL teardown. */
+  private lastWarmSampleRate: number | null = null
   private translateTarget: 'zh' | 'en' | 'off' = 'off'
   private zhRevBySeg = new Map<string, number>()
   /** Monotonic per segmentId so stale translateFinal completions are dropped when a newer final supersedes. */
@@ -104,6 +106,11 @@ export class LiveEngine {
       if (ev.type === 'connected') {
         log('adapter connected')
         this.emit({ type: 'status', status: 'connected' })
+        return
+      }
+      if (ev.type === 'warm_idle_teardown') {
+        log('warm_idle_teardown — re-warming DashScope session')
+        void this.rewarmAfterIdleTeardown()
         return
       }
       if (ev.type === 'reconnecting') {
@@ -221,6 +228,33 @@ export class LiveEngine {
   }
 
   /**
+   * Pre-connect app WS + DashScope before PCM (`stream_ready`). Idempotent for same healthy session.
+   */
+  async warmUpstream(sampleRate: number): Promise<void> {
+    if (!this.running || !this.adapter) return
+    this.lastWarmSampleRate = sampleRate
+    this.emit({ type: 'status', status: 'warming' })
+    await this.adapter.warmSession(sampleRate)
+  }
+
+  private async rewarmAfterIdleTeardown() {
+    if (!this.running || !this.adapter || this.lastWarmSampleRate === null) return
+    try {
+      this.emit({ type: 'status', status: 'warming' })
+      await this.adapter.warmSession(this.lastWarmSampleRate)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      log('rewarm_after_idle_teardown_failed', { message: msg })
+      this.emit({
+        type: 'error',
+        code: 'warm_idle_rewarm_failed',
+        message: msg,
+        recoverable: true,
+      })
+    }
+  }
+
+  /**
    * Call after local microphone capture has stopped so the ASR provider can emit
    * trailing finals. Does not tear down the adapter (still receives WS messages).
    */
@@ -275,6 +309,7 @@ export class LiveEngine {
       this.interimTranslateTimer = null
     }
     this.translationQueue = []
+    this.lastWarmSampleRate = null
     this.adapter?.stop()
     this.adapter = null
     this.emit({ type: 'status', status: 'closed' })
@@ -298,6 +333,7 @@ export class LiveEngine {
   /** Push a raw PCM Int16 frame from AudioContext capture (streaming path). */
   pushPcmChunk(buffer: ArrayBuffer, sampleRate: number) {
     if (!this.running || !this.adapter) return
+    this.adapter.markRecordingPcmActivity()
     this.adapter.pushPcm(buffer, sampleRate)
   }
 

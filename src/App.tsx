@@ -123,6 +123,7 @@ import {
   liveCaptionEventFromEngine,
   type LiveCaptionView,
 } from './lib/liveCaptionSessionModel'
+import { probeDefaultAudioSampleRate } from './lib/mediaEnvDebug'
 import { getEnArrivalWalls, traceCaptionStop } from './lib/liveCaptionTrace'
 import { canonicalizeLectureTranscript } from './lib/transcriptCanonical'
 import { youmiLiveLog } from './lib/youmiLiveDebug'
@@ -1071,6 +1072,42 @@ function RecordingWorkspace({
   const useLiveEngineV2 = useLiveEngineV2ForHosted
   const [liveRouteState, setLiveRouteState] = useState<LiveRouteState>('legacy')
 
+  /** Hosted live captions API gate — avoid useless warm attempts while health is still loading. */
+  const hostedLiveCaptionsGate =
+    stubMode || (hostedHealth !== null && hostedHealth.liveCaptions === true)
+
+  /**
+   * Keep LiveEngine mounted on the capture surface **before** Record so DashScope can pre-handshake.
+   * Include `stopping` so one React frame never tears down the engine between CAPTURE_BEGIN and drain latch.
+   */
+  const liveEngineMountActive = useMemo(
+    () =>
+      Boolean(
+        useLiveEngineV2 &&
+          usesHosted &&
+          liveCaptionsPipelineEnabled &&
+          (hostedConfigured || stubMode) &&
+          hostedLiveCaptionsGate &&
+          (flow.phase === 'idle' ||
+            flow.phase === 'recording' ||
+            flow.phase === 'paused' ||
+            flow.phase === 'stopping' ||
+            liveEngineDrainPhase) &&
+          flow.phase !== 'transcribing' &&
+          flow.phase !== 'summarizing',
+      ),
+    [
+      useLiveEngineV2,
+      usesHosted,
+      liveCaptionsPipelineEnabled,
+      hostedConfigured,
+      stubMode,
+      hostedHealth,
+      flow.phase,
+      liveEngineDrainPhase,
+    ],
+  )
+
   const liveCaptionSessionSurface = useMemo(() => {
     if (!liveCaptionSessionActive) return null
     if (liveCaptionsPipelineEnabled) return null
@@ -1131,6 +1168,7 @@ function RecordingWorkspace({
   const onFinalPhraseRef = useRef<((phrase: string) => void) | null>(null)
   const onDraftPhraseRef = useRef<((phrase: string) => void) | null>(null)
   const liveEngineRef = useRef<LiveEngine | null>(null)
+  const warmSampleRateRef = useRef(probeDefaultAudioSampleRate())
   /** LiveEngine v2: single session model (EN/ZH each = committed[] + current|null). */
   const liveCaptionSessionRef = useRef(new LiveCaptionSessionModel())
   /** Joined committed EN text mirror (save / diagnostics). */
@@ -1266,10 +1304,10 @@ function RecordingWorkspace({
 
   useLayoutEffect(() => {
     if (useLiveEngineV2) {
-      setLiveRouteState(liveCaptionSessionActive ? 'v2_starting' : 'v2_waiting_session')
+      setLiveRouteState(liveEngineMountActive ? 'v2_starting' : 'v2_waiting_session')
       liveRouteDiagLog(
         '[LiveEngine][diag] v2 branch selected; legacy chunk handler detached',
-        JSON.stringify({ liveCaptionSessionActive }),
+        JSON.stringify({ liveCaptionSessionActive, liveEngineMountActive }),
       )
       onLiveAudioChunkRef.current = null
       return
@@ -1745,12 +1783,12 @@ function RecordingWorkspace({
       }
       return
     }
-    if (!liveCaptionSessionActive) {
+    if (!liveEngineMountActive) {
       setLiveRouteState('v2_waiting_session')
       onLiveAudioChunkRef.current = null
       onLivePcmChunkRef.current = null
       if (liveEngineRef.current) {
-        liveRouteDiagLog('[LiveEngine][diag] stopping v2 engine because session is inactive')
+        liveRouteDiagLog('[LiveEngine][diag] stopping v2 engine because capture surface unmounted')
         liveEngineRef.current.stop()
         liveEngineRef.current = null
       }
@@ -1775,9 +1813,12 @@ function RecordingWorkspace({
     lastFinalTimestampRef.current = 0
     syncLiveCaptionViewFromModel(liveCaptionSessionRef.current.getView())
 
+    warmSampleRateRef.current = probeDefaultAudioSampleRate()
+
     engine.onEvent((ev) => {
       if (ev.type === 'status') {
         liveRouteDiagLog('[LiveEngine][App] status', JSON.stringify({ status: ev.status, detail: ev.detail }))
+        if (ev.status === 'warming') setLiveRouteState('v2_starting')
         if (ev.status === 'connected' || ev.status === 'streaming') setLiveRouteState('v2_streaming')
         if (ev.status === 'error') setLiveRouteState('v2_error')
         if (ev.status === 'reconnecting') {
@@ -1834,6 +1875,31 @@ function RecordingWorkspace({
     })
 
     engine.start({ translateTarget })
+
+    let warmCancelled = false
+    void (async () => {
+      try {
+        console.info(
+          '[live-latency] live_engine_warm_begin',
+          JSON.stringify({ sampleRate: warmSampleRateRef.current }),
+        )
+        await engine.warmUpstream(warmSampleRateRef.current)
+        if (!warmCancelled) {
+          console.info('[live-latency] live_engine_warm_complete', JSON.stringify({}))
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (!warmCancelled) {
+          console.warn('[live-latency] live_engine_warm_failed', JSON.stringify({ message: msg }))
+          setLiveCaptionChunkNotice({
+            kind: 'soft',
+            message:
+              'Live captions will finish connecting when you record (warm-up did not complete in time).',
+          })
+        }
+      }
+    })()
+
     // PCM streaming path: AudioContext frames drive the engine directly (no blob slices needed).
     onLivePcmChunkRef.current = (buffer, sampleRate) => {
       engine.pushPcmChunk(buffer, sampleRate)
@@ -1841,6 +1907,7 @@ function RecordingWorkspace({
     onLiveAudioChunkRef.current = null
 
     return () => {
+      warmCancelled = true
       onLivePcmChunkRef.current = null
       onLiveAudioChunkRef.current = null
       engine.stop()
@@ -1849,8 +1916,7 @@ function RecordingWorkspace({
     }
   }, [
     useLiveEngineV2,
-    liveCaptionSessionActive,
-    liveEngineDrainPhase,
+    liveEngineMountActive,
     liveCaptionsPipelineEnabled,
     usesHosted,
     translateTarget,
