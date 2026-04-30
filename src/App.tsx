@@ -134,6 +134,8 @@ import { designTokens } from './design-system/tokens'
 import './design-system/tokens.css'
 import './App.css'
 
+const UI_BUILD_MARKER = 'library-delete-debug-v3'
+
 const KEY_LIVE_LANG = 'lc_live_lang'
 const KEY_TRANSLATE = 'lc_translate_target'
 const LC_USE_LOCAL_KEY = 'lc_use_local_without_cloud'
@@ -234,6 +236,13 @@ function formatDate(ts: number): string {
   })
 }
 
+function formatDebugIds(ids: string[]): string {
+  if (ids.length === 0) return 'none'
+  const shortIds = ids.slice(0, 3).map((id) => id.slice(0, 8))
+  const more = ids.length > shortIds.length ? ` +${ids.length - shortIds.length} more` : ''
+  return `${ids.length}: ${shortIds.join(', ')}${more}`
+}
+
 type LibraryDropId = string | 'unfiled'
 
 function toDragTranslate(transform: { x: number; y: number } | null | undefined): string | undefined {
@@ -245,6 +254,7 @@ function DraggableLectureItem({
   recordingId,
   selected,
   dragging,
+  pickMode,
   onRowClick,
   suppressItemClickRef,
   children,
@@ -252,6 +262,7 @@ function DraggableLectureItem({
   recordingId: string
   selected: boolean
   dragging: boolean
+  pickMode: boolean
   onRowClick: (e: MouseEvent<HTMLButtonElement>) => void
   suppressItemClickRef: MutableRefObject<boolean>
   children: ReactNode
@@ -270,7 +281,7 @@ function DraggableLectureItem({
       className={`rec-item ${selected ? 'active' : ''}${dragging || isDragging ? ' is-dragging' : ''}`}
       style={{ transform: toDragTranslate(transform), touchAction: 'none' }}
       onClick={(e) => {
-        if (suppressItemClickRef.current) return
+        if (suppressItemClickRef.current && !pickMode) return
         onRowClick(e)
       }}
     >
@@ -1900,6 +1911,8 @@ function RecordingWorkspace({
   const [backupError, setBackupError] = useState<string | null>(null)
   const [backupMsg, setBackupMsg] = useState<string | null>(null)
   const [deleteActionBusy, setDeleteActionBusy] = useState(false)
+  /** Visible trace for library delete flows (Tauri WebView may not show window.confirm). */
+  const [libraryDeleteDebugMessage, setLibraryDeleteDebugMessage] = useState('')
   const [signOutBusy, setSignOutBusy] = useState(false)
 
   type LibraryFolder = { id: string; name: string; createdAt: number }
@@ -2816,27 +2829,15 @@ function RecordingWorkspace({
   const performDeleteLectures = useCallback(
     async (ids: string[], confirmKind: 'single' | 'multi' | 'global') => {
       const unique = [...new Set(ids)].filter(Boolean)
-      if (unique.length === 0) return
+      if (unique.length === 0) {
+        setLibraryDeleteDebugMessage(`performDeleteLectures(${confirmKind}): stopped — no ids after dedupe`)
+        return
+      }
 
-      let msg: string
-      if (confirmKind === 'single' || unique.length === 1) {
-        msg = localOnly
-          ? 'Delete this recording from this browser?'
-          : 'Delete this lecture?'
-      } else if (confirmKind === 'global') {
-        msg = localOnly
-          ? `Delete all ${unique.length} recordings from this browser?`
-          : `Delete all ${unique.length} lectures across all folders?`
-      } else {
-        msg = localOnly
-          ? `Delete ${unique.length} recording(s) from this browser?`
-          : `Delete selected ${unique.length} lectures?`
-      }
-      if (!window.confirm(msg)) return
-      if (confirmKind !== 'single') {
-        // Used by the "Delete selected" toolbar flow.
-        console.log('[library-delete-selected] confirmed')
-      }
+      // Bypass window.confirm: macOS Tauri WebView often does not show native confirm; it returns false and skips delete.
+      setLibraryDeleteDebugMessage(
+        `performDeleteLectures(${confirmKind}): delete started — ids=${unique.join(',')} localOnly=${String(localOnly)}`,
+      )
 
       setDeleteActionBusy(true)
       try {
@@ -2846,16 +2847,29 @@ function RecordingWorkspace({
           userId: userId ?? null,
           deleteRecordingLocal,
         })
+        setLibraryDeleteDebugMessage(
+          `performDeleteLectures(${confirmKind}): deleteLectures returned OK — ids=${unique.join(',')}`,
+        )
         setLibraryLectureLocation((prev) => {
           const next = { ...prev }
           for (const id of unique) delete next[id]
           return next
         })
         const list = await refreshList()
-        setLibraryPickedIds((prev) => prev.filter((x) => !unique.includes(x)))
+        setLibraryPickedIds([])
         if (unique.includes(selectedId ?? '')) {
-          setSelectedId(list[0]?.id ?? null)
+          const nextSelection = list.find((r) => !unique.includes(r.id))?.id ?? null
+          setSelectedId(nextSelection)
+          if (!nextSelection) setDetail(null)
         }
+        setLibraryDeleteDebugMessage(
+          `performDeleteLectures(${confirmKind}): refresh done — removed ${unique.length} id(s)`,
+        )
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err)
+        setLibraryDeleteDebugMessage(`performDeleteLectures(${confirmKind}): ERROR ${detail}`)
+        console.error('[library-delete] failed', err)
+        throw err
       } finally {
         setDeleteActionBusy(false)
       }
@@ -2864,12 +2878,20 @@ function RecordingWorkspace({
   )
 
   const handleDeleteSelectedLectures = useCallback(async () => {
-    console.log('[library-delete-selected] clicked')
+    setLibraryDeleteDebugMessage(
+      `Delete selected: clicked — raw picked count=${libraryPickedIds.length} ids=${libraryPickedIds.join(',')}`,
+    )
+    window.alert('Delete selected handler fired')
     const validIdSet = new Set(recordings.map((r) => r.id))
     const ids = libraryPickedIds.filter((id) => validIdSet.has(id))
-    console.log('[library-delete-selected] ids', ids)
-    if (ids.length === 0) return
-    window.alert('[library-delete-selected] clicked ids=' + ids.join(','))
+    if (ids.length === 0) {
+      const msg = `Delete selected: no valid ids (picked ${libraryPickedIds.length}, none match recordings list)`
+      setLibraryDeleteDebugMessage(msg)
+      window.alert(msg)
+      return
+    }
+    setLibraryDeleteDebugMessage(`Delete selected: deleting ids=${ids.join(',')} (${ids.length})`)
+    window.alert(`Deleting ids: ${ids.join(',')}`)
     const allIds = new Set(recordings.map((r) => r.id))
     const pickedSet = new Set(ids)
     const isEveryLecture =
@@ -2878,18 +2900,49 @@ function RecordingWorkspace({
       [...allIds].every((id) => pickedSet.has(id))
     try {
       await performDeleteLectures(ids, isEveryLecture ? 'global' : 'multi')
-      console.log('[library-delete-selected] done')
+      setLibraryDeleteDebugMessage(`Delete selected: flow finished OK (${ids.length} id(s))`)
+      window.alert('Delete selected done')
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setLibraryDeleteDebugMessage(`Delete selected: ERROR ${msg}`)
       console.error('[library-delete-selected] error', err)
-      throw err
+      window.alert(`Delete selected error: ${msg}`)
     }
   }, [libraryPickedIds, recordings, performDeleteLectures])
 
-  const deleteDetailLecture = useCallback(async () => {
-    if (!detail) return
-    window.alert('[library-delete-lecture] clicked id=' + detail.id)
-    await performDeleteLectures([detail.id], 'single')
-  }, [detail, performDeleteLectures])
+  const deleteLectureFromDetailPanel = useCallback(async () => {
+    setLibraryDeleteDebugMessage(`Delete lecture (detail panel): clicked selectedId=${selectedId ?? 'none'}`)
+    if (!selectedId) {
+      setLibraryDeleteDebugMessage('Delete lecture (detail panel): stopped — no selectedId')
+      return
+    }
+    try {
+      await performDeleteLectures([selectedId], 'single')
+      setLibraryDeleteDebugMessage(`Delete lecture (detail panel): done id=${selectedId}`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setLibraryDeleteDebugMessage(`Delete lecture (detail panel): ERROR ${msg}`)
+      console.error('[library-delete-lecture] error', err)
+      window.alert(`Delete lecture error: ${msg}`)
+    }
+  }, [selectedId, performDeleteLectures])
+
+  const handleDeleteLectureById = useCallback(async (lectureId: string | null | undefined) => {
+    setLibraryDeleteDebugMessage(`Delete lecture (row): clicked id=${lectureId ?? 'none'}`)
+    if (!lectureId) {
+      setLibraryDeleteDebugMessage('Delete lecture (row): stopped — no id')
+      return
+    }
+    try {
+      await performDeleteLectures([lectureId], 'single')
+      setLibraryDeleteDebugMessage(`Delete lecture (row): done id=${lectureId}`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setLibraryDeleteDebugMessage(`Delete lecture (row): ERROR ${msg}`)
+      console.error('[library-delete-lecture] error', err)
+      window.alert(`Delete lecture error: ${msg}`)
+    }
+  }, [performDeleteLectures])
 
   const createFolder = () => {
     setNewFolderInputValue('')
@@ -2931,23 +2984,36 @@ function RecordingWorkspace({
   }
 
   const deleteFolderIfEmpty = (folderId?: string) => {
-    console.log('[library-folder-delete] clicked')
-    window.alert('[library-folder-delete] clicked')
+    setLibraryDeleteDebugMessage(`Delete folder: clicked folderId=${folderId ?? 'undefined'}`)
     if (!folderId) {
+      const msg = 'Delete folder: Select a folder first.'
+      setLibraryDeleteDebugMessage(msg)
       window.alert('Select a folder first.')
       return
     }
     const count = folderRecordingsMap[folderId]?.length ?? 0
     if (count > 0) {
-      console.log('[library-folder-delete] blocked_non_empty', { folderId, count })
+      const msg = `Delete folder: Move or delete lectures before deleting this folder (${count} lecture(s) in folder).`
+      setLibraryDeleteDebugMessage(msg)
       window.alert('Move or delete lectures before deleting this folder.')
+      console.log('[library-folder-delete] blocked_non_empty', { folderId, count })
       return
     }
-    if (!window.confirm('Delete this empty folder?')) return
+    setLibraryDeleteDebugMessage(`Delete folder: removing empty folder ${folderId}`)
     setLibraryFolders((prev) => prev.filter((x) => x.id !== folderId))
+    setLibraryLectureLocation((prev) => {
+      const next = { ...prev }
+      for (const [recordingId, loc] of Object.entries(next)) {
+        if (loc === folderId) delete next[recordingId]
+      }
+      return next
+    })
     if (libraryActiveScope.kind === 'folder' && libraryActiveScope.folderId === folderId) {
       setLibraryActiveScope({ kind: 'all' })
     }
+    setLibraryPickedIds([])
+    setLibraryDeleteDebugMessage('Delete folder: Folder deleted.')
+    window.alert('Folder deleted.')
     console.log('[library-folder-delete] deleted', { folderId })
   }
 
@@ -3036,9 +3102,18 @@ function RecordingWorkspace({
       ? folderRecordingsMap[libraryActiveScope.folderId]?.length ?? 0
       : 0
 
+  const visibleLectureIds = recordingIdsInActiveScopeOrdered()
+  const libraryActiveScopeLabel =
+    libraryActiveScope.kind === 'folder'
+      ? `folder:${libraryActiveScope.folderId}`
+      : libraryActiveScope.kind
+  const selectedDebugText = formatDebugIds(libraryPickedIds)
+  const visibleDebugText = formatDebugIds(visibleLectureIds)
+
   const canRenameLibraryFolder = libraryActiveScope.kind === 'folder' && !libraryPickMode
 
-  const deleteSelectedEnabled = libraryPickMode && libraryPickedIds.length > 0 && !deleteActionBusy
+  const validPickedLectureCount = libraryPickedIds.filter((id) => recordings.some((r) => r.id === id)).length
+  const deleteSelectedEnabled = libraryPickMode && validPickedLectureCount > 0 && !deleteActionBusy
 
   const showAccountPanel =
     !localOnly && supabase && userId && onProfileRowChange
@@ -3150,12 +3225,36 @@ function RecordingWorkspace({
           <div className="yl-sidebar-divider" aria-hidden />
           <div id="yl-library" className="yl-history-section list-panel">
             <div className="yl-nav-section-label yl-nav-section-label--secondary yl-library-head">
-              <span>Lectures</span>
+              <span>
+                Lectures
+                <span className="yl-library-build-marker">UI build: {UI_BUILD_MARKER}</span>
+              </span>
               {!newFolderInputVisible && (
                 <button type="button" className="btn ghost small" onClick={createFolder}>
                   New folder
                 </button>
               )}
+            </div>
+            <div className="yl-library-debug" aria-live="polite">
+              <div>active scope: {libraryActiveScopeLabel}</div>
+              <div>selected recording ids: {selectedDebugText}</div>
+              <div>visible recording ids: {visibleDebugText}</div>
+              <div
+                style={{
+                  marginTop: 6,
+                  padding: '8px 10px',
+                  borderRadius: 6,
+                  background: 'rgba(254, 243, 199, 0.95)',
+                  border: '1px solid rgba(217, 119, 6, 0.45)',
+                  color: '#78350f',
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                  wordBreak: 'break-word',
+                }}
+              >
+                <strong>Delete debug</strong>
+                {libraryDeleteDebugMessage ? `: ${libraryDeleteDebugMessage}` : ': (no delete action yet)'}
+              </div>
             </div>
             {newFolderInputVisible && (
               <div style={{ padding: '4px 8px 6px' }}>
@@ -3206,7 +3305,7 @@ function RecordingWorkspace({
                     <button
                       type="button"
                       className="btn ghost small"
-                      onClick={() => setLibraryPickedIds(recordingIdsInActiveScopeOrdered())}
+                      onClick={() => setLibraryPickedIds(visibleLectureIds)}
                     >
                       Select current view
                     </button>
@@ -3247,9 +3346,7 @@ function RecordingWorkspace({
                     <button
                       type="button"
                       className="btn ghost small"
-                      disabled={
-                        deleteActionBusy || libraryPickMode || libraryActiveScope.kind !== 'folder'
-                      }
+                      disabled={deleteActionBusy || libraryPickMode}
                       title={
                         libraryActiveScope.kind !== 'folder'
                           ? 'Select a folder first.'
@@ -3272,7 +3369,9 @@ function RecordingWorkspace({
               </div>
               {(libraryPickMode || libraryPickedIds.length > 0) && (
                 <div className="yl-library-multiselect-banner">
-                  <span className="yl-library-multiselect-count">{libraryPickedIds.length} selected</span>
+                  <span className="yl-library-multiselect-count">
+                    {libraryPickMode ? validPickedLectureCount : libraryPickedIds.length} selected
+                  </span>
                   <button type="button" className="btn ghost small" onClick={() => setLibraryPickedIds([])}>
                     Clear selection
                   </button>
@@ -3440,6 +3539,7 @@ function RecordingWorkspace({
                                         recordingId={r.id}
                                         selected={r.id === selectedId}
                                         dragging={draggingRecordingId === r.id}
+                                        pickMode={libraryPickMode}
                                         onRowClick={handleLectureRowClick(r.id)}
                                         suppressItemClickRef={suppressItemClickRef}
                                       >
@@ -3451,6 +3551,20 @@ function RecordingWorkspace({
                                           </span>
                                         </span>
                                       </DraggableLectureItem>
+                                      {!libraryPickMode ? (
+                                        <button
+                                          type="button"
+                                          className="btn ghost small yl-lecture-row__delete"
+                                          disabled={deleteActionBusy}
+                                          onPointerDown={(e) => e.stopPropagation()}
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            void handleDeleteLectureById(r.id)
+                                          }}
+                                        >
+                                          Delete
+                                        </button>
+                                      ) : null}
                                     </div>
                                   </li>
                                 ))}
@@ -3525,6 +3639,7 @@ function RecordingWorkspace({
                                     recordingId={r.id}
                                     selected={r.id === selectedId}
                                     dragging={draggingRecordingId === r.id}
+                                    pickMode={libraryPickMode}
                                     onRowClick={handleLectureRowClick(r.id)}
                                     suppressItemClickRef={suppressItemClickRef}
                                   >
@@ -3536,6 +3651,20 @@ function RecordingWorkspace({
                                       </span>
                                     </span>
                                   </DraggableLectureItem>
+                                  {!libraryPickMode ? (
+                                    <button
+                                      type="button"
+                                      className="btn ghost small yl-lecture-row__delete"
+                                      disabled={deleteActionBusy}
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        void handleDeleteLectureById(r.id)
+                                      }}
+                                    >
+                                      Delete
+                                    </button>
+                                  ) : null}
                                 </div>
                               </li>
                             ))}
@@ -4011,7 +4140,7 @@ function RecordingWorkspace({
                   className={`btn ghost small${deleteActionBusy ? ' is-busy' : ''}`}
                   disabled={deleteActionBusy}
                   aria-busy={deleteActionBusy}
-                  onClick={() => void deleteDetailLecture()}
+                  onClick={() => void deleteLectureFromDetailPanel()}
                 >
                   {deleteActionBusy ? 'Deleting…' : 'Delete lecture'}
                 </button>
