@@ -62,8 +62,8 @@ export class LiveEngine {
 
   // Debounce interim translation: latest interim only, keep secondary line snappy without spamming API.
   private interimTranslateTimer: ReturnType<typeof setTimeout> | null = null
-  /** Debounced so zh_interim tracks phrase-level EN, not every ASR partial. */
-  private static readonly INTERIM_TRANSLATE_DEBOUNCE_MS = 300
+  /** Debounced so zh_interim tracks phrase-level EN, not every ASR partial. Lower = snappier secondary line. */
+  private static readonly INTERIM_TRANSLATE_DEBOUNCE_MS = 120
 
   // Translation queue state
   private translationQueue: Array<{ segmentId: string; text: string; enqueuedAt: number; rev: number }> =
@@ -139,6 +139,16 @@ export class LiveEngine {
         })
         this.emit({ type: 'en_interim', segmentId: ev.segmentId, rev: ev.rev, text: deo.novelText })
         bumpEnInterimArrivalWall()
+        console.info(
+          '[live-latency] en_interim_ui_update',
+          JSON.stringify({
+            segmentId: ev.segmentId,
+            rev: ev.rev,
+            translateTarget: this.translateTarget,
+            len: deo.novelText.length,
+            sessionMs: this.elapsed(),
+          }),
+        )
 
         if (this.interimTranslateTimer) {
           clearTimeout(this.interimTranslateTimer)
@@ -148,6 +158,16 @@ export class LiveEngine {
         const gen = this.zhInterimGenBySeg.get(capturedId) ?? 0
         this.interimTranslateTimer = setTimeout(() => {
           this.interimTranslateTimer = null
+          if (this.translateTarget !== 'off') {
+            console.info(
+              '[live-latency] zh_interim_debounce_fired',
+              JSON.stringify({
+                segmentId: capturedId,
+                debounceMs: LiveEngine.INTERIM_TRANSLATE_DEBOUNCE_MS,
+                sessionMs: this.elapsed(),
+              }),
+            )
+          }
           const rawLatest = this.latestEnInterimBySeg.get(capturedId) ?? ''
           if (!rawLatest) return
           const latestDeo = deOverlapEnglish(this.committedEnFull, rawLatest)
@@ -350,10 +370,15 @@ export class LiveEngine {
     if (!t) return
     if (!this.shouldEmitZhInterimForChunk(segmentId, t)) return
     try {
+      const tHttp0 = Date.now()
       const zhRaw = (await translateLiveCaption(t, { target: this.translateTarget })).trim()
       const zh = normalizeZhPayloadOrReject(zhRaw, this.translateTarget)
       if (!zh || !this.running) return
       if ((this.zhInterimGenBySeg.get(segmentId) ?? 0) !== expectedGen) return
+      console.info(
+        '[live-latency] zh_interim_http_complete',
+        JSON.stringify({ segmentId, httpMs: Date.now() - tHttp0, gen: expectedGen }),
+      )
       const rev = (this.zhRevBySeg.get(segmentId) ?? 0) + 1
       this.zhRevBySeg.set(segmentId, rev)
       this.lastZhInterimChunkEnBySeg.set(segmentId, t)

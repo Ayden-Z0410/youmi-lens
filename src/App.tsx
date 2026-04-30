@@ -1208,6 +1208,8 @@ function RecordingWorkspace({
   }, [])
 
   const prevRecorderStatusRef = useRef(recorder.status)
+  /** Log `[live-latency] recording_session_route` once per recording segment (diag path selection). */
+  const liveLatencyRouteLoggedRef = useRef(false)
   useEffect(() => {
     if (prevRecorderStatusRef.current === 'idle' && recorder.status === 'recording') {
       liveChunkFailStreakRef.current = 0
@@ -1215,6 +1217,34 @@ function RecordingWorkspace({
     }
     prevRecorderStatusRef.current = recorder.status
   }, [recorder.status])
+
+  useEffect(() => {
+    if (recorder.status !== 'recording') {
+      liveLatencyRouteLoggedRef.current = false
+      return
+    }
+    if (liveLatencyRouteLoggedRef.current) return
+    liveLatencyRouteLoggedRef.current = true
+    const skipSlice =
+      useLiveEngineV2ForHosted || (experimentSkipYoumiLiveSlice && usesHosted)
+    console.info(
+      '[live-latency] recording_session_route',
+      JSON.stringify({
+        path: useLiveEngineV2 ? 'v2_pcm_ws_streaming' : 'legacy_blob_http',
+        usesHosted,
+        prodBuild: import.meta.env.PROD,
+        viteLiveEngineV2: USE_LIVE_ENGINE_V2,
+        experimentalSkipLiveSlice: skipSlice,
+        legacyMediaRecorderSlicesActive: Boolean(onLiveAudioChunkRef) && !skipSlice,
+      }),
+    )
+  }, [
+    recorder.status,
+    useLiveEngineV2,
+    usesHosted,
+    useLiveEngineV2ForHosted,
+    experimentSkipYoumiLiveSlice,
+  ])
 
   useEffect(() => {
     if (liveCaptionsPipelineEnabled) setLiveCaptionChunkNotice(null)

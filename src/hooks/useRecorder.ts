@@ -29,8 +29,9 @@ const MIN_LIVE_AUDIO_BYTES = 2048
 /** Live caption slice interval only (separate cloned MediaRecorder; does not use timeslice on main track). */
 export const LIVE_WHISPER_SLICE_MS = 1600
 
-/** After final requestData(), wait briefly so the encoder can append the last chunk before MediaRecorder.stop(). */
-const MAIN_RECORDER_STOP_FLUSH_MS = 140
+/** After final requestData(), wait until no non-empty chunk for this long (or cap) before MediaRecorder.stop(). */
+const MAIN_RECORDER_QUIET_MS = 100
+const MAIN_RECORDER_FLUSH_MAX_MS = 3000
 
 export function useRecorder(opts?: {
   /** Receives each timed audio slice while recording (cloned track; same mic as main file). */
@@ -66,6 +67,8 @@ export function useRecorder(opts?: {
   /** One id per main MediaRecorder session — correlates [MainRec] lines in console. */
   const mainRecSessionIdRef = useRef<string>('')
   const mainDataChunkIndexRef = useRef(0)
+  /** Last time main `MediaRecorder` emitted a non-empty blob (for end-of-recording quiet-period flush). */
+  const mainLastChunkAtRef = useRef(0)
   /** Force periodic flush so long sessions don't collapse to ~1s output. */
   const mainRequestDataTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -74,6 +77,11 @@ export function useRecorder(opts?: {
   const liveSliceWaitRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const startLiveSliceCycleRef = useRef<(() => void) | null>(null)
   const waitForHandlerAttemptsRef = useRef(0)
+
+  /** PCM diagnostics (streaming ASR latency chain). */
+  const pcmFrameDiagCountRef = useRef(0)
+  /** Log once per recording session when legacy MediaRecorder slice path emits audio. */
+  const legacySliceDiagLoggedRef = useRef(false)
 
   useEffect(() => {
     if (status !== 'recording') return
@@ -165,13 +173,18 @@ export function useRecorder(opts?: {
           ? crypto.randomUUID()
           : `main-${Date.now()}`
       mainDataChunkIndexRef.current = 0
+      pcmFrameDiagCountRef.current = 0
+      legacySliceDiagLoggedRef.current = false
       chunksRef.current = []
       const session = mainRecSessionIdRef.current
       mr.ondataavailable = (e) => {
         const ev = e as BlobEvent & { timecode?: number }
         const idx = mainDataChunkIndexRef.current++
         const tc = typeof ev.timecode === 'number' ? ev.timecode : undefined
-        if (e.data.size > 0) chunksRef.current.push(e.data)
+        if (e.data.size > 0) {
+          chunksRef.current.push(e.data)
+          mainLastChunkAtRef.current = Date.now()
+        }
         const cumulativeBytes = chunksRef.current.reduce(
           (n, p) => n + (p instanceof Blob ? p.size : 0),
           0,
@@ -257,6 +270,17 @@ export function useRecorder(opts?: {
               const s = float32[i]
               int16[i] = s > 1 ? 32767 : s < -1 ? -32768 : Math.round(s * 32767)
             }
+            pcmFrameDiagCountRef.current += 1
+            if (pcmFrameDiagCountRef.current === 1) {
+              console.info(
+                '[live-latency] first_pcm_chunk_from_mic',
+                JSON.stringify({
+                  sampleRate,
+                  samples: int16.length,
+                  approxMs: Math.round((int16.length / sampleRate) * 1000),
+                }),
+              )
+            }
             // Transfer ownership to avoid copy
             send(int16.buffer, sampleRate)
           }
@@ -269,6 +293,14 @@ export function useRecorder(opts?: {
           silentGain.connect(ctx.destination)
 
           console.info('[useRecorder] PCM capture started', JSON.stringify({ sampleRate, bufferSize: 2048 }))
+          console.info(
+            '[live-latency] pcm_capture_started',
+            JSON.stringify({
+              sampleRate,
+              bufferSamples: 2048,
+              approxFrameMs: Math.round((2048 / sampleRate) * 1000),
+            }),
+          )
         } catch (pcmErr) {
           console.warn('[useRecorder] PCM capture setup failed', pcmErr)
           // Non-fatal: fall through; live captions unavailable in streaming mode
@@ -327,10 +359,22 @@ export function useRecorder(opts?: {
             const blob = new Blob(parts, { type: mt })
             liveSliceRecorderRef.current = null
             if (blob.size >= MIN_LIVE_AUDIO_BYTES && liveCyclingRef.current) {
+              const now = Date.now()
               console.info(
                 '[LiveEngine][recorder] live chunk ready',
-                JSON.stringify({ bytes: blob.size, mime: mt }),
+                JSON.stringify({ bytes: blob.size, mime: mt, atMs: now }),
               )
+              if (!legacySliceDiagLoggedRef.current) {
+                legacySliceDiagLoggedRef.current = true
+                console.info(
+                  '[live-latency] legacy_http_slice_ready',
+                  JSON.stringify({
+                    bytes: blob.size,
+                    mime: mt,
+                    sliceIntervalMs: LIVE_WHISPER_SLICE_MS,
+                  }),
+                )
+              }
               send(blob, mt)
             }
             if (liveCyclingRef.current) {
@@ -439,6 +483,7 @@ export function useRecorder(opts?: {
         } catch {
           /* requestData unsupported or wrong state */
         }
+        mainLastChunkAtRef.current = Date.now()
         mr.onstop = () => {
           const mime = mr.mimeType || mimeRef.current
           const parts = chunksRef.current
@@ -456,17 +501,33 @@ export function useRecorder(opts?: {
           setStatus('idle')
           resolve({ blob, mime })
         }
-        window.setTimeout(() => {
-          try {
-            mr.stop()
-          } catch (stopErr) {
-            mainRecLine('stop', {
-              session: sessionTag,
-              error: stopErr instanceof Error ? stopErr.message : String(stopErr),
-            })
-            reject(stopErr instanceof Error ? stopErr : new Error(String(stopErr)))
+        const waitQuietThenStop = () => {
+          const deadline = Date.now() + MAIN_RECORDER_FLUSH_MAX_MS
+          const tick = () => {
+            const quietFor = Date.now() - mainLastChunkAtRef.current
+            if (quietFor >= MAIN_RECORDER_QUIET_MS || Date.now() >= deadline) {
+              mainRecLine('flush', {
+                session: sessionTag,
+                kind: 'quiet_period_before_stop',
+                quietForMs: quietFor,
+                hitMaxWait: Date.now() >= deadline,
+              })
+              try {
+                mr.stop()
+              } catch (stopErr) {
+                mainRecLine('stop', {
+                  session: sessionTag,
+                  error: stopErr instanceof Error ? stopErr.message : String(stopErr),
+                })
+                reject(stopErr instanceof Error ? stopErr : new Error(String(stopErr)))
+              }
+              return
+            }
+            window.setTimeout(tick, Math.min(40, MAIN_RECORDER_QUIET_MS))
           }
-        }, MAIN_RECORDER_STOP_FLUSH_MS)
+          window.setTimeout(tick, 0)
+        }
+        waitQuietThenStop()
       }
 
       if (liveMr && liveMr.state !== 'inactive') {

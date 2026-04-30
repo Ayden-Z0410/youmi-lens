@@ -22,6 +22,12 @@ import * as dashEnv from './dashscopeEnv.mjs'
 
 const PORT = Number(process.env.PORT || process.env.AI_SERVER_PORT || 3847)
 
+if (process.env.YOUMI_TRANSCRIBE_FORCE_TEST === '1') {
+  console.warn(
+    '[live-latency] WARNING: YOUMI_TRANSCRIBE_FORCE_TEST=1 — POST /api/transcribe returns stub text; do not use for realtime latency benchmarks.',
+  )
+}
+
 const app = express()
 app.use(cors({ origin: true, credentials: true }))
 app.use(express.json({ limit: '2mb' }))
@@ -160,7 +166,9 @@ const server = createServer(app)
 attachLiveRealtimeWs(server)
 
 server.listen(PORT, '0.0.0.0', () => {
+  const marker = process.env.YOUMI_DEPLOY_MARKER || 'dev'
   console.log(`Youmi AI server on http://127.0.0.1:${PORT}`)
+  console.log(`[youmi-ai/version] marker=${marker}`)
   const hosted = youmiHosted.hostedCapabilities()
   const env = envDiagnostics()
   const mode = runtimeModeSummary()

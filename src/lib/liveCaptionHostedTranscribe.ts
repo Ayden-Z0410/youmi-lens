@@ -19,6 +19,7 @@ export async function transcribeHostedLiveCaptionChunk(opts: {
   mime: string
   filename: string
 }): Promise<string> {
+  const chunkT0 = Date.now()
   const apiBase = getAiApiBase()
   const ext = opts.filename.includes('.') ? opts.filename.split('.').pop() || 'webm' : 'webm'
   const path = `${opts.userId}/live-captions/${opts.sessionId}/${String(opts.chunkIndex).padStart(6, '0')}.${ext}`
@@ -31,10 +32,17 @@ export async function transcribeHostedLiveCaptionChunk(opts: {
     storagePathSuffix: path.slice(-48),
   })
 
+  console.info('[live-latency] legacy_live_http_chunk_begin', JSON.stringify({
+    chunkIndex: opts.chunkIndex,
+    bytes: opts.blob.size,
+    mime: opts.mime,
+  }))
+
   const { error: upErr } = await opts.supabase.storage.from(BUCKET).upload(path, opts.blob, {
     contentType: opts.mime || `audio/${ext}`,
     upsert: true,
   })
+  const uploadMs = Date.now() - chunkT0
   if (upErr) {
     youmiLiveLog('C', 'storage upload failed', { chunkIndex: opts.chunkIndex, err: upErr.message })
     throw new Error(upErr.message)
@@ -53,6 +61,7 @@ export async function transcribeHostedLiveCaptionChunk(opts: {
     })
     throw new Error(signErr?.message || 'Could not sign URL for live caption')
   }
+  const signedMs = Date.now() - chunkT0
   const safe = youmiLiveSafeUrlParts(signed.signedUrl)
   youmiLiveLog('C', 'signed URL ok (host+path only)', {
     chunkIndex: opts.chunkIndex,
@@ -63,6 +72,13 @@ export async function transcribeHostedLiveCaptionChunk(opts: {
   try {
     try {
       const endpoint = `${apiBase}/live-transcribe-url`
+      const reqT0 = Date.now()
+      youmiLiveLog('srv', 'live-transcribe-url request start', {
+        chunkIndex: opts.chunkIndex,
+        sinceChunkMs: reqT0 - chunkT0,
+        uploadMs,
+        signedMs,
+      })
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: {
@@ -72,6 +88,7 @@ export async function transcribeHostedLiveCaptionChunk(opts: {
         body: JSON.stringify({ url: signed.signedUrl }),
       })
       const resText = await res.text()
+      const reqMs = Date.now() - reqT0
       let parsed: { text?: string; error?: string } = {}
       try {
         parsed = JSON.parse(resText) as { text?: string; error?: string }
@@ -81,6 +98,8 @@ export async function transcribeHostedLiveCaptionChunk(opts: {
       youmiLiveLog('srv', 'live-transcribe-url response', {
         chunkIndex: opts.chunkIndex,
         status: res.status,
+        requestMs: reqMs,
+        totalMs: Date.now() - chunkT0,
         bodySummary: youmiLiveSummarizeJsonBody(parsed),
       })
       if (!res.ok) {
@@ -101,8 +120,14 @@ export async function transcribeHostedLiveCaptionChunk(opts: {
       const form = new FormData()
       form.append('file', opts.blob, opts.filename)
       form.append('filename', opts.filename)
+      const req2T0 = Date.now()
+      youmiLiveLog('srv', '/api/transcribe fallback request start', {
+        chunkIndex: opts.chunkIndex,
+        sinceChunkMs: req2T0 - chunkT0,
+      })
       const res2 = await fetch(`${apiBase}/transcribe`, { method: 'POST', body: form })
       const t2 = await res2.text()
+      const req2Ms = Date.now() - req2T0
       let p2: { text?: string; error?: string } = {}
       try {
         p2 = JSON.parse(t2) as { text?: string; error?: string }
@@ -112,6 +137,8 @@ export async function transcribeHostedLiveCaptionChunk(opts: {
       youmiLiveLog('srv', '/api/transcribe fallback response', {
         chunkIndex: opts.chunkIndex,
         status: res2.status,
+        requestMs: req2Ms,
+        totalMs: Date.now() - chunkT0,
         bodySummary: youmiLiveSummarizeJsonBody(p2),
       })
       if (!res2.ok) {

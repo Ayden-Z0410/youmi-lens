@@ -51,6 +51,9 @@ export class StreamingWsSession {
   private T_first_interim = 0
   private T_first_final = 0
   private interimCount = 0
+  /** Last time a PCM frame was accepted by WebSocket.send (client → app server). */
+  private lastPcmSentAt = 0
+  private pcmFramesSent = 0
 
   constructor(sampleRate: number, events: StreamingWsEvents) {
     this.sampleRate = sampleRate
@@ -60,8 +63,11 @@ export class StreamingWsSession {
   connect() {
     if (this.destroyed) return
     this.T_connect = Date.now()
+    this.lastPcmSentAt = 0
+    this.pcmFramesSent = 0
     const url = wsUrl()
     console.info('[StreamingWs] connecting', { url, sampleRate: this.sampleRate })
+    console.info('[live-latency] ws_connect_begin', JSON.stringify({ sampleRate: this.sampleRate, urlHost: (() => { try { return new URL(url.replace(/^ws/i, 'http')).host } catch { return '' } })() }))
     const ws = new WebSocket(url)
     this.ws = ws
     ws.binaryType = 'arraybuffer'
@@ -75,6 +81,10 @@ export class StreamingWsSession {
         sampleRate: this.sampleRate,
         wsConnectMs: this.T_ws_open - this.T_connect,
       })
+      console.info(
+        '[live-latency] stream_start_sent',
+        JSON.stringify({ wsHandshakeMs: this.T_ws_open - this.T_connect, sampleRate: this.sampleRate }),
+      )
       this.events.onOpen?.()
     }
 
@@ -87,6 +97,13 @@ export class StreamingWsSession {
         console.info('[StreamingWs] ASR provider live (stream_ready)', {
           readyMs: this.T_stream_ready - this.T_connect,
         })
+        console.info(
+          '[live-latency] stream_ready_received',
+          JSON.stringify({
+            msSinceConnect: this.T_stream_ready - this.T_connect,
+            msSinceWsOpen: this.T_ws_open ? this.T_stream_ready - this.T_ws_open : -1,
+          }),
+        )
         this.events.onReady?.()
       } else if (msg.type === 'stream_interim' && typeof msg.text === 'string') {
         const now = Date.now()
@@ -101,6 +118,15 @@ export class StreamingWsSession {
             wsConnectMs: this.T_ws_open - this.T_connect,
             readyMs: this.T_stream_ready ? this.T_stream_ready - this.T_connect : -1,
           })
+          console.info(
+            '[live-latency] client_first_interim',
+            JSON.stringify({
+              connectToFirstInterimMs: now - this.T_connect,
+              readyToFirstInterimMs: this.T_stream_ready ? now - this.T_stream_ready : -1,
+              msSinceLastPcmSent: this.lastPcmSentAt ? now - this.lastPcmSentAt : -1,
+              pcmFramesSentBeforeFirstInterim: this.pcmFramesSent,
+            }),
+          )
         }
         this.events.onInterim?.(msg.text as string)
       } else if (msg.type === 'stream_final' && typeof msg.text === 'string') {
@@ -137,6 +163,7 @@ export class StreamingWsSession {
       this.ws = null
       if (!this.destroyed) {
         console.info('[StreamingWs] closed')
+        console.info('[live-latency] ws_closed', JSON.stringify({ pcmFramesSent: this.pcmFramesSent }))
         traceWsClosed('ws_onclose')
         this.events.onClose?.()
       }
@@ -146,6 +173,19 @@ export class StreamingWsSession {
   /** Send a raw Int16 PCM ArrayBuffer to the server -> DashScope. */
   sendPcm(buffer: ArrayBuffer) {
     if (!this.wsReady || this.destroyed || !this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    const now = Date.now()
+    this.lastPcmSentAt = now
+    this.pcmFramesSent += 1
+    if (this.pcmFramesSent === 1) {
+      console.info(
+        '[live-latency] ws_first_pcm_sent',
+        JSON.stringify({
+          bytes: buffer.byteLength,
+          msAfterWsOpen: this.T_ws_open ? now - this.T_ws_open : -1,
+          msAfterConnect: now - this.T_connect,
+        }),
+      )
+    }
     this.ws.send(buffer)
   }
 

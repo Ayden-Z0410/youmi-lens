@@ -34,10 +34,12 @@ function makeTaskId() {
  *   onError?: (err: Error) => void,
  *   onClose?: () => void,
  * }} callbacks
+ * @param {{ wsUrl?: string }} [options] ÔøΩ override WS host (e.g. China after intl failure).
  * @returns {{ sendPcm(buf: Buffer): void, finish(): void, destroy(): void }}
  */
-export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
+export function createDashscopeStreamingSession(apiKey, callbacks = {}, options = {}) {
   const { sampleRate = 48000, onReady, onInterim, onFinal, onError, onClose } = callbacks
+  const wsUrlOverride = typeof options.wsUrl === 'string' && options.wsUrl ? options.wsUrl : null
   const taskId = makeTaskId()
 
   let ws = null
@@ -55,7 +57,7 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
   let T_first_final = 0
   let interimCount = 0
 
-  /** When DashScope rarely sets sentence_end, interims never become finals ù UI stuck in gray. Commit after brief audio pause. */
+  /** When DashScope rarely sets sentence_end, interims never become finals ÔøΩ UI stuck in gray. Commit after brief audio pause. */
   const PAUSE_COMMIT_MS = Number(process.env.YOUMI_LIVE_PAUSE_COMMIT_MS || 580)
   let pauseCommitTimer = null
   let latestInterimText = ''
@@ -167,7 +169,7 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
     }
   }, TASK_STARTED_TIMEOUT_MS)
 
-  const wsUrl = getDashScopeBases().wsInference
+  const wsUrl = wsUrlOverride || getDashScopeBases().wsInference
   ws = new WebSocket(wsUrl, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -195,7 +197,7 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
           // Without this, DashScope often holds one mega-sentence for 30s+ with sentence_end=false,
           // so the client never gets en_final commits and the transcript looks like "one line".
           semantic_punctuation_enabled: true,
-          // VAD silence cap (ms) to end a sentence; doc range 200ù6000, default ~800.
+          // VAD silence cap (ms) to end a sentence; doc range 200ÔøΩ6000, default ~800.
           max_sentence_silence: 700,
         },
         input: {},
@@ -253,6 +255,14 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}) {
             wsConnectMs: T_ws_open - T_create,
             taskStartedMs: T_task_started ? T_task_started - T_create : -1,
           })
+          console.info(
+            '[liveRealtimeWs] dashscope_upstream_first_interim',
+            JSON.stringify({
+              taskTag: tag,
+              totalMs: T_first_interim - T_create,
+              sinceTaskStartedMs: T_task_started ? T_first_interim - T_task_started : -1,
+            }),
+          )
         }
         latestInterimText = text
         schedulePauseCommitFinal()

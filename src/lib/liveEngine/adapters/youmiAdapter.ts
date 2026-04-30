@@ -66,6 +66,8 @@ export class YoumiLiveAdapter {
   private speechOnsetMs    = 0
   private firstInterimLogged = false
   private lastFinalMs      = 0
+  /** First PCM buffer forwarded to WS after session exists ([live-latency]). */
+  private loggedFirstPcmForwarded = false
 
   // PCM queue: holds audio received before the ASR session is ready.
   private pcmQueue: ArrayBuffer[] = []
@@ -86,6 +88,7 @@ export class YoumiLiveAdapter {
     this.speechOnsetMs = 0
     this.firstInterimLogged = false
     this.lastFinalMs   = 0
+    this.loggedFirstPcmForwarded = false
     this.pcmQueue      = []
     log('adapter starting (live ASR: server DashScope main line)')
     this.listener?.({ type: 'connected' })
@@ -147,6 +150,13 @@ export class YoumiLiveAdapter {
     if (!this.session) this.initSession(sampleRate)
 
     if (this.sessionReady) {
+      if (!this.loggedFirstPcmForwarded) {
+        this.loggedFirstPcmForwarded = true
+        console.info(
+          '[live-latency] adapter_pcm_forward_to_ws',
+          JSON.stringify({ bytes: buffer.byteLength, sampleRate }),
+        )
+      }
       this.session?.sendPcm(buffer)
     } else {
       this.pcmQueue.push(buffer)
@@ -157,6 +167,7 @@ export class YoumiLiveAdapter {
   // ── Session lifecycle ─────────────────────────────────────────────────────
 
   private initSession(sampleRate: number) {
+    this.loggedFirstPcmForwarded = false
     const ref    = { active: true }
     this.activeRef = ref
     const T_init = Date.now()
