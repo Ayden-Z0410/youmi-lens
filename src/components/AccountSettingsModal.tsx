@@ -15,6 +15,7 @@ import {
   type UserProfileRow,
 } from '../lib/userProfile'
 import { AiPreferencesSection } from './AiPreferencesSection'
+import { INTERNAL_BETA_NOTE, PRODUCT_VERSION_LABEL } from '../lib/productMeta'
 
 type Props = {
   open: boolean
@@ -297,6 +298,35 @@ export function AccountSettingsModal({
               {err}
             </p>
           ) : null}
+
+          <div
+            style={{
+              marginTop: px(t.spacing[6]),
+              paddingTop: px(t.spacing[5]),
+              borderTop: `1px solid ${t.colors.border}`,
+            }}
+          >
+            <h3
+              style={{
+                margin: `0 0 ${px(t.spacing[2])}`,
+                fontSize: t.fontSize.sm,
+                fontWeight: 600,
+                color: t.colors.text,
+              }}
+            >
+              {PRODUCT_VERSION_LABEL}
+            </h3>
+            <p
+              style={{
+                margin: 0,
+                fontSize: t.fontSize.sm,
+                color: t.colors.textMuted,
+                lineHeight: t.lineHeight.relaxed,
+              }}
+            >
+              {INTERNAL_BETA_NOTE}
+            </p>
+          </div>
         </div>
 
         <div

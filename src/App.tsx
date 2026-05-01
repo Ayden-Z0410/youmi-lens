@@ -64,6 +64,7 @@ import {
 } from './lib/ai/aiSource'
 import { BYOK_PROVIDER_CAPABILITIES } from './lib/ai/providers/types'
 import { showDeveloperAiCredentialsUi } from './lib/productAi'
+import { INTERNAL_BETA_NOTE, PRODUCT_VERSION_LABEL } from './lib/productMeta'
 import {
   hostedHealthFromApiJson,
   isHostedAiConfigured,
@@ -4597,6 +4598,20 @@ function RecordingWorkspace({
             )}
           </div>
         )}
+        <div
+          style={{
+            marginTop: '1.25rem',
+            paddingTop: '1rem',
+            borderTop: '1px solid var(--yl-border, #e2e8f0)',
+          }}
+        >
+          <h3 style={{ margin: '0 0 0.45rem', fontSize: '0.95rem', fontWeight: 600 }}>
+            {PRODUCT_VERSION_LABEL}
+          </h3>
+          <p className="hint small" style={{ margin: 0, lineHeight: 1.5 }}>
+            {INTERNAL_BETA_NOTE}
+          </p>
+        </div>
           </section>
         </>
       }
