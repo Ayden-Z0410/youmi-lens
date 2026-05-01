@@ -1,21 +1,26 @@
 /**
  * SmoothCaption — UI smoothing for streaming caption text.
  *
- * DashScope emits interim ASR results in 200–500ms bursts. Without smoothing
- * the caption "jumps" between bursts. This component animates the displayed
- * text toward the target using requestAnimationFrame (≤60fps) over REVEAL_MS.
+ * DashScope emits interim ASR results in 200–500ms bursts of 1–3 words. Without
+ * smoothing the caption "jumps" between bursts. This component reveals text one
+ * character at a time, spaced by charMs (derived from delta and REVEAL_MS), using
+ * requestAnimationFrame as the scheduler instead of nested setTimeouts.
  *
- * One RAF per animation frame replaces the old per-character setTimeout cascade
- * that could fire 100+ setState calls per second and saturate the React scheduler.
- *
- * Rules:
- *  - Grows by append → animate over REVEAL_MS via linear interpolation
- *  - Large burst (>SNAP_THRESHOLD chars) or incompatible change → snap instantly
+ * Original behavior restored:
+ *  - First character appears immediately (in effect body, before first RAF)
+ *  - Remaining chars appear one-at-a-time at evenly-spaced intervals (charMs each)
+ *  - charMs = max(16, floor(REVEAL_MS / delta)) → 16ms floor = one display frame max rate
+ *  - Snap immediately for: non-prefix change, shrink, or burst > SNAP_THRESHOLD chars
  *  - Never fabricates characters not present in the latest target
+ *
+ * Performance vs original setTimeout cascade:
+ *  - Original MIN_CHAR_MS=8 could fire 125 setState calls/second
+ *  - RAF floor of 16ms caps at 60fps (display-aligned, no wasted renders between frames)
  */
 import { useEffect, useRef, useState } from 'react'
 
 const REVEAL_MS = 120
+const MIN_CHAR_MS = 16   // one display frame — prevents exceeding 60fps
 const SNAP_THRESHOLD = 50
 
 type SmoothCaptionProps = {
@@ -24,14 +29,14 @@ type SmoothCaptionProps = {
 
 export function SmoothCaption({ value }: SmoothCaptionProps) {
   const [displayed, setDisplayed] = useState(value)
-  /** Mirrors displayed state so effects can read current value without stale closure. */
+  /** Mirrors displayed state so RAF callbacks read current position without stale closure. */
   const displayedRef = useRef(value)
-  /** Latest target — updated synchronously at effect start so RAF callback always sees it. */
+  /** Always holds the latest target; updated synchronously at effect start. */
   const targetRef = useRef(value)
-  const animRef = useRef<{ rafId: number; baseLen: number; startTime: number }>({
+  const animRef = useRef<{ rafId: number; charMs: number; lastAdvance: number }>({
     rafId: 0,
-    baseLen: value.length,
-    startTime: 0,
+    charMs: MIN_CHAR_MS,
+    lastAdvance: 0,
   })
 
   useEffect(() => {
@@ -44,39 +49,55 @@ export function SmoothCaption({ value }: SmoothCaptionProps) {
 
     targetRef.current = value
     const cur = displayedRef.current
-
     const delta = value.length - cur.length
-    const shouldSnap = !value.startsWith(cur) || delta > SNAP_THRESHOLD || delta <= 0
 
-    if (shouldSnap) {
+    // Snap for: segment break/non-prefix, shrink, large burst
+    if (!value.startsWith(cur) || delta < 0 || delta > SNAP_THRESHOLD) {
       displayedRef.current = value
       setDisplayed(value)
-      a.baseLen = value.length
       return
     }
 
-    if (value === cur) return
+    if (delta === 0) return  // identical text, nothing to do
 
-    a.baseLen = cur.length
-    a.startTime = performance.now()
+    // Per-char interval: same formula as original, floored at one display frame
+    a.charMs = Math.max(MIN_CHAR_MS, Math.floor(REVEAL_MS / delta))
+
+    // Show first char immediately — matching original effect-body reveal
+    const first = value.slice(0, cur.length + 1)
+    displayedRef.current = first
+    setDisplayed(first)
+    if (first === value) return  // only 1 char to add, done
+
+    a.lastAdvance = performance.now()
 
     const tick = (now: number) => {
-      const target = targetRef.current
-      const elapsed = now - a.startTime
-      const progress = Math.min(1, elapsed / REVEAL_MS)
-      const showLen = Math.min(target.length, Math.round(a.baseLen + (target.length - a.baseLen) * progress))
-      const next = target.slice(0, showLen)
-
-      displayedRef.current = next
-      setDisplayed(next)
-
-      if (progress < 1 && showLen < target.length) {
+      // Respect per-char interval: skip frames that arrive too soon
+      if (now - a.lastAdvance < a.charMs) {
         a.rafId = requestAnimationFrame(tick)
-      } else {
+        return
+      }
+      a.lastAdvance = now
+
+      const target = targetRef.current
+      const prevDisplayed = displayedRef.current
+
+      // If target changed to an incompatible string while we were animating, snap
+      if (!target.startsWith(prevDisplayed)) {
         displayedRef.current = target
         setDisplayed(target)
         a.rafId = 0
-        a.baseLen = target.length
+        return
+      }
+
+      const next = target.slice(0, prevDisplayed.length + 1)
+      displayedRef.current = next
+      setDisplayed(next)
+
+      if (next.length < target.length) {
+        a.rafId = requestAnimationFrame(tick)
+      } else {
+        a.rafId = 0
       }
     }
 
