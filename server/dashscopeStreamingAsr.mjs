@@ -62,6 +62,9 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}, options 
   let T_first_interim = 0
   let T_first_final = 0
   let interimCount = 0
+  // Cadence diagnostics — track per-interim gaps and deltas
+  let lastInterimAt = 0
+  let lastInterimChars = 0
 
   /** When DashScope rarely sets sentence_end, interims never become finals � UI stuck in gray. Commit after brief audio pause. */
   const PAUSE_COMMIT_MS = Number(process.env.YOUMI_LIVE_PAUSE_COMMIT_MS || 580)
@@ -116,6 +119,20 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}, options 
       })
     }
     L('final', { reason, len: t.length, sinceStartMs: now - T_create })
+    // Reset cadence counters on every sentence boundary (covers pause_commit path too)
+    if (reason !== 'api_sentence_end') {
+      // api_sentence_end already reset above; only reset here for other reasons (pause_commit, flush)
+      const gapMs = lastInterimAt ? now - lastInterimAt : -1
+      console.info('[cadence] final', JSON.stringify({
+        ts: now,
+        gapMsSinceLastInterim: gapMs,
+        totalChars: t.length,
+        wordCount: t.trim().split(/\s+/).length,
+        reason,
+      }))
+      lastInterimAt = 0
+      lastInterimChars = 0
+    }
     onFinal?.(t)
   }
 
@@ -284,6 +301,16 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}, options 
       const now = Date.now()
       if (isFinal) {
         clearPauseCommitTimer()
+        const gapMs = lastInterimAt ? now - lastInterimAt : -1
+        console.info('[cadence] final', JSON.stringify({
+          ts: now,
+          gapMsSinceLastInterim: gapMs,
+          totalChars: text.length,
+          wordCount: text.trim().split(/\s+/).length,
+          reason: 'api_sentence_end',
+        }))
+        lastInterimAt = 0
+        lastInterimChars = 0
         emitFinalDeduped(text, 'api_sentence_end')
       } else {
         interimCount++
@@ -306,6 +333,29 @@ export function createDashscopeStreamingSession(apiKey, callbacks = {}, options 
         }
         latestInterimText = text
         schedulePauseCommitFinal()
+
+        // ── Cadence diagnostic ──────────────────────────────────────────────
+        const gapMs = lastInterimAt ? now - lastInterimAt : -1
+        const totalChars = text.length
+        const deltaChars = totalChars - lastInterimChars
+        const words = text.trim().split(/\s+/)
+        const wordCount = words.length
+        const newWords = deltaChars > 0
+          ? text.trim().split(/\s+/).slice(-Math.round(deltaChars / 5)).join(' ')
+          : ''
+        console.info('[cadence] interim', JSON.stringify({
+          n: interimCount,
+          ts: now,
+          gapMs,
+          totalChars,
+          deltaChars,
+          wordCount,
+          newWords: newWords.slice(0, 60),
+        }))
+        lastInterimAt = now
+        lastInterimChars = totalChars
+        // ───────────────────────────────────────────────────────────────────
+
         onInterim?.(text)
       }
       return
