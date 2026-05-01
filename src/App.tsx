@@ -82,6 +82,7 @@ import {
 import { AccountSettingsModal } from './components/AccountSettingsModal'
 import { RecordingAudioPlayer } from './components/RecordingAudioPlayer'
 import { OnboardingUsername } from './components/OnboardingUsername'
+import { SmoothCaption } from './components/SmoothCaption'
 import { whisperLanguageHint } from './lib/whisperLang'
 import { AsyncTimeoutError, withTimeout } from './lib/asyncTimeout'
 import {
@@ -4515,7 +4516,7 @@ function RecordingWorkspace({
                 {primaryCaptionDraft && (
                   <span className="live-interim">
                     {primaryCaption ? ' ' : ''}
-                    {primaryCaptionDraft}
+                    <SmoothCaption value={primaryCaptionDraft} />
                   </span>
                 )}
                 {liveCaptionPendingSlices > 0 && !useLiveEngineV2 && (
