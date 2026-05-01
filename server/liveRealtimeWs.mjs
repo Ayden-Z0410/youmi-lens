@@ -8,6 +8,7 @@ import {
 } from './volcengineStreamingAsr.mjs'
 import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
 import { getDashScopeHttpAttempts } from './dashscopeWithFallback.mjs'
+import { createDeepgramStreamingSession } from './deepgramStreamingAsr.mjs'
 
 /**
  * `/api/live-realtime-ws` — **single default realtime semantics** (Phase 1+2):
@@ -24,6 +25,7 @@ import { getDashScopeHttpAttempts } from './dashscopeWithFallback.mjs'
 function resolveLiveAsrProvider() {
   const exp = (process.env.YOUMI_LIVE_ASR_EXPERIMENT || '').trim().toLowerCase()
   if (exp === 'volcengine' || exp === 'volc' || exp === 'vol') return 'volcengine'
+  if (exp === 'deepgram' || exp === 'deep') return 'deepgram'
   return 'dashscope'
 }
 
@@ -504,6 +506,69 @@ export function attachLiveRealtimeWs(server) {
           }
 
           void attachDashscopeUpstream()
+          return
+        }
+
+        // ── Deepgram: word-level streaming ASR (YOUMI_LIVE_ASR_EXPERIMENT=deepgram) ──────────
+        if (liveProvider === 'deepgram') {
+          const deepgramKey = (process.env.DEEPGRAM_API_KEY || '').trim()
+          if (!deepgramKey) {
+            safeSend(ws, { type: 'stream_error', message: 'DEEPGRAM_API_KEY_MISSING' })
+            return
+          }
+          if (SRV_LIVE_VERBOSE) {
+            console.log(
+              '[YoumiLive][srv] stream_start',
+              JSON.stringify({ wsSessionId, sampleRate, liveProvider: 'deepgram' }),
+            )
+          }
+
+          // deepgramWrapper is declared before createDeepgramStreamingSession so that onClose
+          // (async) can reference it. By the time any WS event fires, the assignment below
+          // has already completed.
+          let deepgramWrapper = null
+          const deepgramSession = createDeepgramStreamingSession(
+            deepgramKey,
+            {
+              sampleRate,
+              onReady: sendStreamReadyOnce,
+              onInterim: relayInterim,
+              onFinal: relayFinal,
+              onError: (err) => {
+                const errMsg = err instanceof Error ? err.message : String(err)
+                console.warn(
+                  '[YoumiLive][srv] Deepgram error',
+                  JSON.stringify({ message: errMsg, wsSessionId, liveProvider }),
+                )
+                if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_error', message: errMsg })
+              },
+              onClose: (intentional) => {
+                if (streamingSession !== deepgramWrapper) return
+                streamingSession = null
+                if (!intentional) {
+                  console.warn(
+                    '[liveRealtimeWs] deepgram_upstream_drop_closing_client_ws',
+                    JSON.stringify({ wsSessionId }),
+                  )
+                  logServerClosingClientWs(
+                    wsSessionId,
+                    1011,
+                    'deepgram_upstream_drop',
+                    'deepgram_unexpected_upstream_close',
+                  )
+                  try { ws.close(1011, 'deepgram_upstream_drop') } catch { /* ignore */ }
+                }
+              },
+            },
+            { wsSessionId },
+          )
+          deepgramWrapper = {
+            sendPcm: (b) => deepgramSession.sendPcm(b),
+            stop: () => deepgramSession.finish(),
+            destroy: () => deepgramSession.destroy(),
+          }
+          streamingSession = deepgramWrapper
+          flushPendingPcm()
           return
         }
 
