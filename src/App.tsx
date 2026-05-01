@@ -2035,6 +2035,13 @@ function RecordingWorkspace({
   const [libraryFolderNotice, setLibraryFolderNotice] = useState<string | null>(null)
   const [signOutBusy, setSignOutBusy] = useState(false)
 
+  // Auto-dismiss library folder notices after 2 s.
+  useEffect(() => {
+    if (!libraryFolderNotice) return
+    const t = setTimeout(() => setLibraryFolderNotice(null), 2000)
+    return () => clearTimeout(t)
+  }, [libraryFolderNotice])
+
   type LibraryFolder = { id: string; name: string; createdAt: number }
   const LIB_FOLDERS_KEY = 'yl_library_folders_v1'
   const LIB_LECTURE_LOCATION_KEY = 'yl_library_lecture_location_v1'
