@@ -45,7 +45,8 @@ function log(tag: string, fields?: Record<string, unknown>) {
 const VOICE_ENERGY_THRESHOLD = 500
 
 // PCM queue capacity while waiting for WS+ASR handshake.
-const PCM_QUEUE_CAP = 50
+// 200 × ~43ms ≈ 8.6s — covers the full DashScope handshake even on a slow connection.
+const PCM_QUEUE_CAP = 200
 
 // ── YoumiLiveAdapter ──────────────────────────────────────────────────────────
 
@@ -68,6 +69,10 @@ export class YoumiLiveAdapter {
   private warmIdleTimer: ReturnType<typeof setTimeout> | null = null
   /** First PCM after user actually records — disables warm-idle TTL teardown. */
   private recordingPcmSeen = false
+  /** Sample rate used in the last warmSession() call — used to reconnect in idle if WS drops. */
+  private lastWarmSampleRate: number | null = null
+  /** How many idle (pre-recording) auto-reconnect attempts have been made since last successful onReady. */
+  private idleReconnectCount = 0
 
   /** Single-flight: avoid overlapping initSession for same warm call site. */
   private sessionInitGeneration = 0
@@ -103,6 +108,8 @@ export class YoumiLiveAdapter {
     this.rateMismatchReconnectDone = false
     this.upstreamHandshakeComplete = false
     this.recordingPcmSeen = false
+    this.lastWarmSampleRate = null
+    this.idleReconnectCount = 0
     this.rejectAllHandshakeWaiters(new Error('adapter_restarted'))
     this.clearHandshakeTimeout()
     this.clearWarmIdleTimer()
@@ -137,6 +144,7 @@ export class YoumiLiveAdapter {
    */
   async warmSession(sampleRate: number): Promise<void> {
     if (this.closed) return
+    this.lastWarmSampleRate = sampleRate
     this.ensureStreamingSession(sampleRate)
     if (this.upstreamHandshakeComplete) return
     await new Promise<void>((resolve, reject) => {
@@ -337,16 +345,53 @@ export class YoumiLiveAdapter {
     if (this.sessionReady) {
       if (!this.loggedFirstPcmForwarded) {
         this.loggedFirstPcmForwarded = true
+        const srMatch = this.lastWarmSampleRate === null || this.lastWarmSampleRate === sampleRate
         console.info(
           '[live-latency] adapter_pcm_forward_to_ws',
-          JSON.stringify({ bytes: buffer.byteLength, sampleRate }),
+          JSON.stringify({
+            bytes: buffer.byteLength,
+            sampleRate,
+            warmSampleRate: this.lastWarmSampleRate,
+            sampleRateMatch: srMatch,
+          }),
         )
+        if (!srMatch) {
+          console.warn(
+            '[live-latency] sample_rate_mismatch_detected',
+            JSON.stringify({ warmSampleRate: this.lastWarmSampleRate, recordingSampleRate: sampleRate }),
+          )
+        }
       }
       this.session?.sendPcm(buffer)
     } else {
       this.pcmQueue.push(buffer)
       if (this.pcmQueue.length > PCM_QUEUE_CAP) this.pcmQueue.shift()
     }
+  }
+
+  // ── Idle auto-reconnect ───────────────────────────────────────────────────
+
+  /**
+   * If the WS drops before recording starts (no PCM seen), automatically re-init
+   * the session so the warm session heals without user action. Capped at 3 attempts
+   * to avoid infinite loops on persistent server errors.
+   */
+  private scheduleIdleReconnectIfNeeded() {
+    if (this.recordingPcmSeen || this.closed || !this.lastWarmSampleRate) return
+    this.idleReconnectCount++
+    if (this.idleReconnectCount > 3) {
+      log('idle auto-reconnect budget exhausted', { attempts: this.idleReconnectCount })
+      return
+    }
+    const sr = this.lastWarmSampleRate
+    const backoffMs = this.idleReconnectCount * 500
+    log('idle auto-reconnect scheduled', { attempt: this.idleReconnectCount, backoffMs })
+    setTimeout(() => {
+      if (!this.closed && !this.recordingPcmSeen) {
+        log('idle auto-reconnect — initSession', { attempt: this.idleReconnectCount, sampleRate: sr })
+        this.initSession(sr)
+      }
+    }, backoffMs)
   }
 
   // ── Session lifecycle ─────────────────────────────────────────────────────
@@ -378,6 +423,7 @@ export class YoumiLiveAdapter {
 
       onReady: () => {
         if (!ref.active || this.closed || gen !== this.sessionInitGeneration) return
+        this.idleReconnectCount = 0
         this.notifyUpstreamReady()
         log('stream_ready — draining PCM queue', {
           queued: this.pcmQueue.length,
@@ -469,6 +515,7 @@ export class YoumiLiveAdapter {
         setTimeout(() => dying?.destroy(), 0)
         this.abandonCurrentSegment('session_error')
         this.listener?.({ type: 'reconnecting', reason })
+        this.scheduleIdleReconnectIfNeeded()
       },
 
       onClose: () => {
@@ -482,6 +529,7 @@ export class YoumiLiveAdapter {
         log('RECONNECT — session closed unexpectedly', { segId: this.currentSegId || '(none)' })
         this.abandonCurrentSegment('ws_closed')
         this.listener?.({ type: 'reconnecting', reason: 'ws_closed' })
+        this.scheduleIdleReconnectIfNeeded()
       },
     })
 

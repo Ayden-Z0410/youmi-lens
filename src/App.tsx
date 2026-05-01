@@ -1086,8 +1086,8 @@ function RecordingWorkspace({
         useLiveEngineV2 &&
           usesHosted &&
           liveCaptionsPipelineEnabled &&
-          (hostedConfigured || stubMode) &&
-          hostedLiveCaptionsGate &&
+          (hostedConfigured || stubMode || optimisticCloudYoumiHealthLoading) &&
+          (hostedLiveCaptionsGate || optimisticCloudYoumiHealthLoading) &&
           (flow.phase === 'idle' ||
             flow.phase === 'recording' ||
             flow.phase === 'paused' ||
@@ -1103,6 +1103,7 @@ function RecordingWorkspace({
       hostedConfigured,
       stubMode,
       hostedHealth,
+      hostedLiveCaptionsGate,
       flow.phase,
       liveEngineDrainPhase,
     ],
