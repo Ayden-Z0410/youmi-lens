@@ -41,7 +41,14 @@ export async function updateRecordingLocal(
   patch: Partial<
     Pick<
       Recording,
-      'transcript' | 'transcriptRaw' | 'summaryEn' | 'summaryZh' | 'liveTranscript' | 'liveTranscriptRaw'
+      | 'course'
+      | 'title'
+      | 'transcript'
+      | 'transcriptRaw'
+      | 'summaryEn'
+      | 'summaryZh'
+      | 'liveTranscript'
+      | 'liveTranscriptRaw'
     >
   >,
 ): Promise<void> {

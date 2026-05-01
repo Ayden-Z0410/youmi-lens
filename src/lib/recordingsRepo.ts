@@ -432,6 +432,22 @@ export async function updateRecordingAi(
   if (error) throw error
 }
 
+/** Update lecture display fields only (course / title). Does not touch audio, transcripts, or AI columns. */
+export async function updateRecordingMetadata(
+  supabase: SupabaseClient,
+  userId: string,
+  id: string,
+  patch: { course: string; title: string },
+): Promise<void> {
+  const { error } = await supabase
+    .from('recordings')
+    .update({ course: patch.course, title: patch.title })
+    .eq('id', id)
+    .eq('user_id', userId)
+
+  if (error) throw error
+}
+
 export async function deleteRecordingRemote(
   supabase: SupabaseClient,
   userId: string,
@@ -445,9 +461,32 @@ export async function deleteRecordingRemote(
   if (error) throw error
 }
 
+function describeSupabaseError(prefix: string, error: unknown): Error {
+  const err = error as {
+    message?: string
+    code?: string
+    details?: string
+    hint?: string
+    statusCode?: string | number
+    status?: string | number
+    name?: string
+  }
+  const parts = [
+    prefix,
+    err?.message ? `message=${err.message}` : null,
+    err?.code ? `code=${err.code}` : null,
+    err?.details ? `details=${err.details}` : null,
+    err?.hint ? `hint=${err.hint}` : null,
+    err?.statusCode ? `statusCode=${err.statusCode}` : null,
+    err?.status ? `status=${err.status}` : null,
+    err?.name ? `name=${err.name}` : null,
+  ].filter(Boolean)
+  return new Error(parts.join(' | '))
+}
+
 /**
- * Delete one or more cloud or local lecture recordings. Cloud path loads `storage_path` per id then removes Storage + row.
- * Skips ids missing from DB (logs warning). No Supabase work for `localOnly` (local DB + blob only).
+ * Delete one or more cloud or local lecture recordings. Cloud path removes Storage audio when a storage path exists,
+ * then deletes the recording rows. No Supabase work for `localOnly` (local DB + blob only).
  */
 export async function deleteLectures(
   ids: string[],
@@ -462,7 +501,17 @@ export async function deleteLectures(
   if (unique.length === 0) return
 
   if (options.localOnly) {
-    for (const id of unique) await options.deleteRecordingLocal(id)
+    for (const id of unique) {
+      try {
+        await options.deleteRecordingLocal(id)
+      } catch (err) {
+        throw new Error(
+          `[deleteLectures] local delete failed for id=${id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      }
+    }
     return
   }
 
@@ -477,22 +526,58 @@ export async function deleteLectures(
     .eq('user_id', userId)
     .in('id', unique)
 
-  if (error) throw error
+  if (error) throw describeSupabaseError('[deleteLectures] select failed', error)
 
-  const map = new Map<string, string>()
+  const rows = data ?? []
+  const foundIds = new Set<string>()
+  const storageById = new Map<string, string>()
   for (const row of data ?? []) {
     const r = row as { id?: string; storage_path?: string }
+    if (typeof r.id !== 'string') continue
+    foundIds.add(r.id)
     if (typeof r.id === 'string' && typeof r.storage_path === 'string' && r.storage_path) {
-      map.set(r.id, r.storage_path)
+      storageById.set(r.id, r.storage_path)
     }
   }
 
+  const missingIds = unique.filter((id) => !foundIds.has(id))
+  if (missingIds.length > 0) {
+    throw new Error(`[deleteLectures] recording row not found for id(s): ${missingIds.join(',')}`)
+  }
+
   for (const id of unique) {
-    const sp = map.get(id)
-    if (!sp) {
-      console.warn('[deleteLectures] skip — row or storage_path missing', { id })
+    const storagePath = storageById.get(id)
+    if (!storagePath) {
+      console.warn('[deleteLectures] storage_path missing; deleting row only', { id })
       continue
     }
-    await deleteRecordingRemote(supabase, userId, id, sp)
+    const { error: stErr } = await supabase.storage.from(BUCKET).remove([storagePath])
+    if (stErr) {
+      throw describeSupabaseError(`[deleteLectures] storage remove failed for id=${id}`, stErr)
+    }
+  }
+
+  const { error: deleteError } = await supabase
+    .from('recordings')
+    .delete()
+    .eq('user_id', userId)
+    .in('id', unique)
+
+  if (deleteError) throw describeSupabaseError('[deleteLectures] row delete failed', deleteError)
+
+  const { data: remainingRows, error: verifyError } = await supabase
+    .from('recordings')
+    .select('id')
+    .eq('user_id', userId)
+    .in('id', unique)
+
+  if (verifyError) throw describeSupabaseError('[deleteLectures] verify delete failed', verifyError)
+
+  if ((remainingRows ?? []).length > 0) {
+    const remainingIds = rows
+      .filter((row) => (remainingRows as { id?: string }[]).some((remaining) => remaining.id === row.id))
+      .map((row) => row.id)
+      .filter(Boolean)
+    throw new Error(`[deleteLectures] row delete did not remove id(s): ${remainingIds.join(',')}`)
   }
 }

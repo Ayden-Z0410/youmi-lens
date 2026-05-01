@@ -115,6 +115,7 @@ import {
   lectureAudioStoragePath,
   listRecordings,
   updateRecordingAi,
+  updateRecordingMetadata,
   uploadLectureAudio,
 } from './lib/recordingsRepo'
 import { transcribeHostedLiveCaptionChunk } from './lib/liveCaptionHostedTranscribe'
@@ -2077,6 +2078,12 @@ function RecordingWorkspace({
   const [renameFolderModal, setRenameFolderModal] = useState<{ folderId: string; draft: string } | null>(
     null,
   )
+  const [editLectureModal, setEditLectureModal] = useState<{
+    id: string
+    courseDraft: string
+    titleDraft: string
+  } | null>(null)
+  const [lectureMetadataBusy, setLectureMetadataBusy] = useState(false)
   const [newFolderInputVisible, setNewFolderInputVisible] = useState(false)
   const [newFolderInputValue, setNewFolderInputValue] = useState('')
 
@@ -3197,6 +3204,58 @@ function RecordingWorkspace({
     setRenameFolderModal(null)
   }
 
+  const openEditLectureModal = useCallback(() => {
+    if (!selectedId) return
+    const meta =
+      recordings.find((r) => r.id === selectedId) ?? (detail?.id === selectedId ? detail : null)
+    if (!meta) return
+    setEditLectureModal({
+      id: selectedId,
+      courseDraft: meta.course ?? '',
+      titleDraft: meta.title ?? '',
+    })
+  }, [selectedId, recordings, detail])
+
+  const commitEditLectureModal = useCallback(async () => {
+    if (!editLectureModal) return
+    const id = editLectureModal.id
+    const existing = recordings.find((r) => r.id === id) ?? (detail?.id === id ? detail : null)
+    if (!existing) {
+      setEditLectureModal(null)
+      return
+    }
+    const courseTrim = editLectureModal.courseDraft.trim()
+    const titleTrim = editLectureModal.titleDraft.trim()
+    const existingCourse = (existing.course ?? '').trim()
+    const existingTitle = (existing.title ?? '').trim()
+    const courseNext = courseTrim || existingCourse || 'Untitled course'
+    const titleNext = titleTrim || existingTitle || `Lecture ${formatDate(existing.createdAt)}`
+
+    setLectureMetadataBusy(true)
+    try {
+      if (localOnly) {
+        await updateRecordingLocal(id, { course: courseNext, title: titleNext })
+      } else {
+        if (!supabase || !userId) {
+          window.alert('Not signed in.')
+          return
+        }
+        await updateRecordingMetadata(supabase, userId, id, { course: courseNext, title: titleNext })
+      }
+      setRecordings((prev) =>
+        prev.map((r) => (r.id === id ? { ...r, course: courseNext, title: titleNext } : r)),
+      )
+      setDetail((prev) =>
+        prev && prev.id === id ? { ...prev, course: courseNext, title: titleNext } : prev,
+      )
+      setEditLectureModal(null)
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLectureMetadataBusy(false)
+    }
+  }, [editLectureModal, recordings, detail, localOnly, supabase, userId])
+
   const deleteFolderIfEmpty = (folderId?: string) => {
     setLibraryFolderNotice(null)
     if (!folderId) {
@@ -3241,6 +3300,15 @@ function RecordingWorkspace({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [renameFolderModal])
+
+  useEffect(() => {
+    if (!editLectureModal) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setEditLectureModal(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [editLectureModal])
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -3951,6 +4019,98 @@ function RecordingWorkspace({
               </div>
             ) : null}
 
+            {editLectureModal ? (
+              <div
+                role="presentation"
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  zIndex: 1200,
+                  background: 'rgba(15, 23, 42, 0.45)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '1rem',
+                }}
+                onMouseDown={(e) => {
+                  if (e.target === e.currentTarget) setEditLectureModal(null)
+                }}
+              >
+                <div
+                  role="dialog"
+                  aria-labelledby="yl-edit-lecture-title"
+                  style={{
+                    background: 'var(--yl-card, #fff)',
+                    borderRadius: '10px',
+                    padding: '1rem',
+                    minWidth: 'min(360px, 100%)',
+                    boxShadow: '0 12px 40px rgba(0,0,0,0.12)',
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <h3 id="yl-edit-lecture-title" style={{ margin: '0 0 0.75rem', fontSize: '1rem' }}>
+                    Edit lecture
+                  </h3>
+                  <label className="field" style={{ display: 'block', marginBottom: '0.65rem' }}>
+                    <span>Course</span>
+                    <input
+                      type="text"
+                      className="input"
+                      value={editLectureModal.courseDraft}
+                      disabled={lectureMetadataBusy}
+                      onChange={(e) =>
+                        setEditLectureModal((prev) =>
+                          prev ? { ...prev, courseDraft: e.target.value } : null,
+                        )
+                      }
+                      style={{ width: '100%', boxSizing: 'border-box' }}
+                    />
+                  </label>
+                  <label className="field" style={{ display: 'block', marginBottom: '0.75rem' }}>
+                    <span>Title</span>
+                    <input
+                      type="text"
+                      className="input"
+                      value={editLectureModal.titleDraft}
+                      disabled={lectureMetadataBusy}
+                      onChange={(e) =>
+                        setEditLectureModal((prev) =>
+                          prev ? { ...prev, titleDraft: e.target.value } : null,
+                        )
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void commitEditLectureModal()
+                      }}
+                      style={{ width: '100%', boxSizing: 'border-box' }}
+                    />
+                  </label>
+                  <p className="muted small" style={{ margin: '0 0 0.75rem' }}>
+                    Empty fields keep your current course or title. If both would be empty, course defaults to
+                    &quot;Untitled course&quot; and title to a dated lecture name.
+                  </p>
+                  <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      disabled={lectureMetadataBusy}
+                      onClick={() => setEditLectureModal(null)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      disabled={lectureMetadataBusy}
+                      aria-busy={lectureMetadataBusy}
+                      onClick={() => void commitEditLectureModal()}
+                    >
+                      {lectureMetadataBusy ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
             <DndContext
               sensors={sensors}
               collisionDetection={closestCenter}
@@ -4649,7 +4809,16 @@ function RecordingWorkspace({
                 />
               )}
 
-              <div style={{ marginTop: '0.75rem' }}>
+              <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className={`btn ghost small${lectureMetadataBusy ? ' is-busy' : ''}`}
+                  disabled={lectureMetadataBusy}
+                  aria-busy={lectureMetadataBusy}
+                  onClick={() => openEditLectureModal()}
+                >
+                  {lectureMetadataBusy ? 'Saving…' : 'Edit lecture'}
+                </button>
                 <button
                   type="button"
                   className={`btn ghost small${deleteActionBusy ? ' is-busy' : ''}`}
