@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AiJobStatus, Recording, RecordingDetail } from '../types'
+import { getAiApiBase } from './ai/apiBase'
 
 const BUCKET = 'lecture-audio'
 
@@ -265,6 +266,64 @@ export async function uploadLectureAudio(
     throw new SaveRecordingRemoteError('storage_upload', friendly, { cause: upErr })
   }
   console.warn('[storage-upload] ok', JSON.stringify({ storageObjectTail: tail, bucket: BUCKET, t: Date.now() }))
+}
+
+/**
+ * Upload lecture audio via Railway proxy instead of direct Supabase Storage upload.
+ * Avoids WKWebView binary Blob fetch instability for large recordings.
+ *
+ * Returns the storage path (`${userId}/${recordingId}.${ext}`) computed by the server.
+ */
+export async function uploadLectureAudioViaServer(
+  supabase: SupabaseClient,
+  recordingId: string,
+  blob: Blob,
+  mime: string,
+): Promise<string> {
+  const { data: sessData, error: sessErr } = await supabase.auth.getSession()
+  const token = sessData.session?.access_token
+  if (!token) {
+    const msg = 'Audio upload failed: Not signed in or session missing. Sign in again, then stop & save.'
+    console.warn('[upload-via-server] blocked_no_session')
+    throw new SaveRecordingRemoteError('storage_upload', msg, { cause: sessErr ?? undefined })
+  }
+
+  const form = new FormData()
+  form.append('file', blob, `recording.${mime.includes('mp4') || mime.includes('m4a') ? 'm4a' : 'webm'}`)
+  form.append('recordingId', recordingId)
+  form.append('mime', mime || 'audio/webm')
+
+  const apiBase = getAiApiBase()
+  const url = `${apiBase}/upload-audio`
+
+  console.warn('[upload-via-server] start', JSON.stringify({ recordingId, mime, bytes: blob.size, t: Date.now() }))
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    })
+  } catch (fetchErr) {
+    const msg = userFacingUploadHint(`Audio upload failed: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`)
+    throw new SaveRecordingRemoteError('storage_upload', msg, { cause: fetchErr })
+  }
+
+  if (!res.ok) {
+    let serverMsg = `HTTP ${res.status}`
+    try {
+      const body = await res.json() as { error?: string }
+      if (body.error) serverMsg = body.error
+    } catch { /* ignore */ }
+    const msg = userFacingUploadHint(`Audio upload failed: ${serverMsg}`)
+    console.warn('[upload-via-server] server_error', JSON.stringify({ status: res.status, serverMsg, recordingId }))
+    throw new SaveRecordingRemoteError('storage_upload', msg)
+  }
+
+  const result = await res.json() as { storagePath: string; mime: string; size: number }
+  console.warn('[upload-via-server] ok', JSON.stringify({ storagePath: result.storagePath, bytes: result.size, t: Date.now() }))
+  return result.storagePath
 }
 
 function isUniqueViolation(err: unknown): boolean {

@@ -19,6 +19,7 @@ import {
 } from './ai/byok/http.mjs'
 import { attachLiveRealtimeWs } from './liveRealtimeWs.mjs'
 import * as dashEnv from './dashscopeEnv.mjs'
+import { audioUploadMiddleware, handleUploadAudio } from './uploadAudio.mjs'
 
 const PORT = Number(process.env.PORT || process.env.AI_SERVER_PORT || 3847)
 
@@ -151,6 +152,11 @@ app.post('/api/byok/summarize', (req, res) => {
 
 app.post('/api/byok/translate-caption', (req, res) => {
   void handleByokTranslateCaption(req, res)
+})
+
+/** Proxy audio upload from Tauri WKWebView → Railway → Supabase Storage (avoids WKWebView binary fetch instability). */
+app.post('/api/upload-audio', audioUploadMiddleware, (req, res) => {
+  void handleUploadAudio(req, res)
 })
 
 app.post('/api/process-recording', express.json({ limit: '256kb' }), (req, res) => {

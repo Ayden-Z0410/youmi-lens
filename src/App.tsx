@@ -113,11 +113,10 @@ import {
   getRecordingDetail,
   getRecordingMeta,
   insertLectureRecordingRow,
-  lectureAudioStoragePath,
   listRecordings,
   updateRecordingAi,
   updateRecordingMetadata,
-  uploadLectureAudio,
+  uploadLectureAudioViaServer,
 } from './lib/recordingsRepo'
 import { transcribeHostedLiveCaptionChunk } from './lib/liveCaptionHostedTranscribe'
 import { LiveEngine } from './lib/liveEngine/engine'
@@ -2559,12 +2558,11 @@ function RecordingWorkspace({
         }
         ledgerClear(recordingId)
       } else {
-        const path = lectureAudioStoragePath(userId!, recordingId, mime)
-
         dispatchFlow({ type: 'CAPTURE_UPLOAD' })
+        let path: string
         try {
-          await withTimeout(
-            uploadLectureAudio(supabase!, path, blob, mime),
+          path = await withTimeout(
+            uploadLectureAudioViaServer(supabase!, recordingId, blob, mime),
             SAVE_UPLOAD_TIMEOUT_MS,
             'Audio upload',
           )
