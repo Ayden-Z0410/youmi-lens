@@ -2583,12 +2583,20 @@ function RecordingWorkspace({
       } else {
         dispatchFlow({ type: 'CAPTURE_UPLOAD' })
         let path: string
+        let serverSavedRecording = false
         try {
-          path = await withTimeout(
-            uploadLectureAudioViaServer(supabase!, recordingId, blob, mime, durationSec),
+          const saveResult = await withTimeout(
+            uploadLectureAudioViaServer(supabase!, recordingId, blob, mime, durationSec, {
+              course: courseVal,
+              title: titleVal,
+              liveTranscript: liveTranscriptCanonical,
+              liveTranscriptRaw,
+            }),
             SAVE_UPLOAD_TIMEOUT_MS,
             'Audio upload',
           )
+          path = saveResult.storagePath
+          serverSavedRecording = Boolean(saveResult.recording)
         } catch (upErr) {
           const msg =
             upErr instanceof SaveRecordingRemoteError
@@ -2596,6 +2604,18 @@ function RecordingWorkspace({
               : upErr instanceof Error
                 ? upErr.message
                 : String(upErr)
+
+          if (upErr instanceof SaveRecordingRemoteError && upErr.phase === 'database_insert') {
+            endCapture({
+              kind: 'failure',
+              recordingId,
+              outcome: 'storage_ok_db_failed',
+              message: `Audio uploaded, but saving the lecture record failed (database). You can try again; upload may be overwritten. Details: ${msg}`,
+              at: Date.now(),
+            })
+            ledgerClear(recordingId)
+            return
+          }
 
           // If the recording is too long for beta cloud processing,
           // fall back to local save so the audio is never lost.
@@ -2654,40 +2674,42 @@ function RecordingWorkspace({
         }
         ledgerMarkUploaded(recordingId, userId!, path)
 
-        dispatchFlow({ type: 'CAPTURE_DB' })
-        try {
-          await withTimeout(
-            insertLectureRecordingRow({
-              supabase: supabase!,
-              userId: userId!,
-              id: recordingId,
-              course: courseVal,
-              title: titleVal,
-              durationSec,
-              mime,
-              storagePath: path,
-              liveTranscript: liveTranscriptCanonical,
-              liveTranscriptRaw,
-            }),
-            SAVE_DB_TIMEOUT_MS,
-            'Database write',
-          )
-        } catch (dbErr) {
-          const msg =
-            dbErr instanceof SaveRecordingRemoteError
-              ? dbErr.message
-              : dbErr instanceof Error
+        if (!serverSavedRecording) {
+          dispatchFlow({ type: 'CAPTURE_DB' })
+          try {
+            await withTimeout(
+              insertLectureRecordingRow({
+                supabase: supabase!,
+                userId: userId!,
+                id: recordingId,
+                course: courseVal,
+                title: titleVal,
+                durationSec,
+                mime,
+                storagePath: path,
+                liveTranscript: liveTranscriptCanonical,
+                liveTranscriptRaw,
+              }),
+              SAVE_DB_TIMEOUT_MS,
+              'Database write',
+            )
+          } catch (dbErr) {
+            const msg =
+              dbErr instanceof SaveRecordingRemoteError
                 ? dbErr.message
-                : String(dbErr)
-          endCapture({
-            kind: 'failure',
-            recordingId,
-            outcome: 'storage_ok_db_failed',
-            message: `Audio uploaded, but saving the lecture record failed (database). You can try again; upload may be overwritten. Details: ${msg}`,
-            at: Date.now(),
-          })
-          ledgerClear(recordingId)
-          return
+                : dbErr instanceof Error
+                  ? dbErr.message
+                  : String(dbErr)
+            endCapture({
+              kind: 'failure',
+              recordingId,
+              outcome: 'storage_ok_db_failed',
+              message: `Audio uploaded, but saving the lecture record failed (database). You can try again; upload may be overwritten. Details: ${msg}`,
+              at: Date.now(),
+            })
+            ledgerClear(recordingId)
+            return
+          }
         }
         ledgerMarkDbCommitted(recordingId, userId!)
 

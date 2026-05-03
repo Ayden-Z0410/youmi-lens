@@ -280,7 +280,13 @@ export async function uploadLectureAudioViaServer(
   blob: Blob,
   mime: string,
   durationSec?: number,
-): Promise<string> {
+  metadata?: {
+    course: string
+    title: string
+    liveTranscript: string
+    liveTranscriptRaw: string
+  },
+): Promise<{ storagePath: string; recording?: RecordingDbRow }> {
   const { data: sessData, error: sessErr } = await supabase.auth.getSession()
   const token = sessData.session?.access_token
   if (!token) {
@@ -295,6 +301,12 @@ export async function uploadLectureAudioViaServer(
   form.append('mime', mime || 'audio/webm')
   if (durationSec != null && durationSec > 0) {
     form.append('duration_sec', String(Math.round(durationSec)))
+  }
+  if (metadata) {
+    form.append('course', metadata.course)
+    form.append('title', metadata.title)
+    form.append('live_transcript', metadata.liveTranscript)
+    form.append('live_transcript_raw', metadata.liveTranscriptRaw)
   }
 
   const apiBase = getAiApiBase()
@@ -316,19 +328,30 @@ export async function uploadLectureAudioViaServer(
 
   if (!res.ok) {
     let serverMsg = `HTTP ${res.status}`
+    let serverCode = ''
+    let storagePath: string | undefined
     try {
       const body = await res.json() as { error?: string; message?: string }
+      serverCode = body.error ?? ''
+      storagePath = (body as { storagePath?: string }).storagePath
       if (body.message) serverMsg = body.message
       else if (body.error) serverMsg = body.error
     } catch { /* ignore */ }
+    if (serverCode === 'database_error' || serverCode === 'recording_conflict') {
+      console.warn(
+        '[upload-via-server] database_error',
+        JSON.stringify({ status: res.status, serverCode, serverMsg, recordingId, storagePath }),
+      )
+      throw new SaveRecordingRemoteError('database_insert', `Database save failed: ${serverMsg}`)
+    }
     const msg = userFacingUploadHint(`Audio upload failed: ${serverMsg}`)
     console.warn('[upload-via-server] server_error', JSON.stringify({ status: res.status, serverMsg, recordingId }))
     throw new SaveRecordingRemoteError('storage_upload', msg)
   }
 
-  const result = await res.json() as { storagePath: string; mime: string; size: number }
+  const result = await res.json() as { storagePath: string; mime: string; size: number; recording?: RecordingDbRow }
   console.warn('[upload-via-server] ok', JSON.stringify({ storagePath: result.storagePath, bytes: result.size, t: Date.now() }))
-  return result.storagePath
+  return { storagePath: result.storagePath, recording: result.recording }
 }
 
 function isUniqueViolation(err: unknown): boolean {
