@@ -20,6 +20,7 @@ import {
 import { attachLiveRealtimeWs } from './liveRealtimeWs.mjs'
 import * as dashEnv from './dashscopeEnv.mjs'
 import { audioUploadMiddleware, handleUploadAudio } from './uploadAudio.mjs'
+import { handleBetaUsageStatus } from './betaUsageStatus.mjs'
 
 const PORT = Number(process.env.PORT || process.env.AI_SERVER_PORT || 3847)
 
@@ -122,6 +123,15 @@ app.get('/api/health', (_req, res) => {
       mode,
       env,
     },
+  })
+})
+
+app.get('/api/beta-usage-status', (req, res) => {
+  void handleBetaUsageStatus(req, res).catch((err) => {
+    console.error('[beta-usage-status]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'beta_usage_status_failed', message: 'Could not load beta usage status.' })
+    }
   })
 })
 

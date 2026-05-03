@@ -145,7 +145,7 @@ export async function getOrCreateUserQuota(userId, email) {
 // ── Usage queries ──────────────────────────────────────────────────────────────
 
 /** Sum of billable_minutes for billable action types (process_recording + regenerate_summary). */
-async function getBillableMinutesUsed(userId, { sinceIso } = {}) {
+export async function getBillableMinutesUsed(userId, { sinceIso } = {}) {
   const db = getAdminClient()
   if (!db) return 0
   let q = db
@@ -159,7 +159,7 @@ async function getBillableMinutesUsed(userId, { sinceIso } = {}) {
 }
 
 /** Count of billable actions today (UTC day). */
-async function getDailyRecordingCount(userId) {
+export async function getDailyRecordingCount(userId) {
   const db = getAdminClient()
   if (!db) return 0
   const now = new Date()
@@ -174,6 +174,27 @@ async function getDailyRecordingCount(userId) {
     .gte('created_at', todayStart)
   if (error) return 0
   return count ?? 0
+}
+
+/** Sum billable usage for the quota period used by the user's current plan. */
+export async function getUsedMinutes(userId, quota) {
+  if (!quota) return 0
+  if (LIFETIME_PLANS.has(quota.plan_type)) {
+    return getBillableMinutesUsed(userId)
+  }
+  if (MONTHLY_PLANS.has(quota.plan_type)) {
+    const now = new Date()
+    const monthStart = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+    ).toISOString()
+    return getBillableMinutesUsed(userId, { sinceIso: monthStart })
+  }
+  return 0
+}
+
+/** Count billable recording-generation actions since UTC day start. */
+export async function getDailyCount(userId) {
+  return getDailyRecordingCount(userId)
 }
 
 // ── Gate functions ─────────────────────────────────────────────────────────────
