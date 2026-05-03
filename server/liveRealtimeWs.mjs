@@ -2,6 +2,14 @@ import { WebSocketServer } from 'ws'
 import { createClient } from '@supabase/supabase-js'
 import * as youmiHosted from './ai/hosted/youmiHosted.mjs'
 import {
+  verifyJwt,
+  getOrCreateUserQuota,
+  checkLiveSessionAllowed,
+  recordBetaUsage,
+  BETA_ERROR_CODES,
+  BETA_LIMIT_MESSAGE,
+} from './betaGate.mjs'
+import {
   createVolcengineStreamingSession,
   DEFAULT_VOLC_ASR_WS_URL,
   DEFAULT_VOLC_ASR_RESOURCE_ID,
@@ -227,11 +235,76 @@ export function attachLiveRealtimeWs(server) {
             msSinceWsAccepted: T_streamStartJson - T_clientAccepted,
           }),
         )
+
+        // ── Beta gate: verify JWT + check live session quota ─────────────
+        const liveToken = typeof msg.token === 'string' ? msg.token.trim() : ''
+        const liveUser = liveToken ? await verifyJwt(liveToken) : null
+        if (!liveUser) {
+          safeSend(ws, {
+            type: 'stream_error',
+            code: BETA_ERROR_CODES.AUTH_REQUIRED,
+            message: 'Sign in required for live captions.',
+          })
+          console.warn('[liveRealtimeWs] stream_start_blocked_no_auth', JSON.stringify({ wsSessionId }))
+          return
+        }
+        const liveQuota = await getOrCreateUserQuota(liveUser.userId, liveUser.email)
+        const liveGate = await checkLiveSessionAllowed(liveQuota, liveUser.userId)
+        if (!liveGate.allowed) {
+          safeSend(ws, {
+            type: 'stream_error',
+            code: liveGate.body.error,
+            message: liveGate.body.message || BETA_LIMIT_MESSAGE,
+          })
+          console.warn(
+            '[liveRealtimeWs] stream_start_blocked_quota',
+            JSON.stringify({ wsSessionId, code: liveGate.body.error, userId: liveUser.userId.slice(0, 8) }),
+          )
+          return
+        }
+        const maxSessionMs = isFinite(liveGate.maxSessionMinutes)
+          ? liveGate.maxSessionMinutes * 60 * 1000
+          : null
+        const liveSessionStartMs = Date.now()
+        // ────────────────────────────────────────────────────────────────
+
         pendingPcm.length = 0
         if (streamingSession) {
           streamingSession.destroy()
           streamingSession = null
         }
+
+        // Session timeout for limited plans
+        let sessionLimitTimer = null
+        if (maxSessionMs) {
+          sessionLimitTimer = setTimeout(() => {
+            sessionLimitTimer = null
+            const sessionSec = Math.round((Date.now() - liveSessionStartMs) / 1000)
+            console.warn(
+              '[liveRealtimeWs] live_session_limit_reached',
+              JSON.stringify({ wsSessionId, maxSessionMs, sessionSec }),
+            )
+            safeSend(ws, {
+              type: 'stream_error',
+              code: 'session_limit_reached',
+              message: `Live caption session limit reached (${liveGate.maxSessionMinutes} min). ${BETA_LIMIT_MESSAGE}`,
+            })
+            if (streamingSession) { try { streamingSession.finish() } catch { /* ignore */ } }
+            void recordBetaUsage(liveUser.userId, liveUser.email, wsSessionId, 'live_caption_session', sessionSec)
+          }, maxSessionMs)
+        }
+
+        // Log session end on WS close / stream_stop (below, in ws.on('close') we cancel the timer)
+        const onLiveSessionEnd = () => {
+          if (sessionLimitTimer) {
+            clearTimeout(sessionLimitTimer)
+            sessionLimitTimer = null
+          }
+          const sessionSec = Math.round((Date.now() - liveSessionStartMs) / 1000)
+          void recordBetaUsage(liveUser.userId, liveUser.email, wsSessionId, 'live_caption_session', sessionSec)
+        }
+        // Attach close-time cleanup (replaces any prior onLiveSessionEnd ref)
+        ws._youmiLiveSessionEnd = onLiveSessionEnd
 
         const sampleRate   = typeof msg.sampleRate === 'number' ? msg.sampleRate : 48000
         const liveProvider = resolveLiveAsrProvider()
@@ -651,6 +724,11 @@ export function attachLiveRealtimeWs(server) {
       if (msg?.type === 'stream_stop') {
         if (SRV_LIVE_VERBOSE) console.log('[YoumiLive][srv] stream_stop', JSON.stringify({ wsSessionId }))
         streamingSession?.stop()   // graceful: sends LAST_PACKET, waits for server final
+        // Log session end when user explicitly stops (timer-based close path handles timeout)
+        if (typeof ws._youmiLiveSessionEnd === 'function') {
+          ws._youmiLiveSessionEnd()
+          ws._youmiLiveSessionEnd = null
+        }
         return
       }
 
@@ -736,6 +814,11 @@ export function attachLiveRealtimeWs(server) {
       if (SRV_LIVE_VERBOSE) console.log('[YoumiLive][srv] realtime ws closed', JSON.stringify({ wsSessionId, code }))
       streamingSession?.destroy()
       streamingSession = null
+      // Log session end if not already logged via stream_stop
+      if (typeof ws._youmiLiveSessionEnd === 'function') {
+        ws._youmiLiveSessionEnd()
+        ws._youmiLiveSessionEnd = null
+      }
     })
   })
 

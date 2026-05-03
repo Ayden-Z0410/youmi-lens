@@ -22,6 +22,10 @@
 
 import { StreamingWsSession } from '../streamingWsSession'
 
+export type YoumiAdapterOpts = {
+  tokenGetter?: () => Promise<string | null>
+}
+
 type YoumiAdapterEvent =
   | { type: 'connected' }
   /** Upstream WS torn down after warm idle TTL; caller should re-run warmSession (same sampleRate). */
@@ -51,6 +55,7 @@ const PCM_QUEUE_CAP = 200
 // ── YoumiLiveAdapter ──────────────────────────────────────────────────────────
 
 export class YoumiLiveAdapter {
+  private opts: YoumiAdapterOpts
   private listener: YoumiAdapterListener | null = null
   private closed = false
   private session: StreamingWsSession | null = null
@@ -95,6 +100,10 @@ export class YoumiLiveAdapter {
 
   static readonly WARM_HANDSHAKE_TIMEOUT_MS = 45_000
   static readonly WARM_IDLE_TEARDOWN_MS = 120_000
+
+  constructor(opts: YoumiAdapterOpts = {}) {
+    this.opts = opts
+  }
 
   onEvent(listener: YoumiAdapterListener) {
     this.listener = listener
@@ -531,7 +540,7 @@ export class YoumiLiveAdapter {
         this.listener?.({ type: 'reconnecting', reason: 'ws_closed' })
         this.scheduleIdleReconnectIfNeeded()
       },
-    })
+    }, { tokenGetter: this.opts.tokenGetter })
 
     this.session.connect()
   }

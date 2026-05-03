@@ -26,6 +26,11 @@ export type StreamingWsEvents = {
   onClose?: () => void
 }
 
+export type StreamingWsOpts = {
+  /** Called each time the WS opens to get a fresh JWT for the stream_start auth check. */
+  tokenGetter?: () => Promise<string | null>
+}
+
 function wsUrl(): string {
   const base = getAiApiBase()
   const trimmed = base.replace(/\/$/, '')
@@ -60,6 +65,7 @@ function describeCloseCode(code: number): string {
 export class StreamingWsSession {
   private ws: WebSocket | null = null
   private events: StreamingWsEvents
+  private opts: StreamingWsOpts
   private sampleRate: number
   private destroyed = false
   /** True after JS calls ws.close() from destroy(); distinguishes client-initiated teardown in onclose. */
@@ -77,9 +83,10 @@ export class StreamingWsSession {
   private lastPcmSentAt = 0
   private pcmFramesSent = 0
 
-  constructor(sampleRate: number, events: StreamingWsEvents) {
+  constructor(sampleRate: number, events: StreamingWsEvents, opts: StreamingWsOpts = {}) {
     this.sampleRate = sampleRate
     this.events = events
+    this.opts = opts
   }
 
   connect() {
@@ -95,16 +102,21 @@ export class StreamingWsSession {
     this.ws = ws
     ws.binaryType = 'arraybuffer'
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       if (this.destroyed) {
         ws.close(1001, 'destroyed_before_open')
         return
       }
       this.T_ws_open = Date.now()
-      ws.send(JSON.stringify({ type: 'stream_start', sampleRate: this.sampleRate }))
+      // Fetch fresh JWT for server-side beta gate check
+      let token: string | null = null
+      try { token = await this.opts.tokenGetter?.() ?? null } catch { /* ignore */ }
+      const streamStartMsg: Record<string, unknown> = { type: 'stream_start', sampleRate: this.sampleRate }
+      if (token) streamStartMsg.token = token
+      ws.send(JSON.stringify(streamStartMsg))
       this.wsReady = true
       console.info('[StreamingWs] reconnect_success', JSON.stringify({ wsOpenMs: this.T_ws_open - this.T_connect }))
-      console.info('[StreamingWs] ws_open', JSON.stringify({ sampleRate: this.sampleRate, streamStartSent: true }))
+      console.info('[StreamingWs] ws_open', JSON.stringify({ sampleRate: this.sampleRate, streamStartSent: true, hasToken: Boolean(token) }))
       this.events.onOpen?.()
     }
 
@@ -154,8 +166,11 @@ export class StreamingWsSession {
         }
         this.events.onFinal?.(msg.text as string)
       } else if (msg.type === 'stream_error') {
-        const reason = typeof msg.message === 'string' ? msg.message : 'stream_error'
-        console.warn('[StreamingWs] FAIL server error', { reason })
+        // Prefer structured code field for beta gate errors; fall back to message string
+        const reason = typeof msg.code === 'string' ? msg.code
+          : typeof msg.message === 'string' ? msg.message
+          : 'stream_error'
+        console.warn('[StreamingWs] FAIL server error', { reason, message: msg.message })
         this.events.onError?.(reason)
       }
     }

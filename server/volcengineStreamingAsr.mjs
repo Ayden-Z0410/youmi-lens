@@ -138,7 +138,7 @@ function buildAudioFrame(pcm16k, isLast) {
 
 /**
  * Decode one Volc / openspeech WebSocket binary frame (big-endian).
- * Layout: [header][payload_size: u32 BE][payload bytesù]
+ * Layout: [header][payload_size: u32 BE][payload bytesÔøΩ]
  * Byte0: version (high nibble) | header_units (low nibble); header_len = units * 4 (units 0 ? treat as 1).
  * Byte1: message_type (high) | flags (low)
  * Byte2: serialization (high) | compression (low)
@@ -155,7 +155,7 @@ function parseOpenspeechBinaryFrame(buf) {
   if (headerUnits === 0) headerUnits = 1
   let headerLen = headerUnits * 4
   if (headerUnits === 0xf) {
-    // Volc doc: >= 60 B header + extension; layout not implemented ù skip safely.
+    // Volc doc: >= 60 B header + extension; layout not implemented ÔøΩ skip safely.
     return null
   }
 
@@ -225,7 +225,7 @@ function parseOpenspeechBinaryFrame(buf) {
   }
 }
 
-/** Text WebSocket frames only ù never UTF-8ùdecode binary ASR frames here. */
+/** Text WebSocket frames only ÔøΩ never UTF-8ÔøΩdecode binary ASR frames here. */
 function tryParseJsonTextMessage(data) {
   if (typeof data !== 'string') return null
   const s = data.trim()
@@ -241,6 +241,11 @@ function normalizeAsrPayload(raw) {
   if (!raw || typeof raw !== 'object') return null
   if (raw._error) return raw
   return raw
+}
+
+/** Volc bigmodel_async JSON often uses 0 or 1000 for success; omitting `code` is also treated as OK. */
+function isVolcAsrOkCode(code) {
+  return code === undefined || code === 0 || code === 1000
 }
 
 /** bigmodel_async uses result.utterances; legacy v2 used result[0].utterances */
@@ -348,13 +353,13 @@ export function createVolcengineStreamingSession(credentials, callbacks = {}) {
       return
     }
 
-    if (payload.code !== undefined && payload.code !== 1000) {
+    if (payload.code !== undefined && !isVolcAsrOkCode(payload.code)) {
       L('ASR error status', { code: payload.code, message: payload.message })
       onError?.(new Error(`VolcASR error ${payload.code}: ${payload.message ?? ''}`))
       return
     }
 
-    if (!ready && (payload.code === 1000 || payload.code === undefined)) {
+    if (!ready && isVolcAsrOkCode(payload.code)) {
       ready = true
       L('provider ready', { readyMs: Date.now() - T0, connectId })
       onReady?.()

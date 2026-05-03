@@ -5,6 +5,12 @@ import {
   canonicalizeLectureTranscript,
   transcriptCanonicalQualityGate,
 } from '../src/lib/transcriptCanonicalCore.js'
+import {
+  getOrCreateUserQuota,
+  checkProcessingAllowed,
+  recordBetaUsage,
+  BETA_ERROR_CODES,
+} from './betaGate.mjs'
 
 const BUCKET = 'lecture-audio'
 
@@ -141,7 +147,7 @@ export async function handleProcessRecording(req, res) {
 
   const { data: row, error: rowErr } = await userSb
     .from('recordings')
-    .select('id')
+    .select('id,duration_sec,ai_status')
     .eq('id', recordingId)
     .eq('user_id', userId)
     .maybeSingle()
@@ -151,6 +157,32 @@ export async function handleProcessRecording(req, res) {
     res.status(404).json({ error: 'Recording not found.' })
     return
   }
+
+  // ── Beta gate ─────────────────────────────────────────────────────────────
+  // Determine if this is a first-time process or a regeneration.
+  // Both consume quota; action_type distinguishes them in beta_usage.
+  const isRegeneration = row.ai_status === 'done' || row.ai_status === 'transcript_ready'
+  const betaActionType = isRegeneration ? 'regenerate_summary' : 'process_recording'
+  const durationSec = Number(row.duration_sec) || 0
+  const email = userData.user?.email || ''
+
+  const quota = await getOrCreateUserQuota(userId, email)
+  const gate = await checkProcessingAllowed(quota, userId, durationSec)
+  if (!gate.allowed) {
+    console.warn(
+      '[process-recording] beta_gate_blocked',
+      JSON.stringify({
+        userId: userId.slice(0, 8),
+        recordingId,
+        durationSec,
+        actionType: betaActionType,
+        code: gate.body.error,
+      }),
+    )
+    res.status(gate.status).json(gate.body)
+    return
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   processingIds.add(recordingId)
 
@@ -208,7 +240,16 @@ export async function handleProcessRecording(req, res) {
   res.status(202).json({ ok: true, recordingId, usingServiceRoleForRecordings })
 
   setImmediate(() => {
-    runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRecordings }).finally(() => {
+    runJob({
+      userSb,
+      dbSb,
+      userId,
+      email,
+      recordingId,
+      durationSec,
+      betaActionType,
+      usingServiceRoleForRecordings,
+    }).finally(() => {
       processingIds.delete(recordingId)
     })
   })
@@ -221,7 +262,7 @@ function jobLog(phase, payload) {
   )
 }
 
-async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRecordings }) {
+async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, betaActionType, usingServiceRoleForRecordings }) {
   const jobT0 = Date.now()
 
   const markFailed = async (msg) => {
@@ -293,6 +334,10 @@ async function runJob({ userSb, dbSb, userId, recordingId, usingServiceRoleForRe
     }
 
     jobLog('status_transcribing', { recordingId })
+
+    // Record beta usage now that we are committed to consuming AI resources.
+    // Fires for both first-time processing and regeneration.
+    void recordBetaUsage(userId, email || '', recordingId, betaActionType || 'process_recording', durationSec || 0)
 
     const signedTtlSec = Number(process.env.YUMI_STORAGE_SIGNED_URL_SEC || 7200)
     const { data: signed, error: signErr } = await userSb.storage

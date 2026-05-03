@@ -18,7 +18,7 @@ import {
   traceInterimPipeline,
   traceReset,
 } from '../liveCaptionTrace'
-import { YoumiLiveAdapter } from './adapters/youmiAdapter'
+import { YoumiLiveAdapter, type YoumiAdapterOpts } from './adapters/youmiAdapter'
 import type { LiveEngineEvent, LiveEngineListener } from './types'
 
 type StartOptions = {
@@ -38,7 +38,10 @@ function log(tag: string, fields?: Record<string, unknown>) {
 const MAX_CONCURRENT_TRANSLATIONS = 2
 const MAX_QUEUE_SIZE = 5
 
+export type LiveEngineOpts = Pick<YoumiAdapterOpts, 'tokenGetter'>
+
 export class LiveEngine {
+  private engineOpts: LiveEngineOpts
   private listener: LiveEngineListener | null = null
   private adapter: YoumiLiveAdapter | null = null
   private running = false
@@ -78,6 +81,10 @@ export class LiveEngine {
     return this.sessionStartMs ? Date.now() - this.sessionStartMs : 0
   }
 
+  constructor(opts: LiveEngineOpts = {}) {
+    this.engineOpts = opts
+  }
+
   onEvent(listener: LiveEngineListener) {
     this.listener = listener
   }
@@ -99,7 +106,7 @@ export class LiveEngine {
     traceReset()
     log('start')
     this.emit({ type: 'status', status: 'starting' })
-    const adapter = new YoumiLiveAdapter()
+    const adapter = new YoumiLiveAdapter({ tokenGetter: this.engineOpts.tokenGetter })
     this.adapter = adapter
     adapter.onEvent((ev) => {
       if (!this.running) return

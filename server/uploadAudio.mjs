@@ -5,35 +5,38 @@
  * bypassing WKWebView's unstable binary Blob fetch for large files.
  *
  * Request: multipart/form-data
- *   - file:        audio binary (any size)
- *   - recordingId: UUID string
- *   - mime:        MIME type, e.g. "audio/webm" or "audio/mp4"
+ *   - file:         audio binary
+ *   - recordingId:  UUID string
+ *   - mime:         MIME type, e.g. "audio/webm" or "audio/mp4"
+ *   - duration_sec: recording duration in seconds (optional, used for early duration check)
  * Headers:
  *   - Authorization: Bearer <supabase_access_token>
  *
  * Response: { storagePath, mime, size }
+ *
+ * Beta gate: enforces per-recording duration limit before uploading.
+ * Quota (daily/monthly) is checked at process-recording time, not here.
  */
 
 import multer from 'multer'
 import { createClient } from '@supabase/supabase-js'
+import {
+  verifyJwt,
+  getOrCreateUserQuota,
+  checkUploadAllowed,
+  recordBetaUsage,
+  BETA_ERROR_CODES,
+} from './betaGate.mjs'
 
 const BUCKET = 'lecture-audio'
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024 // 500 MB
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
 
 function makeAdminClient() {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return null
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  })
-}
-
-function makeAnonClient() {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   })
 }
@@ -52,50 +55,63 @@ function mimeToExt(mime) {
 }
 
 export async function handleUploadAudio(req, res) {
+  // ── Auth ──────────────────────────────────────────────────────────────────
   const authHeader = req.headers.authorization || ''
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
-
   if (!token) {
-    return res.status(401).json({ error: 'Missing Authorization header' })
+    return res.status(401).json({
+      error: BETA_ERROR_CODES.AUTH_REQUIRED,
+      message: 'Sign in required to upload audio.',
+    })
   }
 
-  // Verify JWT and extract userId via anon client
-  const anonClient = makeAnonClient()
-  if (!anonClient) {
-    console.error('[upload-audio] SUPABASE_URL or SUPABASE_ANON_KEY not configured')
-    return res.status(503).json({ error: 'Server not configured for auth' })
+  const user = await verifyJwt(token)
+  if (!user) {
+    return res.status(401).json({
+      error: BETA_ERROR_CODES.AUTH_REQUIRED,
+      message: 'Invalid or expired session. Sign in again.',
+    })
   }
+  const { userId, email } = user
 
-  let userId
-  try {
-    const { data, error } = await anonClient.auth.getUser(token)
-    if (error || !data?.user?.id) {
-      console.warn('[upload-audio] auth failed', { error: error?.message })
-      return res.status(401).json({ error: 'Invalid or expired session token' })
-    }
-    userId = data.user.id
-  } catch (e) {
-    console.error('[upload-audio] auth error', e?.message)
-    return res.status(401).json({ error: 'Auth verification failed' })
-  }
-
-  const { recordingId, mime: rawMime } = req.body
+  // ── Request validation ────────────────────────────────────────────────────
+  const { recordingId, mime: rawMime, duration_sec: rawDuration } = req.body
   if (!recordingId || typeof recordingId !== 'string' || !/^[\w-]{8,}$/.test(recordingId)) {
-    return res.status(400).json({ error: 'Invalid or missing recordingId' })
+    return res.status(400).json({ error: 'invalid_request', message: 'Invalid or missing recordingId' })
   }
-
   if (!req.file) {
-    return res.status(400).json({ error: 'Missing file field' })
+    return res.status(400).json({ error: 'invalid_request', message: 'Missing file field' })
   }
 
   const mime = (rawMime || 'audio/webm').trim()
+  const durationSec = rawDuration ? Number(rawDuration) : 0
+
+  // ── Beta gate: per-recording duration check ───────────────────────────────
+  if (durationSec > 0) {
+    const quota = await getOrCreateUserQuota(userId, email)
+    const gate = checkUploadAllowed(quota, durationSec)
+    if (!gate.allowed) {
+      console.warn(
+        '[upload-audio] beta_gate_blocked',
+        JSON.stringify({
+          userId: userId.slice(0, 8),
+          recordingId,
+          durationSec,
+          code: gate.body.error,
+        }),
+      )
+      return res.status(gate.status).json(gate.body)
+    }
+  }
+
+  // ── Storage upload ────────────────────────────────────────────────────────
   const ext = mimeToExt(mime)
   const storagePath = `${userId}/${recordingId}.${ext}`
 
   const adminClient = makeAdminClient()
   if (!adminClient) {
     console.error('[upload-audio] SUPABASE_SERVICE_ROLE_KEY not configured')
-    return res.status(503).json({ error: 'Server storage not configured' })
+    return res.status(503).json({ error: 'server_error', message: 'Server storage not configured' })
   }
 
   console.warn(
@@ -106,6 +122,7 @@ export async function handleUploadAudio(req, res) {
       storagePath,
       mime,
       bytes: req.file.size,
+      durationSec,
       t: Date.now(),
     }),
   )
@@ -125,8 +142,11 @@ export async function handleUploadAudio(req, res) {
         error: upErr.message,
       }),
     )
-    return res.status(502).json({ error: `Storage upload failed: ${upErr.message}` })
+    return res.status(502).json({ error: 'storage_error', message: `Storage upload failed: ${upErr.message}` })
   }
+
+  // Log upload (non-billable, monitoring only)
+  void recordBetaUsage(userId, email, recordingId, 'upload_audio', durationSec)
 
   console.warn(
     '[upload-audio] ok',

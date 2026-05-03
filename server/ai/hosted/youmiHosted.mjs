@@ -20,7 +20,15 @@
  */
 
 import { buildSummarizeMessages } from '../summarizePrompt.mjs'
-import { getDashScopeBases, getDashScopeEffectiveKey, getDashScopeEnvSummary } from '../../dashscopeEnv.mjs'
+import {
+  getDashScopeEffectiveKey,
+  getDashScopeEnvSummary,
+} from '../../dashscopeEnv.mjs'
+import {
+  dashScopeFetch,
+  getDashScopeHttpAttempts,
+  withDashScopeHttpFallback,
+} from '../../dashscopeWithFallback.mjs'
 
 /** Internal adapter id for logs and metrics (never shown in UI). */
 export const HOSTED_ADAPTER_ID = 'qwenHosted'
@@ -52,7 +60,7 @@ function parseLanguageHints() {
 }
 
 export function hostedCapabilities() {
-  const hasDash = Boolean(getDashScopeEffectiveKey())
+  const hasDash = getDashScopeHttpAttempts().length > 0
   const hasOpenaiFallback = Boolean(process.env.OPENAI_API_KEY?.trim())
   if (STUB_ENABLED) {
     return {
@@ -78,7 +86,7 @@ export function hostedCapabilities() {
 
 export function hostedRuntimeMode() {
   if (STUB_ENABLED) return 'stub'
-  if (getDashScopeEffectiveKey() || process.env.OPENAI_API_KEY?.trim()) return 'hosted'
+  if (getDashScopeHttpAttempts().length || process.env.OPENAI_API_KEY?.trim()) return 'hosted'
   return 'unconfigured'
 }
 
@@ -100,29 +108,33 @@ async function stubDelay(ms = 220) {
 
 /** Prefer DashScope (Qwen); fall back to OpenAI chat for legacy / single-key deploys. */
 async function chatCompleteJson(messages, opts = {}) {
-  const dash = getDashScopeEffectiveKey()
-  if (dash) {
-    const chatUrl = getDashScopeBases().compatChat
-    const r = await fetch(chatUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${dash}`,
-        'Content-Type': 'application/json',
+  const dashAttempts = getDashScopeHttpAttempts()
+  if (dashAttempts.length) {
+    return withDashScopeHttpFallback({
+      name: 'chat_complete',
+      op: async (att) => {
+        const r = await dashScopeFetch(att.bases.compatChat, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${att.key}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: opts.modelDash ?? opts.model ?? QWEN_CHAT_MODEL,
+            temperature: opts.temperature ?? 0.3,
+            ...(opts.responseFormat ? { response_format: opts.responseFormat } : {}),
+            messages,
+          }),
+        })
+        const raw = await r.text()
+        if (!r.ok) {
+          console.warn('[youmiHosted] dash chat', r.status, raw.slice(0, 200))
+          throw new Error('HOSTED_CHAT_FAILED')
+        }
+        const data = JSON.parse(raw)
+        return data.choices?.[0]?.message?.content ?? ''
       },
-      body: JSON.stringify({
-        model: opts.modelDash ?? opts.model ?? QWEN_CHAT_MODEL,
-        temperature: opts.temperature ?? 0.3,
-        ...(opts.responseFormat ? { response_format: opts.responseFormat } : {}),
-        messages,
-      }),
     })
-    const raw = await r.text()
-    if (!r.ok) {
-      console.warn('[youmiHosted] dash chat', r.status, raw.slice(0, 200))
-      throw new Error('HOSTED_CHAT_FAILED')
-    }
-    const data = JSON.parse(raw)
-    return data.choices?.[0]?.message?.content ?? ''
   }
 
   const oa = process.env.OPENAI_API_KEY?.trim()
@@ -158,12 +170,16 @@ export async function transcribeAudioFromUrl(fileUrl) {
     await stubDelay()
     return `Demo transcript (${new Date().toLocaleTimeString()}): Lecture audio processed in local development mode.`
   }
-  const key = getDashScopeEffectiveKey()
-  if (key) {
+  if (getDashScopeHttpAttempts().length) {
     console.warn('[youmiHosted] transcribeAudioFromUrl paraformer path', { urlHost: safeUrlHost(fileUrl) })
-    const taskId = await submitParaformerTask(key, fileUrl)
-    const output = await pollParaformerTask(key, taskId)
-    const text = await transcriptTextFromParaformerOutput(output)
+    const text = await withDashScopeHttpFallback({
+      name: 'paraformer_transcribe_url',
+      op: async (att) => {
+        const taskId = await submitParaformerTask(att.key, att.bases, fileUrl)
+        const output = await pollParaformerTask(att.key, att.bases, taskId)
+        return transcriptTextFromParaformerOutput(output)
+      },
+    })
     console.warn('[youmiHosted] transcribeAudioFromUrl done', { textLen: text.length })
     return text
   }
@@ -180,9 +196,9 @@ export async function transcribeAudioFromUrl(fileUrl) {
   return transcribeAudio(ab, mime, `lecture.${ext}`)
 }
 
-async function submitParaformerTask(apiKey, fileUrl) {
-  const submitUrl = getDashScopeBases().paraformerSubmit
-  const r = await fetch(submitUrl, {
+async function submitParaformerTask(apiKey, bases, fileUrl) {
+  const submitUrl = bases.paraformerSubmit
+  const r = await dashScopeFetch(submitUrl, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -215,8 +231,8 @@ async function submitParaformerTask(apiKey, fileUrl) {
   return taskId
 }
 
-async function pollParaformerTask(apiKey, taskId) {
-  const url = `${getDashScopeBases().tasksPollBase}/${taskId}`
+async function pollParaformerTask(apiKey, bases, taskId) {
+  const url = `${bases.tasksPollBase}/${taskId}`
   const maxMs = Number(process.env.YUMI_PARAFORMER_POLL_MAX_MS || 600_000)
   const intervalMs = Number(process.env.YUMI_PARAFORMER_POLL_INTERVAL_MS || 500)
   const t0 = Date.now()
@@ -225,14 +241,14 @@ async function pollParaformerTask(apiKey, taskId) {
   while (Date.now() - t0 < maxMs) {
     pollN += 1
     /** Prefer GET (documented for DashScope tasks); retry POST for older/alternate gateway behavior. */
-    let r = await fetch(url, {
+    let r = await dashScopeFetch(url, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${apiKey}`,
       },
     })
     if (r.status === 405 || r.status === 404) {
-      r = await fetch(url, {
+      r = await dashScopeFetch(url, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -289,7 +305,7 @@ async function transcriptTextFromParaformerOutput(output) {
   if (!tUrl || typeof tUrl !== 'string') {
     throw new Error('HOSTED_TRANSCRIBE_FAILED')
   }
-  const jr = await fetch(tUrl)
+  const jr = await dashScopeFetch(tUrl, { method: 'GET' })
   if (!jr.ok) {
     console.warn('[youmiHosted] transcription_url fetch', jr.status)
     throw new Error('HOSTED_TRANSCRIBE_FAILED')

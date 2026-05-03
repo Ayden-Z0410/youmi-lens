@@ -119,7 +119,7 @@ import {
   uploadLectureAudioViaServer,
 } from './lib/recordingsRepo'
 import { transcribeHostedLiveCaptionChunk } from './lib/liveCaptionHostedTranscribe'
-import { LiveEngine } from './lib/liveEngine/engine'
+import { LiveEngine, type LiveEngineOpts } from './lib/liveEngine/engine'
 import {
   LiveCaptionSessionModel,
   liveCaptionEventFromEngine,
@@ -1810,7 +1810,17 @@ function RecordingWorkspace({
 
     setLiveRouteState('v2_starting')
     liveRouteDiagLog('[LiveEngine][diag] LiveEngine.start()')
-    const engine = new LiveEngine()
+    const engineOpts: LiveEngineOpts = {
+      tokenGetter: async () => {
+        try {
+          const { data } = await supabase!.auth.getSession()
+          return data.session?.access_token ?? null
+        } catch {
+          return null
+        }
+      },
+    }
+    const engine = new LiveEngine(engineOpts)
     liveEngineRef.current = engine
     liveCaptionSessionRef.current.reset()
     lastFinalTimestampRef.current = 0
@@ -1839,6 +1849,19 @@ function RecordingWorkspace({
           '[LiveEngine][App] error',
           JSON.stringify({ code: ev.code, message: ev.message, recoverable: ev.recoverable }),
         )
+        // Beta gate errors: show specific quota message, do not attempt reconnect
+        const BETA_CODES = new Set([
+          'beta_limit_reached', 'recording_too_long', 'daily_recording_limit_reached',
+          'quota_suspended', 'auth_required', 'session_limit_reached',
+        ])
+        if (BETA_CODES.has(ev.code)) {
+          const betaMsg = ev.code === 'auth_required'
+            ? 'Sign in again to use live captions.'
+            : 'Free beta limit reached. Please contact Youmi Lens for more access.'
+          setLiveCaptionChunkNotice({ kind: 'fatal', message: betaMsg })
+          setLiveRouteState('v2_error')
+          return
+        }
         setLiveCaptionChunkNotice({
           kind: ev.recoverable ? 'soft' : 'fatal',
           message: ev.message,
@@ -2562,7 +2585,7 @@ function RecordingWorkspace({
         let path: string
         try {
           path = await withTimeout(
-            uploadLectureAudioViaServer(supabase!, recordingId, blob, mime),
+            uploadLectureAudioViaServer(supabase!, recordingId, blob, mime, durationSec),
             SAVE_UPLOAD_TIMEOUT_MS,
             'Audio upload',
           )
@@ -2573,6 +2596,47 @@ function RecordingWorkspace({
               : upErr instanceof Error
                 ? upErr.message
                 : String(upErr)
+
+          // If the recording is too long for beta cloud processing,
+          // fall back to local save so the audio is never lost.
+          if (/recording_too_long/i.test(msg) || /recording.*too long|too long.*recording/i.test(msg)) {
+            console.warn('[capture] recording_too_long — falling back to local save', JSON.stringify({ recordingId, durationSec }))
+            try {
+              await withTimeout(
+                saveRecordingLocal({
+                  id: recordingId,
+                  course: courseVal,
+                  title: titleVal,
+                  createdAt: Date.now(),
+                  durationSec,
+                  mime,
+                  audioBlob: blob,
+                  liveTranscript: liveTranscriptCanonical || undefined,
+                  liveTranscriptRaw: liveTranscriptRaw || undefined,
+                }),
+                SAVE_DB_TIMEOUT_MS,
+                'Local save fallback',
+              )
+              endCapture({
+                kind: 'list_refresh_warn',
+                recordingId,
+                message:
+                  'Recording saved locally (too long for beta cloud processing). Free beta limit reached. Please contact Youmi Lens for more access.',
+                at: Date.now(),
+              })
+            } catch (locFallbackErr) {
+              endCapture({
+                kind: 'failure',
+                recordingId,
+                outcome: 'storage_failed',
+                message: 'Free beta limit reached. Please contact Youmi Lens for more access.',
+                at: Date.now(),
+              })
+            }
+            ledgerClear(recordingId)
+            return
+          }
+
           let friendly = msg
           if (/bucket not found/i.test(msg)) {
             friendly =

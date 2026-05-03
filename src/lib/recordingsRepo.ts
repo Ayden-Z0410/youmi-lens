@@ -279,6 +279,7 @@ export async function uploadLectureAudioViaServer(
   recordingId: string,
   blob: Blob,
   mime: string,
+  durationSec?: number,
 ): Promise<string> {
   const { data: sessData, error: sessErr } = await supabase.auth.getSession()
   const token = sessData.session?.access_token
@@ -292,6 +293,9 @@ export async function uploadLectureAudioViaServer(
   form.append('file', blob, `recording.${mime.includes('mp4') || mime.includes('m4a') ? 'm4a' : 'webm'}`)
   form.append('recordingId', recordingId)
   form.append('mime', mime || 'audio/webm')
+  if (durationSec != null && durationSec > 0) {
+    form.append('duration_sec', String(Math.round(durationSec)))
+  }
 
   const apiBase = getAiApiBase()
   const url = `${apiBase}/upload-audio`
@@ -313,8 +317,9 @@ export async function uploadLectureAudioViaServer(
   if (!res.ok) {
     let serverMsg = `HTTP ${res.status}`
     try {
-      const body = await res.json() as { error?: string }
-      if (body.error) serverMsg = body.error
+      const body = await res.json() as { error?: string; message?: string }
+      if (body.message) serverMsg = body.message
+      else if (body.error) serverMsg = body.error
     } catch { /* ignore */ }
     const msg = userFacingUploadHint(`Audio upload failed: ${serverMsg}`)
     console.warn('[upload-via-server] server_error', JSON.stringify({ status: res.status, serverMsg, recordingId }))

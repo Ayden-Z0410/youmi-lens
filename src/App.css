@@ -480,6 +480,23 @@ select.input {
   gap: 0.5rem;
 }
 
+.yl-library-build-marker {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.yl-library-debug {
+  margin: 0 0 0.55rem;
+  padding: 0 0.1rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 .yl-library-toolbar {
   margin-bottom: 0.65rem;
 }
@@ -766,6 +783,12 @@ select.input {
   width: 16px;
   height: 16px;
   cursor: pointer;
+}
+
+.yl-lecture-row__delete {
+  flex: 0 0 auto;
+  align-self: center;
+  white-space: nowrap;
 }
 
 .yl-lecture-row.is-picked .rec-item {
