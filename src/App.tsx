@@ -163,6 +163,8 @@ const KEY_TRANSLATE = 'lc_translate_target'
 const LC_USE_LOCAL_KEY = 'lc_use_local_without_cloud'
 
 type LiveTranslateTarget = 'zh' | 'en' | 'off'
+const SUPPORTED_LIVE_LANG = 'en-US'
+const SUPPORTED_TRANSLATE_TARGET: LiveTranslateTarget = 'zh'
 const MAX_WHISPER_BYTES = 25 * 1024 * 1024
 
 const SAVE_UPLOAD_TIMEOUT_MS = 180_000
@@ -193,14 +195,9 @@ async function getRecordingMetaWithRetry(
   return null
 }
 
-/** BCP-47 tags — spoken language for captions (passed to the speech pipeline as a hint). */
+/** Current beta support: English lecture input, Chinese translation output. */
 const LIVE_LANG_OPTIONS: { value: string; label: string }[] = [
-  { value: 'en-US', label: 'English (US)' },
-  { value: 'en-GB', label: 'English (UK)' },
-  { value: 'zh-CN', label: 'Chinese (Mandarin, simplified)' },
-  { value: 'zh-TW', label: 'Chinese (Traditional)' },
-  { value: 'ja-JP', label: 'Japanese' },
-  { value: 'ko-KR', label: 'Korean' },
+  { value: SUPPORTED_LIVE_LANG, label: 'English' },
 ]
 
 const LIVE_WHISPER_SLICE_SEC = LIVE_WHISPER_SLICE_MS / 1000
@@ -1153,18 +1150,13 @@ function RecordingWorkspace({
     devCredentialsUi,
   ])
 
-  const [liveLang, setLiveLang] = useState(() => {
-    if (typeof localStorage === 'undefined') return 'en-US'
-    return localStorage.getItem(KEY_LIVE_LANG) || 'en-US'
-  })
+  const liveLang = SUPPORTED_LIVE_LANG
+  const translateTarget = SUPPORTED_TRANSLATE_TARGET
 
-  const [translateTarget, setTranslateTarget] = useState<LiveTranslateTarget>(() => {
-    if (typeof localStorage === 'undefined') return 'zh'
-    const s = localStorage.getItem(KEY_TRANSLATE)
-    if (s === 'zh' || s === 'en' || s === 'off') return s
-    const lang = localStorage.getItem(KEY_LIVE_LANG) || 'en-US'
-    return lang.startsWith('zh') ? 'en' : 'zh'
-  })
+  useEffect(() => {
+    localStorage.setItem(KEY_LIVE_LANG, SUPPORTED_LIVE_LANG)
+    localStorage.setItem(KEY_TRANSLATE, SUPPORTED_TRANSLATE_TARGET)
+  }, [])
 
   const [secondaryCaption, setSecondaryCaption] = useState('')
   const [secondaryCaptionDraft, setSecondaryCaptionDraft] = useState('')
@@ -1243,11 +1235,6 @@ function RecordingWorkspace({
     primaryCaptionDraft,
     primaryCaption,
   ])
-  const persistTranslateTarget = useCallback((value: LiveTranslateTarget) => {
-    setTranslateTarget(value)
-    localStorage.setItem(KEY_TRANSLATE, value)
-  }, [])
-
   const prevRecorderStatusRef = useRef(recorder.status)
   /** Log `[live-latency] recording_session_route` once per recording segment (diag path selection). */
   const liveLatencyRouteLoggedRef = useRef(false)
@@ -1675,6 +1662,16 @@ function RecordingWorkspace({
       return
     }
 
+    const hostedTranslateToken = async (): Promise<string | null> => {
+      if (!supabase) return null
+      try {
+        const { data } = await supabase.auth.getSession()
+        return data.session?.access_token ?? null
+      } catch {
+        return null
+      }
+    }
+
     const pending: string[] = []
     const pendingDraft: string[] = []
     let debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -1703,6 +1700,7 @@ function RecordingWorkspace({
         try {
           const t = await translateLiveCaption(batch, {
             target,
+            getAccessToken: hostedTranslateToken,
           })
           if (cancelled || !t) return
           setSecondaryCaption((c) => (c ? `${c} ${t}` : t))
@@ -1734,7 +1732,10 @@ function RecordingWorkspace({
       chain = chain.then(async () => {
         if (cancelled) return
         try {
-          const t = await translateLiveCaption(batch, { target })
+          const t = await translateLiveCaption(batch, {
+            target,
+            getAccessToken: hostedTranslateToken,
+          })
           if (cancelled || !t) return
           setSecondaryCaption((c) => (c ? `${c} ${t}` : t))
         } catch (err) {
@@ -1773,7 +1774,7 @@ function RecordingWorkspace({
       if (debounceTimer) clearTimeout(debounceTimer)
       if (draftDebounceTimer) clearTimeout(draftDebounceTimer)
     }
-  }, [liveCaptionSessionActive, translateTarget, liveCaptionsPipelineEnabled, useLiveEngineV2])
+  }, [liveCaptionSessionActive, translateTarget, liveCaptionsPipelineEnabled, useLiveEngineV2, supabase])
 
   // useLayoutEffect: attach PCM handler before paint so ScriptProcessor callbacks never run with a null ref
   // (recorder.start uses flushSync('recording') then starts AudioContext — effect would be too late).
@@ -2325,11 +2326,6 @@ function RecordingWorkspace({
     }, 2800)
     return () => clearInterval(id)
   }, [localOnly, usesHosted, selectedId, supabase, userId, detail?.aiStatus, refreshList])
-
-  const persistLiveLang = useCallback((value: string) => {
-    setLiveLang(value)
-    localStorage.setItem(KEY_LIVE_LANG, value)
-  }, [])
 
   const startRecording = () => {
     if (!localOnly && usesHosted) {
@@ -4575,8 +4571,8 @@ function RecordingWorkspace({
       <header className="hero">
         <h1>Record class, real-time captions, bilingual summaries</h1>
         <p className="lede">
-          While you teach or study, Youmi Lens shows live captions and can prepare a full transcript and
-          bilingual summaries after class. Spoken language and translation target are set in Session below.
+          While you teach or study in English, Youmi Lens shows live captions and can prepare a full transcript
+          with Chinese summaries after class.
         </p>
             <p className="legal">
           Only record when your professor and local law allow it.{' '}
@@ -4623,37 +4619,21 @@ function RecordingWorkspace({
             <div className="session-form-row">
               <label className="field session-field">
                 <span className="session-field__label">Spoken language</span>
-                <select
-                  className="input session-field__select"
-                  value={liveLang}
-                  onChange={(e) => persistLiveLang(e.target.value)}
-                  disabled={recorder.status !== 'idle' || saveOrFinishBusy}
-                >
-                  {LIVE_LANG_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
+                <div className="input session-field__readonly" aria-readonly="true">
+                  English
+                </div>
               </label>
               <label className="field session-field">
                 <span className="session-field__label">Translation</span>
-                <select
-                  className="input session-field__select"
-                  value={translateTarget}
-                  onChange={(e) => persistTranslateTarget(e.target.value as LiveTranslateTarget)}
-                  disabled={recorder.status !== 'idle' || saveOrFinishBusy}
-                >
-                  <option value="zh">Translate to Chinese</option>
-                  <option value="en">Translate to English</option>
-                  <option value="off">Off</option>
-                </select>
+                <div className="input session-field__readonly" aria-readonly="true">
+                  Translate to Chinese
+                </div>
               </label>
             </div>
         <p className="hint small" style={{ marginTop: '-0.5rem' }}>
           <strong>V1:</strong> the reliable path is Stop & save, then open the recording and run{' '}
-          <strong>Generate transcript & summaries</strong> for the full transcript (English + Chinese summaries in
-          Supabase). <strong>Live captions</strong> below are an optional beta preview while you record.
+          <strong>Generate transcript & summaries</strong> for the full English transcript and Chinese summaries in
+          Supabase. <strong>Live captions</strong> below are an optional beta preview while you record.
         </p>
         {!postClassAiEnabled ? (
           <p className="hint small" style={{ marginTop: '0.35rem' }}>

@@ -934,6 +934,17 @@ select.input {
   box-sizing: border-box;
 }
 
+.session-field__readonly {
+  width: 100%;
+  min-height: 2.65rem;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  background: #f8fafc;
+  color: var(--text);
+  cursor: default;
+}
+
 /* Transcript / summary collapsible sections */
 .result-collapsible {
   border: 1px solid var(--border);

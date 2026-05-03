@@ -15,6 +15,24 @@ import {
 
 export type { LiveCaptionTranslateTarget }
 
+/** Hosted translate: missing/invalid session (maps to user-facing copy in callers). */
+export class TranslateCaptionAuthError extends Error {
+  constructor() {
+    super('Translation unavailable. Please sign in again.')
+    this.name = 'TranslateCaptionAuthError'
+  }
+}
+
+/** Hosted translate: server/network/non-auth failure. */
+export class TranslateCaptionTransientError extends Error {
+  constructor() {
+    super('Translation temporarily unavailable.')
+    this.name = 'TranslateCaptionTransientError'
+  }
+}
+
+const BETA_AUTH_ERROR = 'auth_required'
+
 function assertByokKey(): string {
   const k = getByokApiKey()
   if (!k) throw new Error('BYOK_KEY_MISSING')
@@ -123,18 +141,43 @@ export async function summarizeRecording(
 
 export async function translateLiveCaption(
   text: string,
-  opts: { target: LiveCaptionTranslateTarget },
+  opts: {
+    target: LiveCaptionTranslateTarget
+    /** Supabase access token for hosted `/api/translate-caption` (same session as live WS). */
+    getAccessToken?: () => Promise<string | null>
+  },
 ): Promise<string> {
   if (usesYoumiHosted()) {
-    const res = await fetch(`${getAiApiBase()}/translate-caption`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, target: opts.target }),
-    })
+    let token: string | null = null
+    try {
+      token = (await opts.getAccessToken?.()) ?? null
+    } catch {
+      token = null
+    }
+    if (!token?.trim()) {
+      throw new TranslateCaptionAuthError()
+    }
+
+    let res: Response
+    try {
+      res = await fetch(`${getAiApiBase()}/translate-caption`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token.trim()}`,
+        },
+        body: JSON.stringify({ text, target: opts.target }),
+      })
+    } catch {
+      throw new TranslateCaptionTransientError()
+    }
     if (!res.ok) {
-      const j = await res.json().catch(() => ({}))
-      const msg = (j as { error?: string }).error
-      throw new Error(msg || 'AI_REQUEST_FAILED')
+      const j = (await res.json().catch(() => ({}))) as { error?: string }
+      const code = j.error
+      if (res.status === 401 || code === BETA_AUTH_ERROR) {
+        throw new TranslateCaptionAuthError()
+      }
+      throw new TranslateCaptionTransientError()
     }
     const data = (await res.json()) as { text?: string }
     return (data.text ?? '').trim()

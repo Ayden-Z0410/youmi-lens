@@ -8,6 +8,8 @@ export {
   transcribeRecording,
   summarizeRecording,
   translateLiveCaption,
+  TranslateCaptionAuthError,
+  TranslateCaptionTransientError,
   transcribeRecordingDirectOpenAI,
   summarizeRecordingDirectOpenAI,
   translateLiveCaptionDirectOpenAI,

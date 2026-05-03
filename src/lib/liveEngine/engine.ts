@@ -2,7 +2,11 @@
  * LiveEngine — consumes **streaming ASR text** from `YoumiLiveAdapter` (`en_interim` / `en_final`), then
  * **translation-from-text** via HTTP. Post-class transcription/summary stay out of this module.
  */
-import { translateLiveCaption } from '../aiClient'
+import {
+  translateLiveCaption,
+  TranslateCaptionAuthError,
+  TranslateCaptionTransientError,
+} from '../aiClient'
 import { deOverlapEnglish } from '../liveCaptionDeOverlap'
 import {
   normalizeEnglishPrimaryPayloadOrReject,
@@ -414,7 +418,12 @@ export class LiveEngine {
     if (!this.shouldEmitZhInterimForChunk(segmentId, t)) return
     try {
       const tHttp0 = Date.now()
-      const zhRaw = (await translateLiveCaption(t, { target: this.translateTarget })).trim()
+      const zhRaw = (
+        await translateLiveCaption(t, {
+          target: this.translateTarget,
+          getAccessToken: this.engineOpts.tokenGetter,
+        })
+      ).trim()
       const zh = normalizeZhPayloadOrReject(zhRaw, this.translateTarget)
       if (!zh || !this.running) return
       if ((this.zhInterimGenBySeg.get(segmentId) ?? 0) !== expectedGen) return
@@ -429,10 +438,14 @@ export class LiveEngine {
       log('zh_interim', { segmentId, rev, len: zh.length })
       this.emit({ type: 'zh_interim', segmentId, rev, text: zh, sourceEn: t })
     } catch (e) {
+      const friendly =
+        e instanceof TranslateCaptionAuthError || e instanceof TranslateCaptionTransientError
+          ? e.message
+          : 'Translation temporarily unavailable.'
       this.emit({
         type: 'error',
         code: 'zh_interim_failed',
-        message: e instanceof Error ? e.message : String(e),
+        message: friendly,
         recoverable: true,
       })
     }
@@ -451,7 +464,12 @@ export class LiveEngine {
     if (!t) return
     const t0 = Date.now()
     try {
-      const zhRaw = (await translateLiveCaption(t, { target: this.translateTarget })).trim()
+      const zhRaw = (
+        await translateLiveCaption(t, {
+          target: this.translateTarget,
+          getAccessToken: this.engineOpts.tokenGetter,
+        })
+      ).trim()
       const zh = normalizeZhPayloadOrReject(zhRaw, this.translateTarget)
       const latencyMs = Date.now() - t0
       const queueWaitMs = enqueuedAt ? t0 - enqueuedAt : 0
@@ -468,10 +486,14 @@ export class LiveEngine {
       this.emit({ type: 'zh_final', segmentId, text: zh, sourceEn: t })
     } catch (e) {
       log('zh_final_failed', { segmentId, ms: Date.now() - t0, sessionMs: this.elapsed() })
+      const friendly =
+        e instanceof TranslateCaptionAuthError || e instanceof TranslateCaptionTransientError
+          ? e.message
+          : 'Translation temporarily unavailable.'
       this.emit({
         type: 'error',
         code: 'zh_final_failed',
-        message: e instanceof Error ? e.message : String(e),
+        message: friendly,
         recoverable: true,
       })
     }

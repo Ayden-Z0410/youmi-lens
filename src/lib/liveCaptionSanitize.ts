@@ -58,10 +58,25 @@ export function isEnTranslationSlotText(text: string): boolean {
   return true
 }
 
+/** Backend / client error tokens that must never appear as live translation text. */
+const REJECTED_TRANSLATION_PAYLOAD_HINTS = new Set([
+  'auth_required',
+  'quota_required',
+  'quota_suspended',
+  'beta_limit_reached',
+  'recording_too_long',
+  'daily_recording_limit_reached',
+  'session_limit_reached',
+  'invalid_request',
+  'youmi ai setup is not available yet.',
+])
+
 export function normalizeZhPayloadOrReject(raw: string, translateTarget: 'zh' | 'en' | 'off'): string | null {
   if (translateTarget === 'off') return raw.trim() || null
   const t = raw.trim()
   if (!t) return null
+  const hintKey = t.toLowerCase()
+  if (REJECTED_TRANSLATION_PAYLOAD_HINTS.has(hintKey)) return null
   if (isGarbledMixedScriptLine(t)) return null
   if (translateTarget === 'zh') {
     if (!isZhTranslationSlotText(t)) return null
