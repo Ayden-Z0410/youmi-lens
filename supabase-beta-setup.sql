@@ -9,10 +9,10 @@
 -- PLAN TIERS
 -- ┌─────────────────┬─────────────────────────────────────────────────────────┐
 -- │ public_trial    │ Anyone who signs up via the public beta link.           │
--- │                 │ 20 min lifetime total, max 10 min/recording, 2/day.     │
+-- │                 │ 20 min lifetime total, max 10 min/recording, 10/day.    │
 -- ├─────────────────┼─────────────────────────────────────────────────────────┤
 -- │ core_tester     │ Trusted testers (friends at US universities, etc).      │
--- │                 │ 1000 min/month, max 120 min/recording, 10/day.          │
+-- │                 │ 1000 min/month, max 120 min/recording, 20/day.          │
 -- ├─────────────────┼─────────────────────────────────────────────────────────┤
 -- │ student_basic   │ Reserved for future paid tier (payment not yet built).  │
 -- │                 │ Until activated, treated as public_trial limits.        │
@@ -30,7 +30,7 @@
 --     SET plan_type = 'core_tester',
 --         monthly_minutes_limit = 1000,
 --         max_recording_minutes = 120,
---         max_recordings_per_day = 10,
+--         max_recordings_per_day = 20,
 --         max_live_session_minutes = 120
 --     WHERE email = 'tester@example.com';
 --
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS user_quota (
   max_recording_minutes       integer     NOT NULL DEFAULT 10,
 
   -- Daily processing limit (UTC day, counts process_recording + regenerate_summary)
-  max_recordings_per_day      integer     NOT NULL DEFAULT 2,
+  max_recordings_per_day      integer     NOT NULL DEFAULT 10,
 
   -- Live caption session cap (server disconnects after this many minutes)
   max_live_session_minutes    integer     NOT NULL DEFAULT 10,

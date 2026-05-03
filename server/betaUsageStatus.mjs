@@ -72,7 +72,7 @@ export async function handleBetaUsageStatus(req, res) {
       limit_minutes: limitMinutes,
       remaining_minutes: roundMinutes(remainingMinutes),
       recordings_today: recordingsToday,
-      daily_recording_limit: quota.max_recordings_per_day ?? 2,
+      daily_recording_limit: quota.max_recordings_per_day ?? 10,
       max_recording_minutes: quota.max_recording_minutes ?? 10,
       max_live_session_minutes: quota.max_live_session_minutes ?? 10,
     })
@@ -92,7 +92,7 @@ export async function handleBetaUsageStatus(req, res) {
       monthly_minutes_limit: limitMinutes,
       remaining_minutes_this_month: roundMinutes(remainingMinutes),
       recordings_today: recordingsToday,
-      daily_recording_limit: quota.max_recordings_per_day ?? 10,
+      daily_recording_limit: quota.max_recordings_per_day ?? 20,
       max_recording_minutes: quota.max_recording_minutes ?? 120,
       max_live_session_minutes: quota.max_live_session_minutes ?? 120,
     })
@@ -111,7 +111,7 @@ export async function handleBetaUsageStatus(req, res) {
     limit_minutes: limitMinutes,
     remaining_minutes: roundMinutes(remainingMinutes),
     recordings_today: recordingsToday,
-    daily_recording_limit: quota.max_recordings_per_day ?? 2,
+    daily_recording_limit: quota.max_recordings_per_day ?? 10,
     max_recording_minutes: quota.max_recording_minutes ?? 10,
     max_live_session_minutes: quota.max_live_session_minutes ?? 10,
   })

@@ -2,8 +2,8 @@
  * Youmi Lens Beta Gate — server-side quota enforcement.
  *
  * Plan tiers:
- *   public_trial  — 20 min lifetime total, 10 min/recording, 2/day, 10 min live session
- *   core_tester   — 1000 min/month, 120 min/recording, 10/day, 120 min live session
+ *   public_trial  — 20 min lifetime total, 10 min/recording, 10/day, 10 min live session
+ *   core_tester   — 1000 min/month, 120 min/recording, 20/day, 120 min live session
  *   student_basic / student_pro — reserved; treated as public_trial until activated
  *   admin         — bypass all limits
  *
@@ -41,7 +41,7 @@ export const BETA_ERROR_CODES = {
 /** Default limits for new public_trial users (overridable via env for testing). */
 const DEFAULT_TRIAL_MINUTES = Number(process.env.BETA_MAX_TRIAL_MINUTES || 20)
 const DEFAULT_MAX_RECORDING_MINUTES = Number(process.env.BETA_MAX_RECORDING_MINUTES || 10)
-const DEFAULT_MAX_RECORDINGS_PER_DAY = Number(process.env.BETA_MAX_RECORDINGS_PER_DAY || 2)
+const DEFAULT_MAX_RECORDINGS_PER_DAY = Number(process.env.BETA_MAX_RECORDINGS_PER_DAY || 10)
 const DEFAULT_MAX_LIVE_SESSION_MINUTES = Number(process.env.BETA_MAX_LIVE_SESSION_MINUTES || 10)
 
 /** Plans that use monthly quota (calendar-month reset). */
