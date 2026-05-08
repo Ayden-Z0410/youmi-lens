@@ -48,6 +48,20 @@ html {
   color-scheme: light;
 }
 
+/* Overlay window — transparent shell, no layout constraints */
+html.youmi-overlay,
+html.youmi-overlay body,
+html.youmi-overlay #root {
+  background: transparent !important;
+  overflow: hidden !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: unset !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
 .debug-build-banner {
   position: sticky;
   top: 0;

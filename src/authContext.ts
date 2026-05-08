@@ -11,6 +11,9 @@ export type AuthContextValue = {
   /** Magic link; enable Email provider in Supabase Auth settings. */
   signInWithEmailOtp: (email: string) => Promise<{ error: string | null }>
   signOut: () => Promise<void>
+  /** Non-null when a deep-link auth callback was received but the token exchange failed. */
+  deepLinkAuthError: string | null
+  clearDeepLinkAuthError: () => void
 }
 
 export const AuthContext = createContext<AuthContextValue | null>(null)

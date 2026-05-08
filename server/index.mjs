@@ -178,6 +178,46 @@ app.post('/api/process-recording', express.json({ limit: '256kb' }), (req, res) 
   })
 })
 
+// ── Tauri auth bridge ─────────────────────────────────────────────────────────
+// Supabase magic-link / OAuth redirects here from the email client (HTTPS, always
+// allowed by email clients and Supabase). The page forwards query + hash to the
+// lecturecompanion:// custom scheme so the desktop app receives the deep link.
+//
+// Add to Supabase → Authentication → URL Configuration → Redirect URLs:
+//   https://youmi-lens-production.up.railway.app/tauri-auth-callback
+app.get('/tauri-auth-callback', (_req, res) => {
+  // Supabase magic-link redirects here after verifying the token. This page uses
+  // client-side JS to forward the callback to the lecturecompanion:// scheme.
+  //
+  // Two token delivery formats are handled:
+  //   PKCE flow:    /tauri-auth-callback?code=...         (params in query string)
+  //   Implicit flow: /tauri-auth-callback#access_token=... (params in hash — server cannot read)
+  //
+  // The server never sees or logs hash fragment tokens.
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-store')
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Opening Youmi Lens\u2026</title></head>
+<body style="font-family:system-ui,sans-serif;color:#333;margin:0;padding:2rem">
+<p>Opening Youmi Lens\u2026</p>
+<p id="fb" style="color:#888;display:none">If nothing happens, open Youmi Lens and request a new sign-in link.</p>
+<script>
+(function () {
+  // Build the deep-link target using query string (PKCE) and/or hash (implicit tokens).
+  // Tokens stay in the browser — this script never sends them to any server.
+  var target = 'lecturecompanion://auth-callback' + window.location.search + window.location.hash;
+  window.location.replace(target);
+  setTimeout(function () {
+    var fb = document.getElementById('fb');
+    if (fb) fb.style.display = '';
+  }, 2500);
+})();
+</script>
+</body>
+</html>`)
+})
+
 const server = createServer(app)
 attachLiveRealtimeWs(server)
 

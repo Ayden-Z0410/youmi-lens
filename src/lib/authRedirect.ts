@@ -26,22 +26,27 @@ function bridgeOriginFromEnv(): string | null {
 /**
  * Email magic link + OAuth `emailRedirectTo` / `redirectTo`.
  *
- * - **Web:** same tab origin (Supabase `detectSessionInUrl` handles hash/query).
- * - **Tauri + dev:** `http://localhost:5173/tauri-auth-callback` so the mail client opens a normal URL;
- *   that page immediately redirects to `lecturecompanion://auth-callback` with the same tokens (OS opens the app).
- * - **Tauri + prod:** `lecturecompanion://auth-callback` unless `VITE_AUTH_BRIDGE_ORIGIN` is set (HTTPS bridge for
- *   environments where a hosted redirect is required).
+ * Priority order:
+ * 1. `VITE_AUTH_BRIDGE_ORIGIN` set → always use HTTPS bridge (most reliable; not gated on isTauri()).
+ * 2. Not Tauri (pure web) → same-origin (Supabase detectSessionInUrl handles callback).
+ * 3. Tauri + DEV → localhost bridge (Vite dev server serves /tauri-auth-callback).
+ * 4. Tauri + PROD → custom scheme direct (lecturecompanion://auth-callback).
+ *
+ * NOTE: The envBridge check is intentionally FIRST — before isTauri() — so that production packaged
+ * builds always use the Railway HTTPS bridge regardless of whether isTauri() resolves correctly
+ * (window.location.origin in a packaged Tauri app is http://tauri.localhost, not a usable redirect).
  */
 export function getAuthRedirectUrl(): string {
   if (typeof window === 'undefined') {
     return TAURI_AUTH_CALLBACK
   }
-  if (!isTauri()) {
-    return window.location.origin
-  }
+  // If an explicit HTTPS bridge origin is configured, always use it — independent of isTauri().
   const envBridge = bridgeOriginFromEnv()
   if (envBridge) {
     return `${envBridge}${TAURI_AUTH_BRIDGE_PATH}`
+  }
+  if (!isTauri()) {
+    return window.location.origin
   }
   if (import.meta.env.DEV) {
     return `${window.location.origin}${TAURI_AUTH_BRIDGE_PATH}`

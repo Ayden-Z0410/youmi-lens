@@ -1,34 +1,42 @@
 /**
- * Youmi Lens main shell  -  scoped tokens + layout.
+ * Youmi Lens main shell — scoped tokens + layout.
+ * V2: Premium frosted glass redesign.
  * Wrap app region with class "yl-shell" to apply; does not alter global :root.
  */
 
 .yl-shell {
   /* Match html/:root light scheme so selects/inputs inside the shell stay light in Tauri WebView */
   color-scheme: light;
-  --yl-primary: #0b1f3b;
-  --yl-secondary: #1e3a5f;
-  --yl-bg-page: #f0f3f8;
-  --yl-surface: #ffffff;
-  --yl-highlight: #c8d7e8;
-  --yl-accent: #3d6a9e;
-  --yl-text: #0f172a;
-  --yl-text-muted: #64748b;
-  --yl-text-hint: #94a3b8;
-  --yl-border: #e2e8f0;
-  --yl-transcript-bg: #fcfdff;
-  --yl-summary-accent: #3d6a9e;
-  /* Unified UI eyebrows (WORKSPACE, RECENT, NOW, SUMMARY, section titles, TRANSCRIPT) */
+  --yl-primary: #061B34;
+  --yl-secondary: #102A44;
+  --yl-bg-page: #eef4fb;
+  --yl-surface: rgba(255,255,255,0.52);
+  --yl-highlight: #DCEBFA;
+  --yl-accent: #061B34;
+  --yl-text: #071A33;
+  --yl-text-muted: #6B7890;
+  --yl-text-hint: #6B7890;
+  --yl-border: rgba(255,255,255,0.58);
+  --yl-navy-border: rgba(6,27,52,0.10);
+  --yl-transcript-bg: rgba(255,255,255,0.52);
+  --yl-summary-accent: #061B34;
+  /* Eyebrow labels */
   --yl-eyebrow-fs: 0.625rem;
   --yl-eyebrow-ls: 0.1em;
   --yl-eyebrow-fw: 600;
-  --yl-eyebrow: #64748b;
-  --yl-eyebrow-strong: #475569;
-  --yl-eyebrow-accent: #3d6a9e;
-  --yl-card-edge: rgba(203, 213, 225, 0.72);
-  --yl-card-shade: 0 1px 2px rgba(15, 23, 42, 0.035);
+  --yl-eyebrow: #6B7890;
+  --yl-eyebrow-strong: #071A33;
+  --yl-eyebrow-accent: #6B7890;
+  --yl-card-edge: rgba(255,255,255,0.58);
+  --yl-card-shade: 0 20px 60px rgba(6,27,52,0.12);
+  /* Glass */
+  --yl-glass-bg: rgba(255,255,255,0.52);
+  --yl-glass-blur: blur(28px) saturate(140%);
+  --yl-glass-border: 1px solid rgba(255,255,255,0.58);
+  --yl-glass-shadow: 0 20px 60px rgba(6,27,52,0.12);
+  --yl-glass-radius: 22px;
 
-  --yl-topbar-h: 48px;
+  --yl-topbar-h: 76px;
   --yl-resizer-w: 8px;
   --yl-sidebar-w: 240px;
   --yl-right-w: min(360px, 32vw);
@@ -36,16 +44,21 @@
   min-height: 100vh;
   display: grid;
   grid-template-rows: var(--yl-topbar-h) 1fr;
-  grid-template-columns: var(--yl-sidebar-w) var(--yl-resizer-w) minmax(0, 1fr) var(--yl-resizer-w) var(--yl-right-w);
+  grid-template-columns: var(--yl-sidebar-w) var(--yl-resizer-w) minmax(0, 1fr);
   grid-template-areas:
-    'yl-top yl-top yl-top yl-top yl-top'
-    'yl-side yl-resize-l yl-main yl-resize-r yl-right';
-  background: var(--yl-bg-page);
+    'yl-top yl-top yl-top'
+    'yl-side yl-resize-l yl-workspace';
+  background:
+    radial-gradient(circle at 20% 10%, rgba(67,121,190,0.16), transparent 32%),
+    radial-gradient(circle at 85% 0%, rgba(6,27,52,0.16), transparent 34%),
+    linear-gradient(135deg, #eef4fb 0%, #f7f9fc 45%, #e8eff7 100%);
   color: var(--yl-text);
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   font-size: 15px;
   line-height: 1.45;
 }
+
+/* ── Top bar ──────────────────────────────────────────────────────────────── */
 
 .yl-topbar {
   grid-area: yl-top;
@@ -53,11 +66,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  padding: 0 1rem 0 0.85rem;
-  background: linear-gradient(105deg, #0a1a33 0%, #0b1f3b 38%, #0d2644 100%);
-  color: #f8fafc;
-  border-bottom: 1px solid rgba(61, 106, 158, 0.35);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+  padding: 0 1.55rem 0 1.45rem;
+  background: rgba(6,27,52,0.88);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  color: rgba(255,255,255,0.92);
+  border-bottom: 1px solid rgba(255,255,255,0.10);
+  box-shadow: none;
 }
 
 .yl-topbar-lead {
@@ -71,8 +86,8 @@
 .yl-welcome-line {
   margin: 0;
   font-size: 0.8rem;
-  font-weight: 500;
-  color: rgba(248, 250, 252, 0.88);
+  font-weight: 400;
+  color: rgba(255,255,255,0.55);
   letter-spacing: 0.01em;
   white-space: nowrap;
   overflow: hidden;
@@ -87,6 +102,7 @@
   letter-spacing: -0.02em;
   font-size: 0.95rem;
   flex-shrink: 0;
+  color: rgba(255,255,255,0.92);
 }
 
 .yl-brand-mark {
@@ -104,13 +120,14 @@
 }
 
 .yl-topbar-actions .btn {
-  color: #f8fafc;
-  border-color: rgba(248, 250, 252, 0.35);
-  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255,255,255,0.85);
+  border-color: rgba(255,255,255,0.20);
+  background: rgba(255,255,255,0.08);
+  border-radius: 10px;
 }
 
 .yl-topbar-actions .btn:hover {
-  background: rgba(255, 255, 252, 0.16);
+  background: rgba(255,255,255,0.14);
 }
 
 .yl-topbar-actions .btn.ghost {
@@ -119,17 +136,23 @@
 
 .yl-topbar-actions code {
   font-size: 0.75em;
-  color: rgba(248, 250, 252, 0.92);
+  color: rgba(255,255,255,0.60);
 }
+
+/* ── Sidebar ──────────────────────────────────────────────────────────────── */
 
 .yl-sidebar {
   grid-area: yl-side;
-  background: #f4f7fb;
-  border-right: 1px solid rgba(203, 213, 225, 0.65);
+  background: rgba(255,255,255,0.38);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  border-right: 1px solid rgba(6,27,52,0.08);
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
+
+/* ── Column resizers ──────────────────────────────────────────────────────── */
 
 .yl-col-resizer {
   position: relative;
@@ -148,12 +171,12 @@
   left: 50%;
   width: 1px;
   transform: translateX(-50%);
-  background: rgba(148, 163, 184, 0.34);
+  background: rgba(6,27,52,0.06);
 }
 
 .yl-col-resizer:hover::before,
 .yl-shell--resizing .yl-col-resizer::before {
-  background: rgba(61, 106, 158, 0.7);
+  background: rgba(6,27,52,0.20);
 }
 
 .yl-col-resizer--left {
@@ -164,8 +187,10 @@
   grid-area: yl-resize-r;
 }
 
+/* ── Nav section ──────────────────────────────────────────────────────────── */
+
 .yl-nav-section {
-  padding: 1.1rem 0.9rem 0.7rem;
+  padding: 1.6rem 1rem 0.9rem;
 }
 
 .yl-nav-section-label {
@@ -186,42 +211,63 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.55rem;
 }
 
 .yl-nav-item {
+  position: relative;
   display: block;
-  padding: 0.5rem 0.7rem;
-  border-radius: 9px;
+  min-height: 44px;
+  padding: 0.64rem 0.82rem 0.64rem 1rem;
+  border-radius: 14px;
+  background: transparent;
   color: var(--yl-text);
   text-decoration: none;
   font-size: 0.875rem;
   font-weight: 500;
   border: 1px solid transparent;
+  cursor: pointer;
   transition:
     background 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
     color 0.12s ease;
+  overflow: hidden;
 }
 
 .yl-nav-item:hover {
-  background: rgba(255, 255, 255, 0.75);
-  border-color: rgba(203, 213, 225, 0.55);
+  background: rgba(220,235,250,0.34);
+  border-color: rgba(255,255,255,0.42);
+  box-shadow: 0 10px 26px rgba(6,27,52,0.08);
 }
 
 .yl-nav-item.yl-active {
-  background: #ffffff;
-  border-color: rgba(200, 215, 232, 0.95);
-  color: var(--yl-primary);
+  background: linear-gradient(135deg, rgba(220,235,250,0.78), rgba(255,255,255,0.46));
+  border-color: rgba(255,255,255,0.64);
+  color: #061B34;
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  box-shadow: 0 14px 36px rgba(6,27,52,0.10);
+}
+
+.yl-nav-item.yl-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 3px;
+  background: #061B34;
+  border-radius: 999px;
 }
 
 .yl-sidebar-divider {
   flex-shrink: 0;
   height: 1px;
   margin: 0.65rem 1.1rem 0.55rem;
-  background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.28), transparent);
+  background: linear-gradient(90deg, transparent, rgba(6,27,52,0.10), transparent);
 }
+
+/* ── History section ──────────────────────────────────────────────────────── */
 
 .yl-history-section {
   flex: 1;
@@ -247,42 +293,49 @@
   padding: 0.4rem 0.4rem 0.5rem;
 }
 
-.yl-main {
-  grid-area: yl-main;
-  display: flex;
-  flex-direction: column;
+/* ── Main panel ───────────────────────────────────────────────────────────── */
+
+.record-workspace {
+  grid-area: yl-workspace;
+  min-width: 0;
   min-height: 0;
-  padding: 1.2rem 1.35rem;
+  display: grid;
+  grid-template-columns: minmax(560px, 1fr) minmax(300px, var(--yl-right-w));
+  gap: 1.1rem;
+  padding: 1.3rem 1.45rem 1.45rem;
+  overflow: hidden;
+}
+
+.yl-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  min-height: 0;
+  padding: 0;
   gap: 1.1rem;
   overflow-y: auto;
   overflow-x: hidden;
 }
 
 .yl-main-extra {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  min-height: 0;
+  display: contents;
 }
 
+/* ── Recording strip card ─────────────────────────────────────────────────── */
+
 .yl-recording-strip {
-  flex: 0 0 auto;
-  background: linear-gradient(180deg, #ffffff 0%, #f9fafc 100%);
-  border: 1px solid var(--yl-card-edge);
-  border-radius: 11px;
-  padding: 1.05rem 1.2rem;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1.1rem 1.35rem;
-  box-shadow: var(--yl-card-shade);
+  display: contents;
 }
 
 .yl-recording-strip__lead {
-  flex: 1 1 200px;
   min-width: 0;
+  background: var(--yl-glass-bg);
+  backdrop-filter: var(--yl-glass-blur);
+  -webkit-backdrop-filter: var(--yl-glass-blur);
+  border: var(--yl-glass-border);
+  border-radius: 24px;
+  box-shadow: var(--yl-glass-shadow);
+  padding: 1.35rem 1.45rem;
 }
 
 .yl-recording-strip__eyebrow {
@@ -296,7 +349,7 @@
 
 .yl-lecture-title {
   margin: 0;
-  font-size: 1.08rem;
+  font-size: 1.38rem;
   font-weight: 600;
   letter-spacing: -0.025em;
   color: var(--yl-text);
@@ -305,17 +358,23 @@
 
 .yl-meta {
   font-size: 0.8rem;
-  color: var(--yl-text-hint);
+  color: var(--yl-text-muted);
   margin-top: 0.45rem;
   line-height: 1.45;
 }
 
 .yl-recording-strip__controls {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem 1rem;
-  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+  background: var(--yl-glass-bg);
+  backdrop-filter: var(--yl-glass-blur);
+  -webkit-backdrop-filter: var(--yl-glass-blur);
+  border: var(--yl-glass-border);
+  border-radius: 24px;
+  box-shadow: var(--yl-glass-shadow);
+  padding: 1.25rem 1.45rem;
 }
 
 .yl-timer-block {
@@ -354,60 +413,67 @@
   align-items: center;
   gap: 0.4rem;
   padding: 0.2rem;
-  border-radius: 11px;
-  background: rgba(241, 245, 249, 0.9);
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.85) inset;
+  border-radius: 14px;
+  justify-content: flex-end;
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 
 .yl-btn-primary {
-  padding: 0.52rem 1.15rem;
-  border-radius: 9px;
+  padding: 0.56rem 1.25rem;
+  border-radius: 10px;
   border: none;
-  background: var(--yl-primary);
-  color: #f8fafc;
+  background: #061B34;
+  color: rgba(255,255,255,0.92);
   font-weight: 600;
   font-size: 0.875rem;
   cursor: pointer;
   white-space: nowrap;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 2px 8px rgba(6,27,52,0.25);
+  transition: filter 0.12s ease, box-shadow 0.12s ease;
 }
 
 .yl-btn-primary:hover {
-  filter: brightness(1.08);
+  filter: brightness(1.12);
+  box-shadow: 0 4px 12px rgba(6,27,52,0.30);
 }
 
 .yl-btn-primary:focus-visible {
-  outline: 2px solid var(--yl-accent);
+  outline: 2px solid rgba(6,27,52,0.40);
   outline-offset: 2px;
 }
 
 .yl-btn-ghost {
   padding: 0.52rem 0.9rem;
-  border-radius: 9px;
-  border: 1px solid transparent;
-  background: #ffffff;
+  border-radius: 10px;
+  border: 1px solid rgba(6,27,52,0.12);
+  background: rgba(255,255,255,0.60);
   color: var(--yl-text);
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
-  margin-left: 0.35rem;
+  margin-left: 0.2rem;
+  transition: background 0.12s ease;
 }
 
 .yl-btn-ghost:hover {
-  background: #f1f5f9;
+  background: rgba(255,255,255,0.85);
 }
 
+/* ── Transcript panel card ────────────────────────────────────────────────── */
+
 .yl-transcript-panel {
-  flex: 1 1 auto;
-  min-height: 220px;
-  background: #fbfcfe;
-  border: 1px solid var(--yl-card-edge);
-  border-radius: 11px;
+  min-height: 270px;
+  background: var(--yl-glass-bg);
+  backdrop-filter: var(--yl-glass-blur);
+  -webkit-backdrop-filter: var(--yl-glass-blur);
+  border: var(--yl-glass-border);
+  border-radius: var(--yl-glass-radius);
   padding: 1.1rem 1.3rem 1.2rem;
   overflow: auto;
-  box-shadow: var(--yl-card-shade);
+  box-shadow: var(--yl-glass-shadow);
 }
 
 .yl-panel-label {
@@ -427,7 +493,7 @@
   text-transform: uppercase;
   margin-bottom: 0.85rem;
   padding-bottom: 0.55rem;
-  border-bottom: 1px solid rgba(203, 213, 225, 0.65);
+  border-bottom: 1px solid rgba(6,27,52,0.08);
 }
 
 .yl-transcript-placeholder {
@@ -451,11 +517,15 @@
   line-height: 1.55;
 }
 
+/* ── Right summary panel ──────────────────────────────────────────────────── */
+
 .yl-right {
-  grid-area: yl-right;
-  background: #eef2f7;
-  border-left: 1px solid rgba(203, 213, 225, 0.55);
-  padding: 1.1rem 1rem;
+  grid-area: auto;
+  background: rgba(255,255,255,0.42);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  border-left: 1px solid rgba(6,27,52,0.08);
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -467,18 +537,20 @@
   min-height: 120px;
   display: flex;
   flex-direction: column;
-  background: #ffffff;
-  border: 1px solid var(--yl-card-edge);
-  border-radius: 11px;
+  background: rgba(255,255,255,0.52);
+  backdrop-filter: var(--yl-glass-blur);
+  -webkit-backdrop-filter: var(--yl-glass-blur);
+  border: 1px solid rgba(255,255,255,0.58);
+  border-radius: 22px;
   padding: 0;
   overflow: hidden;
-  box-shadow: var(--yl-card-shade);
+  box-shadow: 0 20px 60px rgba(6,27,52,0.10);
 }
 
 .yl-summary-header {
   padding: 1rem 1.15rem 0.85rem;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.88);
-  background: linear-gradient(180deg, #fafbfd 0%, #ffffff 100%);
+  border-bottom: 1px solid rgba(6,27,52,0.07);
+  background: rgba(255,255,255,0.40);
 }
 
 .yl-summary-header .yl-panel-label {
@@ -509,7 +581,7 @@
 .yl-summary-block {
   margin: 0;
   padding-bottom: 1.05rem;
-  border-bottom: 1px solid rgba(241, 245, 249, 0.95);
+  border-bottom: 1px solid rgba(6,27,52,0.05);
 }
 
 .yl-summary-block:last-child {
@@ -538,19 +610,21 @@
   font-size: 0.78rem;
 }
 
+/* ── Companion slot ───────────────────────────────────────────────────────── */
+
 .yl-companion-slot {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 0.65rem;
   padding: 0.55rem 0.75rem;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid var(--yl-card-edge);
-  border-radius: 10px;
+  background: rgba(255,255,255,0.60);
+  border: 1px solid rgba(255,255,255,0.60);
+  border-radius: 14px;
   font-size: 0.78rem;
   color: var(--yl-text-hint);
   margin-top: auto;
-  box-shadow: var(--yl-card-shade);
+  box-shadow: 0 2px 8px rgba(6,27,52,0.06);
 }
 
 .yl-companion-avatar {
@@ -561,6 +635,8 @@
   flex-shrink: 0;
 }
 
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+
 @media (max-width: 1100px) {
   .yl-shell {
     grid-template-columns: 1fr;
@@ -568,7 +644,7 @@
     grid-template-areas:
       'yl-top'
       'yl-side'
-      'yl-main';
+      'yl-workspace';
   }
 
   .yl-col-resizer {
@@ -577,5 +653,10 @@
 
   .yl-right {
     display: none;
+  }
+
+  .record-workspace {
+    grid-template-columns: 1fr;
+    padding: 1rem;
   }
 }

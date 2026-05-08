@@ -1,3 +1,85 @@
+// ── Overlay window commands ────────────────────────────────────────────────────
+
+use std::sync::atomic::{AtomicBool, Ordering};
+static OVERLAY_POSITIONED: AtomicBool = AtomicBool::new(false);
+
+const OVERLAY_W: f64 = 600.0;
+const OVERLAY_H: f64 = 118.0;
+const OVERLAY_W_COMPACT: f64 = 260.0;
+const OVERLAY_H_COMPACT: f64 = 56.0;
+
+#[tauri::command]
+fn show_overlay(app: tauri::AppHandle) {
+  use tauri::Manager;
+  if let Some(w) = app.get_webview_window("overlay") {
+    // Ensure expanded size is restored (in case it was left compact)
+    let _ = w.set_size(tauri::LogicalSize::new(OVERLAY_W, OVERLAY_H));
+    // On first show, position at bottom-center of primary monitor above the Dock.
+    if !OVERLAY_POSITIONED.swap(true, Ordering::SeqCst) {
+      if let Ok(Some(monitor)) = w.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let sw = monitor.size().width as f64 / scale;
+        let sh = monitor.size().height as f64 / scale;
+        let dock_margin = 92.0_f64;
+        let x = (sw - OVERLAY_W) / 2.0;
+        let y = sh - OVERLAY_H - dock_margin;
+        let _ = w.set_position(tauri::LogicalPosition::new(x, y));
+      }
+    }
+    let _ = w.set_visible_on_all_workspaces(true);
+    let _ = w.show();
+    let _ = w.set_focus();
+  }
+}
+
+#[tauri::command]
+fn hide_overlay(app: tauri::AppHandle) {
+  use tauri::Manager;
+  if let Some(w) = app.get_webview_window("overlay") {
+    let _ = w.hide();
+  }
+}
+
+#[tauri::command]
+fn focus_main_window(app: tauri::AppHandle) {
+  use tauri::Manager;
+  #[cfg(target_os = "macos")]
+  {
+    let _ = app.show();
+  }
+  if let Some(w) = app.get_webview_window("main") {
+    let _ = w.show();
+    let _ = w.unminimize();
+    let _ = w.set_focus();
+  }
+}
+
+#[tauri::command]
+fn minimize_main_window(app: tauri::AppHandle) {
+  use tauri::Manager;
+  if let Some(w) = app.get_webview_window("main") {
+    let _ = w.minimize();
+  }
+}
+
+#[tauri::command]
+fn resize_overlay_compact(app: tauri::AppHandle) {
+  use tauri::Manager;
+  if let Some(w) = app.get_webview_window("overlay") {
+    let _ = w.set_size(tauri::LogicalSize::new(OVERLAY_W_COMPACT, OVERLAY_H_COMPACT));
+  }
+}
+
+#[tauri::command]
+fn resize_overlay_expanded(app: tauri::AppHandle) {
+  use tauri::Manager;
+  if let Some(w) = app.get_webview_window("overlay") {
+    let _ = w.set_size(tauri::LogicalSize::new(OVERLAY_W, OVERLAY_H));
+  }
+}
+
+// ── Runtime ───────────────────────────────────────────────────────────────────
+
 #[cfg(all(
   not(target_os = "android"),
   not(target_os = "ios"),
@@ -42,6 +124,14 @@ pub fn run() {
   }
 
   builder
+    .invoke_handler(tauri::generate_handler![
+      show_overlay,
+      hide_overlay,
+      focus_main_window,
+      minimize_main_window,
+      resize_overlay_compact,
+      resize_overlay_expanded
+    ])
     .setup(|app| {
       #[cfg(all(not(target_os = "android"), not(target_os = "ios")))]
       {

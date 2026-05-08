@@ -19,6 +19,21 @@
         "height": 600,
         "resizable": true,
         "fullscreen": false
+      },
+      {
+        "label": "overlay",
+        "title": "Youmi Lens Overlay",
+        "url": "index.html#__overlay",
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": true,
+        "width": 600,
+        "height": 118,
+        "minWidth": 240,
+        "minHeight": 44
       }
     ],
     "security": {

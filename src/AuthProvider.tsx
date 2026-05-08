@@ -93,6 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const supabase = getSupabase()
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(configured)
+  const [deepLinkAuthError, setDeepLinkAuthError] = useState<string | null>(null)
 
   /**
    * Single bootstrap: subscribe first, then (Tauri) apply any pending deep-link auth before
@@ -104,7 +105,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     let cancelled = false
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, next) => {
+      console.info('[Auth] onAuthStateChange event:', event, { hasSession: Boolean(next) })
       if (!cancelled) setSession(next)
     })
 
@@ -160,6 +162,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             })
             let anyOk = false
             for (const url of urls) {
+              const _cb = inspectAuthCallbackUrl(url)
+              console.info('[Auth] callback received:', {
+                code: _cb.queryHasCode,
+                access_token: _cb.hashHasAccessToken,
+                refresh_token: _cb.hashHasRefreshToken,
+              })
               const { data: beforeData } = await supabase.auth.getSession()
               console.info('[lc-auth deep-link] getCurrent before apply', userForLog(beforeData.session))
               const applied = await applySessionFromSupabaseCallbackUrl(supabase, url, {
@@ -176,7 +184,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 if (applied.session) {
                   sessionFromCallback = applied.session
                   setSession(applied.session)
+                  console.info('[Auth] setSession success: hasSession=true')
                 }
+              } else {
+                console.error('[Auth] setSession failure:', applied.error, { branch: applied.branch })
               }
             }
             if (anyOk) await afterDeepLinkAuthSucceededUiPolish()
@@ -190,6 +201,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const finalSession = sessionFromCallback ?? data.session
       if (!cancelled) {
         setSession(finalSession)
+        console.info('[Auth] startup getSession result:', {
+          hasSession: Boolean(finalSession),
+        })
         console.info('[lc-auth bootstrap] getSession after deep-link pass', {
           hasSession: Boolean(finalSession),
           finalUser: userForLog(finalSession),
@@ -222,6 +236,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             }
             let anyOk = false
             for (const url of urls) {
+              const _cb = inspectAuthCallbackUrl(url)
+              console.info('[Auth] callback received:', {
+                code: _cb.queryHasCode,
+                access_token: _cb.hashHasAccessToken,
+                refresh_token: _cb.hashHasRefreshToken,
+              })
               const { data: beforeData } = await supabase.auth.getSession()
               console.info('[lc-auth deep-link] onOpenUrl before apply', userForLog(beforeData.session))
               const applied = await applySessionFromSupabaseCallbackUrl(supabase, url, {
@@ -235,9 +255,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               })
               if (!applied.error) {
                 anyOk = true
-                if (applied.session) setSession(applied.session)
+                if (applied.session) {
+                  setSession(applied.session)
+                  setDeepLinkAuthError(null)
+                  console.info('[Auth] setSession success: hasSession=true')
+                }
               } else {
+                console.error('[Auth] setSession failure:', applied.error, { branch: applied.branch })
                 console.error('[lc-auth deep-link] onOpenUrl apply failed', applied.error)
+                setDeepLinkAuthError(
+                  'Sign-in link expired or already used. Please request a new sign-in link.',
+                )
               }
             }
             const { data } = await supabase.auth.getSession()
@@ -307,9 +335,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       const trimmed = email.trim()
       if (!trimmed) return { error: 'Enter your email address.' }
+      const redirectUrl = getAuthRedirectUrl()
+      console.info('[Auth] signInWithOtp redirectTo:', redirectUrl)
+      console.info('[Auth] isTauri:', isTauri())
+      console.info('[Auth] mode:', import.meta.env.MODE)
+      console.info('[Auth] dev:', import.meta.env.DEV)
+      console.info('[Auth] prod:', import.meta.env.PROD)
+      setDeepLinkAuthError(null)
       const { error } = await supabase.auth.signInWithOtp({
         email: trimmed,
-        options: { emailRedirectTo: getAuthRedirectUrl() },
+        options: { emailRedirectTo: redirectUrl },
       })
       return { error: error ? error.message : null }
     },
@@ -322,6 +357,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (error) throw error
   }, [supabase])
 
+  const clearDeepLinkAuthError = useCallback(() => {
+    setDeepLinkAuthError(null)
+  }, [])
+
   const value = useMemo<AuthContextValue>(
     () => ({
       configured,
@@ -332,6 +371,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signInWithApple,
       signInWithEmailOtp,
       signOut,
+      deepLinkAuthError,
+      clearDeepLinkAuthError,
     }),
     [
       configured,
@@ -341,6 +382,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signInWithApple,
       signInWithEmailOtp,
       signOut,
+      deepLinkAuthError,
+      clearDeepLinkAuthError,
     ],
   )
 

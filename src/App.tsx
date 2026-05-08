@@ -8,6 +8,7 @@ import {
   useState,
   useSyncExternalStore,
   type ChangeEvent,
+  type CSSProperties,
   type MouseEvent,
   type MutableRefObject,
   type ReactNode,
@@ -18,6 +19,7 @@ import {
   DragOverlay,
   PointerSensor,
   closestCenter,
+  pointerWithin,
   useDraggable,
   useDroppable,
   useSensor,
@@ -134,7 +136,6 @@ import type { CloudTrashedMeta } from './lib/cloudLectureTrash'
 import { loadCloudTrashRegistry, saveCloudTrashRegistry } from './lib/cloudLectureTrash'
 import {
   classifyTrashDeletionScope,
-  folderNameConflict,
   getScopedRecordingIds,
   type LibraryActiveScope,
   type TrashDeletionScope,
@@ -145,7 +146,308 @@ import { designTokens } from './design-system/tokens'
 import './design-system/tokens.css'
 import './App.css'
 
+// ── Overlay bridge ─────────────────────────────────────────────────────────────
+// Emits caption and status events to the floating Lecture Overlay window via the
+// Tauri global event bus. Guards against non-Tauri (browser dev) contexts.
+
+function isTauriContext(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+}
+
+/**
+ * Show the latest sentence-level delta in the overlay.
+ *
+ * Strategy:
+ *  1. If `current` grew from `prev`, extract the newly-added tail.
+ *  2. Find the last sentence in that tail (sentence boundary = . ? ! 。 ？ ！ ； ;).
+ *  3. If the extracted delta fits within maxChars, return it.
+ *  4. If `current` is shorter than (or unrelated to) `prev` — session was reset —
+ *     just take the last sentence of `current`.
+ */
+function getLatestOverlaySegment(prev: string, current: string, maxChars: number): string {
+  const c = current.trim().replace(/\s{2,}/g, ' ')
+  if (!c) return ''
+
+  // Determine the delta: newly appended text since prev
+  const p = prev.trim().replace(/\s{2,}/g, ' ')
+  const delta = c.startsWith(p) && c.length > p.length
+    ? c.slice(p.length).trim()
+    : c  // reset or unrelated — use full current
+
+  // Extract the last complete sentence from the delta (or whole delta if none)
+  const boundaries = /[.?!。？！；;]+\s*/g
+  let lastEnd = -1
+  let m: RegExpExecArray | null
+  while ((m = boundaries.exec(delta)) !== null) {
+    lastEnd = m.index + m[0].length
+  }
+  // Prefer the trailing incomplete sentence (after last boundary) if it exists
+  const tail = lastEnd >= 0 && lastEnd < delta.length
+    ? delta.slice(lastEnd).trim()
+    : delta
+
+  if (tail.length === 0) {
+    // Only sentence-ending punctuation was in delta — return last sentence before it
+    const sentence = lastEnd > 0 ? delta.slice(0, lastEnd).trim() : delta
+    return sentence.length <= maxChars ? sentence : '…' + sentence.slice(-maxChars)
+  }
+
+  return tail.length <= maxChars ? tail : '…' + tail.slice(-maxChars)
+}
+
+function emitOverlayCaptions(payload: {
+  primaryBlack: string
+  primaryGray: string
+  secondaryBlack: string
+  secondaryGray: string
+}): void {
+  if (!isTauriContext()) return
+  void import('@tauri-apps/api/event')
+    .then(({ emit }) => emit('youmi:overlay-captions', payload))
+    .catch(() => {})
+}
+
+function emitOverlayStatus(payload: {
+  recorderStatus: 'idle' | 'recording' | 'paused'
+  translateActive: boolean
+  elapsedSec: number
+}): void {
+  if (!isTauriContext()) return
+  void import('@tauri-apps/api/event')
+    .then(({ emit }) => emit('youmi:overlay-status', payload))
+    .catch(() => {})
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+
 const UI_BUILD_MARKER = 'SAFE-DELETE-V1'
+
+type SidebarPlanUsage = {
+  planLabel: string
+  /** Raw plan_type from the API, e.g. 'public_trial', 'core_tester', 'admin'. Empty string for fallback. */
+  planType: string
+  usedMinutes: number
+  limitMinutes: number
+  /** True when the API indicates no quota cap (null limit, admin, etc.). */
+  unlimited: boolean
+  source: 'api' | 'fallback'
+}
+
+type WorkspaceView = 'record' | 'courses' | 'settings'
+type CourseView =
+  | { type: 'all' }
+  | { type: 'recentlyDeleted' }
+  | { type: 'unfiled' }
+  | { type: 'folder'; folderId: string }
+
+type BetaUsageStatusPayload =
+  | {
+      plan_type: 'admin'
+      display_name?: string
+    }
+  | {
+      plan_type: 'public_trial'
+      display_name?: string
+      used_minutes?: number
+      limit_minutes?: number
+    }
+  | {
+      plan_type: 'core_tester'
+      display_name?: string
+      used_minutes_this_month?: number
+      monthly_minutes_limit?: number
+    }
+  | {
+      plan_type?: string
+      display_name?: string
+      used_minutes?: number
+      limit_minutes?: number
+      used_minutes_this_month?: number
+      monthly_minutes_limit?: number
+    }
+
+const FALLBACK_PLAN_USAGE: SidebarPlanUsage = {
+  planLabel: 'Basic',
+  planType: '',
+  usedMinutes: 0,
+  limitMinutes: 20,
+  unlimited: false,
+  source: 'fallback',
+}
+
+// ── Lecture Overlay entry button ──────────────────────────────────────────────
+
+function LectureOverlayButton() {
+  const [hovered, setHovered] = useState(false)
+  const [active, setActive] = useState(false)
+
+  const handleClick = () => {
+    void import('@tauri-apps/api/core').then(({ invoke }) => {
+      void invoke('show_overlay')
+      void invoke('minimize_main_window')
+    }).catch(() => {})
+  }
+
+  return (
+    <button
+      type="button"
+      title="Open floating caption overlay — stays above other windows while you study"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => { setHovered(false); setActive(false) }}
+      onMouseDown={() => setActive(true)}
+      onMouseUp={() => setActive(false)}
+      onClick={handleClick}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        height: 34,
+        padding: '0 13px',
+        borderRadius: 12,
+        background: active
+          ? 'rgba(6,27,52,0.12)'
+          : hovered
+            ? 'rgba(6,27,52,0.08)'
+            : 'rgba(6,27,52,0.04)',
+        border: '1px solid rgba(6,27,52,0.14)',
+        color: '#061B34',
+        fontSize: 14,
+        fontWeight: 600,
+        fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif',
+        letterSpacing: '-0.01em',
+        cursor: 'pointer',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+        transition: 'background 0.12s',
+        flexShrink: 0,
+        lineHeight: 1,
+      }}
+    >
+      {/* floating window icon */}
+      <svg width="15" height="15" viewBox="0 0 15 15" fill="none" style={{ flexShrink: 0 }}>
+        <rect x="1" y="4" width="13" height="10" rx="2" stroke="#061B34" strokeWidth="1.3" strokeOpacity="0.75" fill="none"/>
+        <rect x="4" y="1" width="7" height="5" rx="1.5" fill="rgba(6,27,52,0.55)"/>
+      </svg>
+      Lecture Overlay
+    </button>
+  )
+}
+
+// Default quota cap used when Supabase returns null/undefined for a non-unlimited plan.
+const PLUS_FALLBACK_LIMIT = 1000
+const BASIC_FALLBACK_LIMIT = 20
+
+function planUsageFromApi(payload: BetaUsageStatusPayload): SidebarPlanUsage {
+  if (payload.plan_type === 'admin') {
+    // Admin/internal accounts are always unlimited.
+    return {
+      planLabel: 'Developer',
+      planType: 'admin',
+      usedMinutes: 0,
+      limitMinutes: 9999,
+      unlimited: true,
+      source: 'api',
+    }
+  }
+  if (payload.plan_type === 'core_tester') {
+    // core_tester = Plus tier; real quota from Supabase, never treated as unlimited.
+    // If monthly_minutes_limit is null/undefined (missing data), fall back to PLUS_FALLBACK_LIMIT.
+    const rawLimit = payload.monthly_minutes_limit as number | null | undefined
+    const rawUsed = payload.used_minutes_this_month as number | null | undefined
+    return {
+      planLabel: 'Plus',
+      planType: 'core_tester',
+      usedMinutes: Math.max(0, Math.round(rawUsed ?? 0)),
+      limitMinutes: rawLimit != null ? Math.max(1, Math.round(rawLimit)) : PLUS_FALLBACK_LIMIT,
+      unlimited: false,
+      source: 'api',
+    }
+  }
+  if (payload.plan_type === 'public_trial') {
+    return {
+      planLabel: 'Basic',
+      planType: 'public_trial',
+      usedMinutes: Math.max(0, Math.round(payload.used_minutes ?? 0)),
+      limitMinutes: Math.max(1, Math.round(payload.limit_minutes ?? BASIC_FALLBACK_LIMIT)),
+      unlimited: false,
+      source: 'api',
+    }
+  }
+  // Unknown or future plan types — extract available fields via loose cast.
+  // Null limit = missing data, not unlimited (unless it's a developer-type plan).
+  type AnyPayload = { plan_type?: string; used_minutes?: number; limit_minutes?: number; used_minutes_this_month?: number; monthly_minutes_limit?: number | null }
+  const p = payload as AnyPayload
+  const pt = p.plan_type ?? ''
+  const isDeveloperType = ['developer', 'dev', 'internal_developer'].includes(pt.toLowerCase())
+  const rawLimit2 = (p.monthly_minutes_limit ?? p.limit_minutes) as number | null | undefined
+  const unlimited2 = isDeveloperType  // only infer unlimited for developer-type plans
+  return {
+    planLabel: 'Basic',
+    planType: pt,
+    usedMinutes: Math.max(0, Math.round((p.used_minutes_this_month ?? p.used_minutes ?? 0))),
+    limitMinutes: unlimited2 ? 9999 : Math.max(1, Math.round(rawLimit2 ?? BASIC_FALLBACK_LIMIT)),
+    unlimited: unlimited2,
+    source: 'api',
+  }
+}
+
+/**
+ * Maps raw internal plan_type + unlimited flag to a user-facing product name.
+ * Never shows raw snake_case values to users.
+ */
+function getDisplayPlanLabel(planType: string, _unlimited: boolean): string {
+  const t = planType.toLowerCase().trim()
+  if (['admin', 'developer', 'dev', 'internal_developer'].includes(t)) return 'Developer'
+  if (['pro', 'student_pro'].includes(t)) return 'Pro'
+  if (['core_tester', 'tester'].includes(t)) return 'Plus'
+  // public_trial, trial, free, basic, student_basic, '' and unknowns → Basic (safe fallback)
+  return 'Basic'
+}
+
+/** Returns a clean user-facing minutes string. Handles unlimited plans. */
+function formatMinutesUsage(usage: SidebarPlanUsage): string {
+  if (usage.unlimited) return 'Unlimited lecture minutes'
+  return `${usage.usedMinutes} / ${usage.limitMinutes} min used`
+}
+
+function SidebarPlanCard({
+  usage,
+}: {
+  usage: SidebarPlanUsage
+}) {
+  const displayLabel = getDisplayPlanLabel(usage.planType, usage.unlimited)
+  const percent = usage.unlimited ? 0 : Math.max(0, Math.min(100, (usage.usedMinutes / usage.limitMinutes) * 100))
+  return (
+    <section className="sidebar-plan-card" aria-label={`${displayLabel} plan lecture minutes`}>
+      <div className="sidebar-plan-head">
+        <span className="sidebar-plan-icon" aria-hidden>
+          ◇
+        </span>
+        <strong>Current Plan</strong>
+      </div>
+      <p className="sidebar-plan-label">{displayLabel} · Lecture minutes</p>
+      <p className="sidebar-plan-usage">
+        {usage.unlimited
+          ? <span>Unlimited</span>
+          : <><span>{usage.usedMinutes}</span> / {usage.limitMinutes} min used</>
+        }
+      </p>
+      <div className="sidebar-plan-meter" aria-hidden>
+        <span style={{ width: `${percent}%` }} />
+      </div>
+      <ul className="sidebar-plan-benefits">
+        <li>More lecture minutes</li>
+        <li>Longer recordings</li>
+        <li>Faster summaries</li>
+      </ul>
+      <button type="button" className="sidebar-plan-button" disabled>
+        Coming soon
+      </button>
+    </section>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function trashConfirmPrimaryLine(scope: TrashDeletionScope, count: number): string {
   const n = count === 1 ? '' : 's'
@@ -226,7 +528,7 @@ function liveRouteDiagLog(...args: unknown[]) {
 }
 
 const LIVE_CAPTIONS_USER_EXPECTATION_EN =
-  'Live captions are a beta preview only. Your full lecture transcript and bilingual summaries are produced after you stop (Generate transcript & summaries).'
+  'Live preview. Full transcript and bilingual summaries are generated after you stop and save.'
 
 type LiveRouteState =
   | 'legacy'
@@ -322,6 +624,160 @@ function DroppableLibraryTarget({
     <div ref={setNodeRef} className={`${className} ${isOver || activeDropId === dropId ? 'is-drop-target' : ''}`}>
       {children}
     </div>
+  )
+}
+
+// ── Courses search helpers ─────────────────────────────────────────────────────
+
+type MatchField = 'title' | 'course' | 'date' | 'duration' | 'transcript' | 'summary'
+
+interface MatchReason {
+  field: MatchField
+  snippet?: string
+}
+
+/** True if the query is 1–2 purely-alphabetic characters (no digits, no CJK, no punctuation). */
+function isShortAlphabetic(q: string): boolean {
+  return q.length <= 2 && /^[a-zA-Z]+$/.test(q)
+}
+
+/** True if the query contains CJK characters → use pure substring matching for Chinese. */
+function hasCJK(q: string): boolean {
+  return /[\u4e00-\u9fff\u3400-\u4dbf\u{20000}-\u{2a6df}]/u.test(q)
+}
+
+/**
+ * Tokenise text at word boundaries, then check for an exact case-insensitive token match.
+ * Also handles dotted abbreviations like "A.I." → normalised to "AI".
+ */
+function matchesToken(text: string, token: string): boolean {
+  const normalised = text.replace(/\./g, '').toLowerCase()
+  const target = token.toLowerCase()
+  // Word-boundary split: split on anything that isn't a letter/digit
+  const words = normalised.split(/[^a-z0-9]+/).filter(Boolean)
+  return words.includes(target)
+}
+
+/** Known short-query expansions: token → [extra phrases to search by substring]. */
+const SHORT_QUERY_EXPANSIONS: Record<string, string[]> = {
+  ai: ['artificial intelligence'],
+  eq: ['emotional intelligence', 'emotional quotient'],
+}
+
+function fieldMatches(text: string, ql: string, isShortAlpha: boolean): boolean {
+  if (!text) return false
+  const tl = text.toLowerCase()
+  if (!isShortAlpha) return tl.includes(ql)
+  if (matchesToken(text, ql)) return true
+  const extras = SHORT_QUERY_EXPANSIONS[ql]
+  if (extras) return extras.some((phrase) => tl.includes(phrase))
+  return false
+}
+
+function extractSnippet(text: string, ql: string, isShortAlpha: boolean): string | undefined {
+  if (!text) return undefined
+  const tl = text.toLowerCase()
+  let idx = -1
+  if (isShortAlpha) {
+    // Find the position of the exact token
+    const words = tl.split(/[^a-z0-9]+/)
+    let pos = 0
+    for (const w of words) {
+      if (w === ql) { idx = pos; break }
+      pos += w.length + 1
+    }
+    // Also check expansions
+    if (idx === -1) {
+      const extras = SHORT_QUERY_EXPANSIONS[ql]
+      if (extras) {
+        for (const phrase of extras) {
+          const i = tl.indexOf(phrase)
+          if (i !== -1) { idx = i; break }
+        }
+      }
+    }
+  } else {
+    idx = tl.indexOf(ql)
+  }
+  if (idx === -1) return undefined
+  const start = Math.max(0, idx - 20)
+  const end = Math.min(text.length, idx + ql.length + 40)
+  return (start > 0 ? '…' : '') + text.slice(start, end).trim() + (end < text.length ? '…' : '')
+}
+
+function matchLectureSearch(
+  r: Recording,
+  query: string,
+): { matched: boolean; reason?: MatchReason } {
+  const q = query.trim()
+  if (!q) return { matched: true }
+  const ql = q.toLowerCase()
+  const cjk = hasCJK(q)
+  const shortAlpha = !cjk && isShortAlphabetic(q)
+
+  // For CJK or longer queries: pure substring; for short alpha: token matching
+  const check = (text: string | undefined) => fieldMatches(text ?? '', ql, shortAlpha)
+  const snip = (text: string | undefined) => extractSnippet(text ?? '', ql, shortAlpha)
+
+  if (check(r.title)) return { matched: true, reason: { field: 'title', snippet: snip(r.title) } }
+  if (check(r.course)) return { matched: true, reason: { field: 'course', snippet: snip(r.course) } }
+  const dateText = formatDate(r.createdAt)
+  if (fieldMatches(dateText, ql, false)) return { matched: true, reason: { field: 'date', snippet: dateText } }
+  const durText = formatClock(r.durationSec)
+  if (fieldMatches(durText, ql, false)) return { matched: true, reason: { field: 'duration', snippet: durText } }
+  if (check(r.transcript)) return { matched: true, reason: { field: 'transcript', snippet: snip(r.transcript) } }
+  if (check(r.liveTranscript)) return { matched: true, reason: { field: 'transcript', snippet: snip(r.liveTranscript) } }
+  if (check(r.summaryEn)) return { matched: true, reason: { field: 'summary', snippet: snip(r.summaryEn) } }
+  if (check(r.summaryZh)) return { matched: true, reason: { field: 'summary', snippet: snip(r.summaryZh) } }
+  return { matched: false }
+}
+
+// ── Draggable course recording card ───────────────────────────────────────────
+
+function DraggableCourseRecordingCard({
+  recording,
+  selected,
+  dragging,
+  pickMode,
+  picked,
+  onRowClick,
+}: {
+  recording: Recording
+  selected: boolean
+  dragging: boolean
+  pickMode: boolean
+  picked: boolean
+  onRowClick: (e: MouseEvent<HTMLButtonElement>) => void
+}) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: `course-lecture:${recording.id}`,
+    data: { kind: 'lecture', recordingId: recording.id },
+  })
+
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      {...listeners}
+      {...attributes}
+      className={`courses-recording-card${selected ? ' is-selected' : ''}${dragging || isDragging ? ' is-dragging' : ''}`}
+      style={{ transform: toDragTranslate(transform), touchAction: 'none' }}
+      onClick={onRowClick}
+    >
+      {pickMode ? (
+        <span className="courses-recording-check" aria-hidden>
+          {picked ? '✓' : ''}
+        </span>
+      ) : null}
+      <span className="courses-recording-main">
+        <strong>{recording.title}</strong>
+        <small>{formatDate(recording.createdAt)}</small>
+      </span>
+      <span className="courses-recording-meta">
+        <span>{recording.course?.trim() || 'Uncategorized'}</span>
+        <span>{formatClock(recording.durationSec)}</span>
+      </span>
+    </button>
   )
 }
 
@@ -475,6 +931,11 @@ function LoginScreen({ auth }: { auth: ReturnType<typeof useAuth> }) {
           {emailErr && (
             <p style={{ marginTop: px(t.spacing[2]), color: t.colors.danger, fontSize: t.fontSize.sm }}>
               {emailErr}
+            </p>
+          )}
+          {auth.deepLinkAuthError && (
+            <p style={{ marginTop: px(t.spacing[2]), color: t.colors.danger, fontSize: t.fontSize.sm }}>
+              {auth.deepLinkAuthError}
             </p>
           )}
         </div>
@@ -956,6 +1417,8 @@ function RecordingWorkspace({
   const byokTranscribeOk = BYOK_PROVIDER_CAPABILITIES[byokProvider].transcribe
   const [hostedHealth, setHostedHealth] = useState<HostedHealthSnapshot | null>(null)
   const [hostedHealthUnreachable, setHostedHealthUnreachable] = useState(false)
+  const [sidebarPlanUsage, setSidebarPlanUsage] = useState<SidebarPlanUsage>(FALLBACK_PLAN_USAGE)
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('record')
   const hostedConfigured = isHostedAiConfigured(hostedHealth)
   const stubMode = isStubAiEnabled(hostedHealth)
   /** Cloud Youmi: health not fetched yet — treat pipeline as available until /health proves otherwise (avoids dead UI on login). */
@@ -1013,6 +1476,32 @@ function RecordingWorkspace({
       cancelled = true
     }
   }, [localOnly, aiStoreTick])
+
+  useEffect(() => {
+    if (localOnly || !supabase) {
+      setSidebarPlanUsage(FALLBACK_PLAN_USAGE)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const { data } = await supabase.auth.getSession()
+        const token = data.session?.access_token
+        if (!token) throw new Error('missing_session')
+        const res = await fetch(`${getAiApiBase()}/beta-usage-status`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!res.ok) throw new Error(`usage_${res.status}`)
+        const payload = (await res.json()) as BetaUsageStatusPayload
+        if (!cancelled) setSidebarPlanUsage(planUsageFromApi(payload))
+      } catch {
+        if (!cancelled) setSidebarPlanUsage(FALLBACK_PLAN_USAGE)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [localOnly, supabase])
 
   const onLiveAudioChunkRef = useRef<((blob: Blob, mime: string) => void) | null>(null)
   const onLivePcmChunkRef = useRef<((buffer: ArrayBuffer, sampleRate: number) => void) | null>(null)
@@ -1177,6 +1666,9 @@ function RecordingWorkspace({
   const primaryCaptionRef = useRef('')
   /** Full zh transcript for live v2 (state is windowed to 150 words). */
   const secondaryCaptionFullRef = useRef('')
+  /** Previous overlay committed text — used by getLatestOverlaySegment for delta detection. */
+  const overlayPrevPrimaryRef = useRef('')
+  const overlayPrevSecondaryRef = useRef('')
 
   const syncLiveCaptionViewFromModel = useCallback((v: LiveCaptionView) => {
     primaryCaptionRef.current = v.persistPrimaryFull
@@ -1186,12 +1678,34 @@ function RecordingWorkspace({
     setPrimaryCaptionDraft(v.primaryGray)
     setSecondaryCaption(v.secondaryBlack)
     setSecondaryCaptionDraft(v.secondaryGray)
+    const primarySnippet = getLatestOverlaySegment(overlayPrevPrimaryRef.current, v.primaryBlack, 120)
+    const secondarySnippet = getLatestOverlaySegment(overlayPrevSecondaryRef.current, v.secondaryBlack, 90)
+    if (v.primaryBlack) overlayPrevPrimaryRef.current = v.primaryBlack
+    if (v.secondaryBlack) overlayPrevSecondaryRef.current = v.secondaryBlack
+    emitOverlayCaptions({
+      primaryBlack: primarySnippet,
+      primaryGray: v.primaryGray.length > 100 ? '…' + v.primaryGray.slice(-100) : v.primaryGray,
+      secondaryBlack: secondarySnippet,
+      secondaryGray: v.secondaryGray.length > 80 ? '…' + v.secondaryGray.slice(-80) : v.secondaryGray,
+    })
   }, [])
 
   const resetLiveCaptionSessionUi = useCallback(() => {
+    overlayPrevPrimaryRef.current = ''
+    overlayPrevSecondaryRef.current = ''
     liveCaptionSessionRef.current.reset()
     syncLiveCaptionViewFromModel(liveCaptionSessionRef.current.getView())
   }, [syncLiveCaptionViewFromModel])
+
+  // Broadcast recorder status + elapsed time + translation mode to overlay window.
+  // Runs every second during recording (elapsedSec increments) to keep the overlay timer live.
+  useEffect(() => {
+    emitOverlayStatus({
+      recorderStatus: recorder.status as 'idle' | 'recording' | 'paused',
+      translateActive: SUPPORTED_TRANSLATE_TARGET !== 'off',
+      elapsedSec: recorder.elapsedSec,
+    })
+  }, [recorder.status, recorder.elapsedSec])
 
   /** Session-level banners are derived in `liveCaptionSessionSurface`; this is only for per-chunk issues. */
   const [liveCaptionChunkNotice, setLiveCaptionChunkNotice] = useState<{
@@ -1955,6 +2469,7 @@ function RecordingWorkspace({
   const [detail, setDetail] = useState<RecordingDetail | null>(null)
 
   const [libraryActiveScope, setLibraryActiveScope] = useState<LibraryActiveScope>({ kind: 'all' })
+  const [courseView, setCourseView] = useState<CourseView>({ type: 'all' })
   const [libraryPickMode, setLibraryPickMode] = useState(false)
   const [libraryPickedIds, setLibraryPickedIds] = useState<string[]>([])
   const libraryShiftAnchorRef = useRef<string | null>(null)
@@ -2052,6 +2567,7 @@ function RecordingWorkspace({
     null,
   )
   const [permanentPurgeModal, setPermanentPurgeModal] = useState<string[] | null>(null)
+  const [folderDeleteModal, setFolderDeleteModal] = useState<{ folderId: string; folderName: string } | null>(null)
   const [recentlyDeletedOpen, setRecentlyDeletedOpen] = useState(false)
   const [localTrashRows, setLocalTrashRows] = useState<Recording[]>([])
   const [trashRefreshNonce, setTrashRefreshNonce] = useState(0)
@@ -2106,17 +2622,16 @@ function RecordingWorkspace({
     }
   })
 
-  const [renameFolderModal, setRenameFolderModal] = useState<{ folderId: string; draft: string } | null>(
-    null,
-  )
-  const [editLectureModal, setEditLectureModal] = useState<{
+const [editLectureModal, setEditLectureModal] = useState<{
     id: string
     courseDraft: string
     titleDraft: string
+    error: string | null
   } | null>(null)
   const [lectureMetadataBusy, setLectureMetadataBusy] = useState(false)
   const [newFolderInputVisible, setNewFolderInputVisible] = useState(false)
   const [newFolderInputValue, setNewFolderInputValue] = useState('')
+  const [coursesSearchQuery, setCoursesSearchQuery] = useState('')
 
   useEffect(() => {
     try {
@@ -2145,16 +2660,17 @@ function RecordingWorkspace({
   }, [localOnly, trashRefreshNonce])
 
   useEffect(() => {
-    if (!trashConfirmModal && !permanentPurgeModal) return
+    if (!trashConfirmModal && !permanentPurgeModal && !folderDeleteModal) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setTrashConfirmModal(null)
         setPermanentPurgeModal(null)
+        setFolderDeleteModal(null)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [trashConfirmModal, permanentPurgeModal])
+  }, [trashConfirmModal, permanentPurgeModal, folderDeleteModal])
 
 
   const refreshList = useCallback(async (): Promise<Recording[]> => {
@@ -3269,30 +3785,7 @@ function RecordingWorkspace({
     setLibraryFolders((prev) => [folder, ...prev])
   }
 
-  const openRenameFolderModal = () => {
-    if (libraryActiveScope.kind !== 'folder') return
-    const f = libraryFolders.find((x) => x.id === libraryActiveScope.folderId)
-    if (!f) return
-    setRenameFolderModal({ folderId: f.id, draft: f.name })
-  }
-
-  const commitRenameFolderModal = () => {
-    if (!renameFolderModal) return
-    const name = renameFolderModal.draft.trim()
-    if (!name) {
-      window.alert('Folder name cannot be empty.')
-      return
-    }
-    if (folderNameConflict(name, libraryFolders, renameFolderModal.folderId)) {
-      window.alert('A folder with that name already exists.')
-      return
-    }
-    const fid = renameFolderModal.folderId
-    setLibraryFolders((prev) => prev.map((x) => (x.id === fid ? { ...x, name } : x)))
-    setRenameFolderModal(null)
-  }
-
-  const openEditLectureModal = useCallback(() => {
+const openEditLectureModal = useCallback(() => {
     if (!selectedId) return
     const meta =
       recordings.find((r) => r.id === selectedId) ?? (detail?.id === selectedId ? detail : null)
@@ -3301,6 +3794,7 @@ function RecordingWorkspace({
       id: selectedId,
       courseDraft: meta.course ?? '',
       titleDraft: meta.title ?? '',
+      error: null,
     })
   }, [selectedId, recordings, detail])
 
@@ -3325,7 +3819,8 @@ function RecordingWorkspace({
         await updateRecordingLocal(id, { course: courseNext, title: titleNext })
       } else {
         if (!supabase || !userId) {
-          window.alert('Not signed in.')
+          setEditLectureModal((prev) => (prev ? { ...prev, error: 'Not signed in.' } : null))
+          setLectureMetadataBusy(false)
           return
         }
         await updateRecordingMetadata(supabase, userId, id, { course: courseNext, title: titleNext })
@@ -3338,7 +3833,9 @@ function RecordingWorkspace({
       )
       setEditLectureModal(null)
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : String(e))
+      setEditLectureModal((prev) =>
+        prev ? { ...prev, error: e instanceof Error ? e.message : String(e) } : null,
+      )
     } finally {
       setLectureMetadataBusy(false)
     }
@@ -3380,16 +3877,7 @@ function RecordingWorkspace({
     setLibraryLectureLocation((prev) => ({ ...prev, [recordingId]: 'unfiled' }))
   }
 
-  useEffect(() => {
-    if (!renameFolderModal) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setRenameFolderModal(null)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [renameFolderModal])
-
-  useEffect(() => {
+useEffect(() => {
     if (!editLectureModal) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setEditLectureModal(null)
@@ -3397,6 +3885,10 @@ function RecordingWorkspace({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [editLectureModal])
+
+  useEffect(() => {
+    setCoursesSearchQuery('')
+  }, [courseView])
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -3467,6 +3959,34 @@ function RecordingWorkspace({
       : 0
 
   const visibleLectureIds = recordingIdsInActiveScopeOrdered()
+  const courseViewLectureIds = useMemo(() => {
+    if (courseView.type === 'recentlyDeleted') return []
+    return getScopedRecordingIds(
+      courseView.type === 'folder'
+        ? { kind: 'folder', folderId: courseView.folderId }
+        : courseView.type === 'unfiled'
+          ? { kind: 'unfiled' }
+          : { kind: 'all' },
+      recordingsInLibrary,
+      unfiledRecordings,
+      folderRecordingsMap,
+    )
+  }, [courseView, recordingsInLibrary, unfiledRecordings, folderRecordingsMap])
+  const visibleCourseRecordings = useMemo(() => {
+    const byId = new Map(recordingsInLibrary.map((r) => [r.id, r]))
+    return courseViewLectureIds.map((id) => byId.get(id)).filter((r): r is Recording => Boolean(r))
+  }, [recordingsInLibrary, courseViewLectureIds])
+
+  const filteredCourseRecordings = useMemo((): Array<Recording & { _matchReason?: MatchReason }> => {
+    const q = coursesSearchQuery.trim()
+    if (!q) return visibleCourseRecordings
+    const results: Array<Recording & { _matchReason?: MatchReason }> = []
+    for (const r of visibleCourseRecordings) {
+      const { matched, reason } = matchLectureSearch(r, q)
+      if (matched) results.push(reason ? { ...r, _matchReason: reason } : r)
+    }
+    return results
+  }, [coursesSearchQuery, visibleCourseRecordings])
 
   const cloudTrashEntriesSorted = useMemo(
     () =>
@@ -3478,6 +3998,18 @@ function RecordingWorkspace({
 
   const trashTotalCount = localOnly ? localTrashRows.length : cloudTrashEntriesSorted.length
 
+  const filteredTrashRows = useMemo(() => {
+    const rows = localOnly
+      ? localTrashRows.map((r) => ({ id: r.id, title: r.title?.trim() || 'Untitled lecture', course: r.course ?? '' }))
+      : cloudTrashEntriesSorted.map((r) => ({ id: r.id, title: r.title?.trim() || 'Untitled lecture', course: r.course ?? '' }))
+    const q = coursesSearchQuery.trim()
+    if (!q) return rows
+    const ql = q.toLowerCase()
+    return rows.filter(
+      (row) => row.title.toLowerCase().includes(ql) || row.course.toLowerCase().includes(ql),
+    )
+  }, [coursesSearchQuery, localOnly, localTrashRows, cloudTrashEntriesSorted])
+
   const primaryScopedSelectLabel =
     libraryActiveScope.kind === 'folder'
       ? 'Select this folder'
@@ -3485,15 +4017,548 @@ function RecordingWorkspace({
         ? 'Select unfiled lectures'
         : 'Select all lectures'
 
-  const canRenameLibraryFolder = libraryActiveScope.kind === 'folder' && !libraryPickMode
+  const activeCourseScopeLabel =
+    courseView.type === 'folder'
+      ? libraryFolders.find((f) => f.id === courseView.folderId)?.name ?? 'Folder'
+      : courseView.type === 'recentlyDeleted'
+        ? 'Recently Deleted'
+        : courseView.type === 'unfiled'
+        ? 'Unfiled'
+        : 'All lectures'
+  const activeCourseLectureCount =
+    courseView.type === 'recentlyDeleted' ? filteredTrashRows.length : filteredCourseRecordings.length
 
   const validPickedLectureCount = libraryPickedIds.filter((id) =>
     recordingsInLibrary.some((r) => r.id === id),
   ).length
   const deleteSelectedEnabled = libraryPickMode && validPickedLectureCount > 0 && !deleteActionBusy
+  const coursesDeleteDisabled = deleteActionBusy || courseView.type === 'recentlyDeleted'
 
   const showAccountPanel =
     !localOnly && supabase && userId && onProfileRowChange
+  const handleCoursesDelete = () => {
+    // ── Diagnostic ───────────────────────────────────────────────────────────
+    const validIdSet = new Set(recordingsInLibrary.map((r) => r.id))
+    const selectedLectureIds = libraryPickedIds.filter((id) => validIdSet.has(id))
+    const currentSelectedLecture = selectedId && validIdSet.has(selectedId) ? selectedId : null
+    const resolvedTargetType =
+      libraryPickMode && selectedLectureIds.length > 0
+        ? 'multi-select'
+        : currentSelectedLecture
+          ? 'single-lecture'
+          : courseView.type === 'folder'
+            ? 'folder'
+            : 'none'
+    console.log('[CoursesDelete] clicked', {
+      courseView,
+      activeFolderId: courseView.type === 'folder' ? courseView.folderId : null,
+      selectedId,
+      selectedRecording: selectedId ? recordings.find((r) => r.id === selectedId) : null,
+      selectMode: libraryPickMode,
+      checkedLectureIds: libraryPickedIds,
+      checkedLectureCount: libraryPickedIds.length,
+      deleteDisabled: coursesDeleteDisabled,
+      isRecentlyDeletedView: courseView.type === 'recentlyDeleted',
+      visibleLectureIds: courseViewLectureIds,
+      recordingsInLibraryCount: recordingsInLibrary.length,
+      selectedFolderName: courseView.type === 'folder'
+        ? libraryFolders.find((f) => f.id === courseView.folderId)?.name ?? null
+        : null,
+      resolvedTargetType,
+      resolvedTargetIds: resolvedTargetType === 'multi-select' ? selectedLectureIds
+        : resolvedTargetType === 'single-lecture' ? [currentSelectedLecture]
+        : resolvedTargetType === 'folder' ? [courseView.type === 'folder' ? courseView.folderId : null]
+        : [],
+    })
+
+    // ── Guard: Recently Deleted view ─────────────────────────────────────────
+    if (courseView.type === 'recentlyDeleted') {
+      console.log('[CoursesDelete] early return: recentlyDeleted view')
+      setLibraryFolderNotice('Use Restore or Delete forever on deleted lectures.')
+      return
+    }
+
+    setLibraryFolderNotice(null)
+
+    // Build a LibraryActiveScope that matches the current course view for classifyTrashDeletionScope
+    const courseViewScope: LibraryActiveScope =
+      courseView.type === 'folder'
+        ? { kind: 'folder', folderId: courseView.folderId }
+        : courseView.type === 'unfiled'
+          ? { kind: 'unfiled' }
+          : { kind: 'all' }
+
+    // ── Case B: multi-select ─────────────────────────────────────────────────
+    if (libraryPickMode && selectedLectureIds.length > 0) {
+      console.log('[CoursesDelete] multi-select branch, opening trashConfirmModal', selectedLectureIds)
+      const scope = classifyTrashDeletionScope(
+        selectedLectureIds,
+        courseViewScope,
+        unfiledRecordings,
+        folderRecordingsMap,
+        libraryFolders,
+      )
+      setTrashConfirmModal({ ids: selectedLectureIds, scope })
+      return
+    }
+
+    // ── Case A: single lecture ───────────────────────────────────────────────
+    if (currentSelectedLecture) {
+      console.log('[CoursesDelete] single-lecture branch, opening trashConfirmModal', currentSelectedLecture)
+      const scope = classifyTrashDeletionScope(
+        [currentSelectedLecture],
+        courseViewScope,
+        unfiledRecordings,
+        folderRecordingsMap,
+        libraryFolders,
+      )
+      setTrashConfirmModal({ ids: [currentSelectedLecture], scope })
+      return
+    }
+
+    // ── Case C: folder ───────────────────────────────────────────────────────
+    if (courseView.type === 'folder') {
+      const folder = libraryFolders.find((f) => f.id === courseView.folderId)
+      const folderName = folder?.name.trim() || 'this folder'
+      const count = folderRecordingsMap[courseView.folderId]?.length ?? 0
+      console.log('[CoursesDelete] folder branch', { folderId: courseView.folderId, folderName, count })
+      if (count > 0) {
+        console.log('[CoursesDelete] folder blocked: non-empty', { count })
+        setLibraryFolderNotice('Move or delete lectures before deleting this folder.')
+        return
+      }
+      console.log('[CoursesDelete] opening folderDeleteModal for empty folder')
+      setFolderDeleteModal({ folderId: courseView.folderId, folderName })
+      return
+    }
+
+    // ── Case D: no valid target ──────────────────────────────────────────────
+    console.log('[CoursesDelete] no valid target')
+    setLibraryFolderNotice('Select a folder or lecture first.')
+  }
+
+  const workspacePage =
+    workspaceView === 'courses' ? (
+      <section className="workspace-page courses-workspace-page" aria-labelledby="courses-title">
+        <div className="workspace-page-head">
+          <p className="yl-recording-strip__eyebrow">Workspace</p>
+          <h1 id="courses-title">Courses</h1>
+          <p>Manage courses and lecture recordings.</p>
+        </div>
+        <div className="courses-manager-card">
+          <header className="courses-manager-toolbar">
+            <label className="courses-search-field">
+              <span>Search lectures</span>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="search"
+                  placeholder="Search title, course, transcript..."
+                  aria-label="Search lectures"
+                  value={coursesSearchQuery}
+                  onChange={(e) => {
+                    setCoursesSearchQuery(e.target.value)
+                    setLibraryPickedIds([])
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setCoursesSearchQuery('')
+                      setLibraryPickedIds([])
+                    }
+                  }}
+                  style={{ width: '100%', boxSizing: 'border-box', paddingRight: coursesSearchQuery ? '2rem' : undefined }}
+                />
+                {coursesSearchQuery ? (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    onClick={() => {
+                      setCoursesSearchQuery('')
+                      setLibraryPickedIds([])
+                    }}
+                    style={{
+                      position: 'absolute',
+                      right: '0.6rem',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: '#6b7890',
+                      fontSize: '1.1rem',
+                      lineHeight: 1,
+                      padding: '0 2px',
+                    }}
+                  >
+                    ×
+                  </button>
+                ) : null}
+              </div>
+              <span style={{ fontSize: '0.72rem', color: '#9ba3af', marginTop: '0.2rem', lineHeight: 1.3 }}>
+                Searches title, course, date, and loaded transcript/summary.
+              </span>
+            </label>
+            <div className="courses-toolbar-actions">
+              {!newFolderInputVisible ? (
+                <button type="button" className="btn ghost small" onClick={createFolder}>
+                  New folder
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="btn ghost small"
+                disabled={courseView.type === 'recentlyDeleted'}
+                onClick={() => {
+                  if (libraryPickMode) {
+                    setLibraryPickMode(false)
+                    setLibraryPickedIds([])
+                  } else {
+                    setLibraryPickMode(true)
+                    setLibraryPickedIds([])
+                    setSelectedId(null)
+                  }
+                }}
+              >
+                {libraryPickMode ? 'Done' : 'Select'}
+              </button>
+              {libraryPickMode ? (
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  onClick={() =>
+                    setLibraryPickedIds(
+                      coursesSearchQuery.trim()
+                        ? filteredCourseRecordings.map((r) => r.id)
+                        : courseViewLectureIds,
+                    )
+                  }
+                >
+                  {primaryScopedSelectLabel}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="btn ghost small"
+                disabled={coursesDeleteDisabled}
+                onClick={handleCoursesDelete}
+              >
+                {deleteActionBusy ? 'Working…' : 'Delete'}
+              </button>
+            </div>
+          </header>
+
+          {newFolderInputVisible ? (
+            <div className="courses-inline-create">
+              <input
+                type="text"
+                autoFocus
+                placeholder="Folder name"
+                value={newFolderInputValue}
+                onChange={(e) => setNewFolderInputValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') confirmNewFolder()
+                  if (e.key === 'Escape') {
+                    setNewFolderInputVisible(false)
+                    setNewFolderInputValue('')
+                  }
+                }}
+                onBlur={confirmNewFolder}
+              />
+            </div>
+          ) : null}
+
+          {libraryFolderNotice ? (
+            <div className="courses-notice" role="status">
+              {libraryFolderNotice}
+            </div>
+          ) : null}
+
+          {(libraryPickMode || libraryPickedIds.length > 0) ? (
+            <div className="yl-library-multiselect-banner">
+              <span className="yl-library-multiselect-count">
+                {libraryPickMode ? validPickedLectureCount : libraryPickedIds.length} selected
+              </span>
+              <button type="button" className="btn ghost small" onClick={() => setLibraryPickedIds([])}>
+                Clear selection
+              </button>
+            </div>
+          ) : null}
+
+          <DndContext
+            sensors={sensors}
+            collisionDetection={pointerWithin}
+            onDragStart={handleDndStart}
+            onDragOver={handleDndOver}
+            onDragCancel={handleDndCancel}
+            onDragEnd={handleDndEnd}
+          >
+          <div className="courses-manager-grid">
+            <aside className="courses-scope-list" aria-label="Courses and folders">
+              <button
+                type="button"
+                className={`courses-scope-item${courseView.type === 'all' ? ' is-active' : ''}`}
+                onClick={() => {
+                  setCourseView({ type: 'all' })
+                  setLibraryActiveScope({ kind: 'all' })
+                  setSelectedId(null)
+                  setLibraryPickedIds([])
+                  setLibraryPickMode(false)
+                }}
+              >
+                <span>All lectures</span>
+                <small>{recordingsInLibrary.length}</small>
+              </button>
+              <button
+                type="button"
+                className={`courses-scope-item${courseView.type === 'recentlyDeleted' ? ' is-active' : ''}`}
+                onClick={() => {
+                  setCourseView({ type: 'recentlyDeleted' })
+                  setSelectedId(null)
+                  setLibraryPickedIds([])
+                  setLibraryPickMode(false)
+                }}
+              >
+                <span>Recently deleted</span>
+                <small>{trashTotalCount}</small>
+              </button>
+              <DroppableLibraryTarget
+                dropId="unfiled"
+                activeDropId={dropTargetFolderId}
+                className="courses-scope-drop"
+              >
+                <button
+                  type="button"
+                  className={`courses-scope-item${courseView.type === 'unfiled' ? ' is-active' : ''}`}
+                  onClick={() => {
+                    setCourseView({ type: 'unfiled' })
+                    setLibraryActiveScope({ kind: 'unfiled' })
+                    setSelectedId(null)
+                    setLibraryPickedIds([])
+                    setLibraryPickMode(false)
+                  }}
+                >
+                  <span>Unfiled</span>
+                  <small>{unfiledRecordings.length}</small>
+                </button>
+              </DroppableLibraryTarget>
+              {libraryFolders
+                .slice()
+                .sort((a, b) => b.createdAt - a.createdAt)
+                .map((folder) => (
+                  <DroppableLibraryTarget
+                    key={folder.id}
+                    dropId={folder.id}
+                    activeDropId={dropTargetFolderId}
+                    className="courses-scope-drop"
+                  >
+                    <button
+                      type="button"
+                      className={`courses-scope-item${
+                        courseView.type === 'folder' && courseView.folderId === folder.id ? ' is-active' : ''
+                      }`}
+                      onClick={() => {
+                        setCourseView({ type: 'folder', folderId: folder.id })
+                        setLibraryActiveScope({ kind: 'folder', folderId: folder.id })
+                        setSelectedId(null)
+                        setLibraryPickedIds([])
+                        setLibraryPickMode(false)
+                      }}
+                    >
+                      <span>{folder.name}</span>
+                      <small>{folderRecordingsMap[folder.id]?.length ?? 0}</small>
+                    </button>
+                  </DroppableLibraryTarget>
+                ))}
+            </aside>
+
+            <section className="courses-lecture-list" aria-label="Saved lectures">
+              <div className="courses-lecture-list-head">
+                <div>
+                  <h2>{activeCourseScopeLabel}</h2>
+                  <p>
+                    {activeCourseLectureCount} lecture{activeCourseLectureCount === 1 ? '' : 's'}
+                    {coursesSearchQuery.trim() ? ` for "${coursesSearchQuery.trim()}"` : ''}
+                  </p>
+                </div>
+              </div>
+              {courseView.type === 'recentlyDeleted' ? (
+                <div className="courses-trash-panel">
+                  <h3>Recently Deleted</h3>
+                  {trashTotalCount === 0 ? (
+                    <p className="muted small">Trash is empty.</p>
+                  ) : filteredTrashRows.length === 0 ? (
+                    <div className="courses-empty-list">
+                      <h3>No lectures found.</h3>
+                      <p>Try another keyword or switch to All lectures.</p>
+                    </div>
+                  ) : (
+                    <ul>
+                      {filteredTrashRows.map((row) => (
+                        <li key={row.id}>
+                          <span>{row.title}</span>
+                          <button type="button" className="btn ghost small" disabled={deleteActionBusy} onClick={() => void restoreLecturesFromTrash([row.id])}>
+                            Restore
+                          </button>
+                          <button type="button" className="btn ghost small" disabled={deleteActionBusy} onClick={() => setPermanentPurgeModal([row.id])}>
+                            Delete forever
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : filteredCourseRecordings.length === 0 ? (
+                <div className="courses-empty-list">
+                  {coursesSearchQuery.trim() ? (
+                    <>
+                      <h3>No lectures found.</h3>
+                      <p>Try another keyword or switch to All lectures.</p>
+                    </>
+                  ) : (
+                    <>
+                      <h3>No lectures here yet.</h3>
+                      <p>Saved recordings for this course or folder will appear here.</p>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <ul className="courses-recording-list">
+                  {filteredCourseRecordings.map((recording) => (
+                    <li key={recording.id}>
+                      <DraggableCourseRecordingCard
+                        recording={recording}
+                        selected={recording.id === selectedId}
+                        dragging={draggingRecordingId === recording.id}
+                        pickMode={libraryPickMode}
+                        picked={libraryPickedIds.includes(recording.id)}
+                        onRowClick={handleLectureRowClick(recording.id)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+          <DragOverlay>
+            {dragOverlayRecordingId ? (
+              <div className="courses-drag-preview">
+                {recordings.find((r) => r.id === dragOverlayRecordingId)?.title ?? 'Lecture'}
+              </div>
+            ) : null}
+          </DragOverlay>
+          </DndContext>
+        </div>
+      </section>
+    ) : workspaceView === 'settings' ? (
+      <section className="workspace-page workspace-placeholder-page" aria-labelledby="settings-title">
+        <div className="workspace-page-head">
+          <p className="yl-recording-strip__eyebrow">Workspace</p>
+          <h1 id="settings-title">Settings</h1>
+          <p>Preferences &amp; account</p>
+        </div>
+        <div className="settings-placeholder-grid">
+
+          {/* ── 1. Account & Plan ──────────────────────────────────────────── */}
+          <section className="workspace-placeholder-card">
+            <h2 style={{ marginBottom: '1rem' }}>Account &amp; Plan</h2>
+            <dl style={{ margin: 0, display: 'grid', gap: '0.65rem' }}>
+              {!localOnly && userEmail ? (
+                <div>
+                  <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Signed in as</dt>
+                  <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500, wordBreak: 'break-all' }}>{userEmail}</dd>
+                </div>
+              ) : localOnly ? (
+                <div>
+                  <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Mode</dt>
+                  <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>Local only</dd>
+                </div>
+              ) : null}
+              <div>
+                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Plan</dt>
+                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
+                  {getDisplayPlanLabel(sidebarPlanUsage.planType, sidebarPlanUsage.unlimited)}
+                  {sidebarPlanUsage.source === 'fallback' && (
+                    <span style={{ marginLeft: '0.4rem', fontSize: '0.75rem', color: '#9ba3af' }}>(loading…)</span>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Lecture minutes</dt>
+                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
+                  {formatMinutesUsage(sidebarPlanUsage)}
+                </dd>
+              </div>
+            </dl>
+            {!localOnly && onSignOut ? (
+              <button
+                type="button"
+                className="btn ghost small"
+                onClick={onSignOut}
+                style={{ marginTop: '1.1rem' }}
+              >
+                Sign out
+              </button>
+            ) : null}
+          </section>
+
+          {/* ── 2. Lecture Defaults ────────────────────────────────────────── */}
+          <section className="workspace-placeholder-card">
+            <h2 style={{ marginBottom: '1rem' }}>Lecture Defaults</h2>
+            <dl style={{ margin: 0, display: 'grid', gap: '0.65rem' }}>
+              <div>
+                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Spoken language</dt>
+                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>English</dd>
+              </div>
+              <div>
+                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Translation</dt>
+                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>Chinese Simplified</dd>
+              </div>
+              <div>
+                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Default output</dt>
+                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>Live captions + bilingual summary</dd>
+              </div>
+              <div>
+                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Overlay behavior</dt>
+                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
+                  Minimize main window on open · Visible across Spaces
+                </dd>
+              </div>
+            </dl>
+            <p style={{ margin: '1rem 0 0', fontSize: '0.78rem', color: '#9ba3af' }}>
+              Configurable language and output controls coming soon.
+            </p>
+          </section>
+
+          {/* ── 3. Feedback & Support ──────────────────────────────────────── */}
+          <section className="workspace-placeholder-card">
+            <h2 style={{ marginBottom: '0.65rem' }}>Feedback &amp; Support</h2>
+            <p style={{ margin: '0 0 0.85rem', color: '#6b7890', fontSize: '0.875rem', lineHeight: 1.55 }}>
+              Youmi Lens is currently in beta. Please report issues with recording,
+              live captions, translation, summary generation, or overlay display.
+            </p>
+            <dl style={{ margin: '0 0 1rem', display: 'grid', gap: '0.4rem' }}>
+              <div>
+                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Support email</dt>
+                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
+                  youmilens@gmail.com
+                </dd>
+              </div>
+            </dl>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn ghost small"
+                onClick={() => {
+                  void navigator.clipboard.writeText('youmilens@gmail.com').catch(() => {})
+                }}
+              >
+                Copy email
+              </button>
+            </div>
+          </section>
+
+        </div>
+      </section>
+    ) : undefined
 
   return (
     <>
@@ -3657,7 +4722,168 @@ function RecordingWorkspace({
           </div>
         </div>
       ) : null}
+      {folderDeleteModal ? (
+        <div
+          role="presentation"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1260,
+            background: 'rgba(15, 23, 42, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '1rem',
+          }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setFolderDeleteModal(null)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="yl-folder-delete-title"
+            style={{
+              background: 'var(--yl-card, #fff)',
+              borderRadius: '10px',
+              padding: '1.15rem',
+              maxWidth: 'min(420px, 100%)',
+              boxShadow: '0 12px 40px rgba(0,0,0,0.12)',
+              border: '1px solid var(--yl-border, #e2e8f0)',
+            }}
+          >
+            <h3 id="yl-folder-delete-title" style={{ margin: '0 0 0.5rem', fontSize: '1.05rem' }}>
+              Delete folder?
+            </h3>
+            <p style={{ margin: '0 0 0.85rem', fontSize: '0.875rem', lineHeight: 1.45, color: '#475569' }}>
+              Delete folder <strong>"{folderDeleteModal.folderName}"</strong>? Lectures inside it will not be deleted —
+              they will become unfiled.
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <button type="button" className="btn ghost small" onClick={() => setFolderDeleteModal(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn primary small"
+                onClick={() => {
+                  const { folderId } = folderDeleteModal
+                  console.log('[CoursesDelete] folderDeleteModal confirmed', { folderId })
+                  deleteFolderIfEmpty(folderId)
+                  setCourseView({ type: 'all' })
+                  setLibraryActiveScope({ kind: 'all' })
+                  setSelectedId(null)
+                  setLibraryPickedIds([])
+                  setFolderDeleteModal(null)
+                }}
+              >
+                Delete folder
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {editLectureModal ? (
+        <div
+          role="presentation"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1270,
+            background: 'rgba(15, 23, 42, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '1rem',
+          }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setEditLectureModal(null)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="yl-edit-lecture-title"
+            style={{
+              background: 'var(--yl-card, #fff)',
+              borderRadius: '10px',
+              padding: '1rem',
+              minWidth: 'min(360px, 100%)',
+              boxShadow: '0 12px 40px rgba(0,0,0,0.12)',
+              border: '1px solid var(--yl-border, #e2e8f0)',
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h3 id="yl-edit-lecture-title" style={{ margin: '0 0 0.75rem', fontSize: '1rem' }}>
+              Edit lecture
+            </h3>
+            <label className="field" style={{ display: 'block', marginBottom: '0.65rem' }}>
+              <span>Course</span>
+              <input
+                type="text"
+                className="input"
+                value={editLectureModal.courseDraft}
+                disabled={lectureMetadataBusy}
+                onChange={(e) =>
+                  setEditLectureModal((prev) =>
+                    prev ? { ...prev, courseDraft: e.target.value, error: null } : null,
+                  )
+                }
+                style={{ width: '100%', boxSizing: 'border-box' }}
+              />
+            </label>
+            <label className="field" style={{ display: 'block', marginBottom: '0.75rem' }}>
+              <span>Title</span>
+              <input
+                type="text"
+                className="input"
+                value={editLectureModal.titleDraft}
+                disabled={lectureMetadataBusy}
+                onChange={(e) =>
+                  setEditLectureModal((prev) =>
+                    prev ? { ...prev, titleDraft: e.target.value, error: null } : null,
+                  )
+                }
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void commitEditLectureModal()
+                }}
+                style={{ width: '100%', boxSizing: 'border-box' }}
+              />
+            </label>
+            <p className="muted small" style={{ margin: '0 0 0.75rem' }}>
+              Empty fields keep your current course or title. If both would be empty, course defaults to
+              &quot;Untitled course&quot; and title to a dated lecture name.
+            </p>
+            {editLectureModal.error && (
+              <p style={{ margin: '-0.25rem 0 0.65rem', fontSize: '0.82rem', color: '#c0392b' }}>
+                {editLectureModal.error}
+              </p>
+            )}
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="btn ghost small"
+                disabled={lectureMetadataBusy}
+                onClick={() => setEditLectureModal(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn ghost small"
+                disabled={lectureMetadataBusy}
+                aria-busy={lectureMetadataBusy}
+                onClick={() => void commitEditLectureModal()}
+              >
+                {lectureMetadataBusy ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <YoumiLensShell
+      workspacePage={workspacePage}
+      showWorkspaceSummary={workspaceView === 'courses'}
       welcomeLine={!localOnly ? welcomeLine : undefined}
       topBarActions={
         <div
@@ -3735,17 +4961,48 @@ function RecordingWorkspace({
           <div className="yl-nav-section">
             <div className="yl-nav-section-label">Workspace</div>
             <nav className="yl-nav" aria-label="Workspace">
-              <span className="yl-nav-item yl-active">Record</span>
-              <a href="#yl-library" className="yl-nav-item">
-                Library
-              </a>
-              <a href="#yl-settings" className="yl-nav-item">
-                Settings
-              </a>
+              <button
+                type="button"
+                className={`yl-nav-item${workspaceView === 'record' ? ' yl-active' : ''}`}
+                onClick={() => setWorkspaceView('record')}
+              >
+                <span className="yl-nav-icon" aria-hidden>⌕</span>
+                <span className="yl-nav-copy">
+                  <strong>Record</strong>
+                  <small>Start a new lecture</small>
+                </span>
+              </button>
+              <button
+                type="button"
+                className={`yl-nav-item${workspaceView === 'courses' ? ' yl-active' : ''}`}
+                onClick={() => setWorkspaceView('courses')}
+              >
+                <span className="yl-nav-icon" aria-hidden>▤</span>
+                <span className="yl-nav-copy">
+                  <strong>Courses</strong>
+                  <small>Manage your courses</small>
+                </span>
+              </button>
+              <button
+                type="button"
+                className={`yl-nav-item${workspaceView === 'settings' ? ' yl-active' : ''}`}
+                onClick={() => setWorkspaceView('settings')}
+              >
+                <span className="yl-nav-icon" aria-hidden>⚙</span>
+                <span className="yl-nav-copy">
+                  <strong>Settings</strong>
+                  <small>Preferences & account</small>
+                </span>
+              </button>
             </nav>
           </div>
-          <div className="yl-sidebar-divider" aria-hidden />
-          <div id="yl-library" className="yl-history-section list-panel">
+          <SidebarPlanCard usage={sidebarPlanUsage} />
+          <div className="yl-sidebar-divider record-sidebar-admin-hidden" aria-hidden />
+          <div
+            id="yl-library"
+            className="yl-history-section list-panel record-sidebar-admin-hidden"
+            aria-hidden="true"
+          >
             <div className="yl-nav-section-label yl-nav-section-label--secondary yl-library-head">
               <span>
                 Lectures
@@ -3838,19 +5095,6 @@ function RecordingWorkspace({
                   </>
                 ) : (
                   <>
-                    <button
-                      type="button"
-                      className="btn ghost small"
-                      disabled={!canRenameLibraryFolder}
-                      title={
-                        libraryActiveScope.kind !== 'folder'
-                          ? 'Select a named folder below (not All lectures or Unfiled).'
-                          : 'Rename this folder'
-                      }
-                      onClick={() => openRenameFolderModal()}
-                    >
-                      Rename folder
-                    </button>
                     <button
                       type="button"
                       className="btn ghost small"
@@ -4050,154 +5294,6 @@ function RecordingWorkspace({
               ) : null}
             </div>
 
-            {renameFolderModal ? (
-              <div
-                role="presentation"
-                style={{
-                  position: 'fixed',
-                  inset: 0,
-                  zIndex: 1200,
-                  background: 'rgba(15, 23, 42, 0.45)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  padding: '1rem',
-                }}
-                onMouseDown={(e) => {
-                  if (e.target === e.currentTarget) setRenameFolderModal(null)
-                }}
-              >
-                <div
-                  role="dialog"
-                  aria-labelledby="yl-rename-folder-title"
-                  style={{
-                    background: 'var(--yl-card, #fff)',
-                    borderRadius: '10px',
-                    padding: '1rem',
-                    minWidth: 'min(320px, 100%)',
-                    boxShadow: '0 12px 40px rgba(0,0,0,0.12)',
-                  }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  <h3 id="yl-rename-folder-title" style={{ margin: '0 0 0.75rem', fontSize: '1rem' }}>
-                    Rename folder
-                  </h3>
-                  <input
-                    type="text"
-                    autoFocus
-                    className="input"
-                    value={renameFolderModal.draft}
-                    onChange={(e) =>
-                      setRenameFolderModal((prev) => (prev ? { ...prev, draft: e.target.value } : null))
-                    }
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') commitRenameFolderModal()
-                    }}
-                    style={{ width: '100%', boxSizing: 'border-box', marginBottom: '0.75rem' }}
-                  />
-                  <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
-                    <button type="button" className="btn ghost small" onClick={() => setRenameFolderModal(null)}>
-                      Cancel
-                    </button>
-                    <button type="button" className="btn ghost small" onClick={() => commitRenameFolderModal()}>
-                      Save
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            {editLectureModal ? (
-              <div
-                role="presentation"
-                style={{
-                  position: 'fixed',
-                  inset: 0,
-                  zIndex: 1200,
-                  background: 'rgba(15, 23, 42, 0.45)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  padding: '1rem',
-                }}
-                onMouseDown={(e) => {
-                  if (e.target === e.currentTarget) setEditLectureModal(null)
-                }}
-              >
-                <div
-                  role="dialog"
-                  aria-labelledby="yl-edit-lecture-title"
-                  style={{
-                    background: 'var(--yl-card, #fff)',
-                    borderRadius: '10px',
-                    padding: '1rem',
-                    minWidth: 'min(360px, 100%)',
-                    boxShadow: '0 12px 40px rgba(0,0,0,0.12)',
-                  }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  <h3 id="yl-edit-lecture-title" style={{ margin: '0 0 0.75rem', fontSize: '1rem' }}>
-                    Edit lecture
-                  </h3>
-                  <label className="field" style={{ display: 'block', marginBottom: '0.65rem' }}>
-                    <span>Course</span>
-                    <input
-                      type="text"
-                      className="input"
-                      value={editLectureModal.courseDraft}
-                      disabled={lectureMetadataBusy}
-                      onChange={(e) =>
-                        setEditLectureModal((prev) =>
-                          prev ? { ...prev, courseDraft: e.target.value } : null,
-                        )
-                      }
-                      style={{ width: '100%', boxSizing: 'border-box' }}
-                    />
-                  </label>
-                  <label className="field" style={{ display: 'block', marginBottom: '0.75rem' }}>
-                    <span>Title</span>
-                    <input
-                      type="text"
-                      className="input"
-                      value={editLectureModal.titleDraft}
-                      disabled={lectureMetadataBusy}
-                      onChange={(e) =>
-                        setEditLectureModal((prev) =>
-                          prev ? { ...prev, titleDraft: e.target.value } : null,
-                        )
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') void commitEditLectureModal()
-                      }}
-                      style={{ width: '100%', boxSizing: 'border-box' }}
-                    />
-                  </label>
-                  <p className="muted small" style={{ margin: '0 0 0.75rem' }}>
-                    Empty fields keep your current course or title. If both would be empty, course defaults to
-                    &quot;Untitled course&quot; and title to a dated lecture name.
-                  </p>
-                  <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
-                    <button
-                      type="button"
-                      className="btn ghost small"
-                      disabled={lectureMetadataBusy}
-                      onClick={() => setEditLectureModal(null)}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="btn ghost small"
-                      disabled={lectureMetadataBusy}
-                      aria-busy={lectureMetadataBusy}
-                      onClick={() => void commitEditLectureModal()}
-                    >
-                      {lectureMetadataBusy ? 'Saving…' : 'Save'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : null}
 
             <DndContext
               sensors={sensors}
@@ -4462,8 +5558,14 @@ function RecordingWorkspace({
       recordingStrip={
         <>
           <div className="yl-recording-strip__lead">
-            <p className="yl-recording-strip__eyebrow">Now</p>
-            <div className="row" style={{ flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-end', marginBottom: '0.35rem' }}>
+            <div className="record-card-head">
+              <div>
+                <p className="yl-recording-strip__eyebrow">Workspace</p>
+                <h1 className="yl-lecture-title">Record Lecture</h1>
+              </div>
+              <span className="record-help-link">How it works</span>
+            </div>
+            <div className="row record-fields-grid" style={{ flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-end', marginBottom: '0.35rem' }}>
           <label className="field">
             <span>Course</span>
             <input
@@ -4496,10 +5598,32 @@ function RecordingWorkspace({
                     : 'Paused'}
             </p>
           </div>
-          <div className="yl-recording-strip__controls">
-            <div className="yl-timer-block" aria-live="polite">
-              <span className="yl-timer-label">Elapsed</span>
-              <span className="yl-timer">{formatClock(recorder.elapsedSec)}</span>
+          <div className="yl-recording-strip__controls recording-status-card">
+            <div className="recording-status-head">
+              <span className={`recording-status-icon recording-status-icon--${recorder.status}`} aria-hidden>
+                ●
+              </span>
+              <div className="recording-status-copy">
+                <span className="recording-status-label">
+                  {recorder.status === 'idle' ? 'Ready' : recorder.status === 'recording' ? 'Listening' : 'Paused'}
+                </span>
+                <span className="recording-status-subtitle">
+                  {saveOrFinishBusy && capturePhaseLabel(flow.phase)
+                    ? capturePhaseLabel(flow.phase)
+                    : recorder.status === 'idle'
+                      ? 'Set your lecture details, then start listening.'
+                      : 'Recording continues until you stop and save.'}
+                </span>
+              </div>
+              <div className="yl-timer-block" aria-live="polite">
+                <span className="yl-timer-label">Elapsed</span>
+                <span className="yl-timer">{formatClock(recorder.elapsedSec)}</span>
+              </div>
+            </div>
+            <div className="recording-waveform" aria-hidden>
+              {Array.from({ length: 42 }, (_, index) => (
+                <span key={index} style={{ '--bar': `${22 + ((index * 17) % 46)}%` } as CSSProperties} />
+              ))}
             </div>
             <div className="yl-record-actions">
               {recorder.status === 'idle' && (
@@ -4615,7 +5739,12 @@ function RecordingWorkspace({
       )}
 
           <section className="panel" id="yl-settings">
-            <h2>Session</h2>
+            <div className="record-card-head">
+              <div>
+                <p className="yl-recording-strip__eyebrow">Session</p>
+                <h2>Language setup</h2>
+              </div>
+            </div>
             <div className="session-form-row">
               <label className="field session-field">
                 <span className="session-field__label">Spoken language</span>
@@ -4630,10 +5759,8 @@ function RecordingWorkspace({
                 </div>
               </label>
             </div>
-        <p className="hint small" style={{ marginTop: '-0.5rem' }}>
-          <strong>V1:</strong> the reliable path is Stop & save, then open the recording and run{' '}
-          <strong>Generate transcript & summaries</strong> for the full English transcript and Chinese summaries in
-          Supabase. <strong>Live captions</strong> below are an optional beta preview while you record.
+        <p className="hint small session-quiet-copy">
+          Live preview stays focused while the full transcript and summaries are generated after saving.
         </p>
         {!postClassAiEnabled ? (
           <p className="hint small" style={{ marginTop: '0.35rem' }}>
@@ -4670,6 +5797,7 @@ function RecordingWorkspace({
           </div>
         )}
         <div
+          className="internal-beta-note"
           style={{
             marginTop: '1.25rem',
             paddingTop: '1rem',
@@ -4713,20 +5841,29 @@ function RecordingWorkspace({
           </>
         )}
         {(recorder.status === 'recording' || recorder.status === 'paused') && (
-          <>
+          <div className="live-cockpit">
+            <div className="live-cockpit-head">
+              <div>
+                <h2>Live Captions</h2>
+                <p className="live-caption-hint muted small">{LIVE_CAPTIONS_USER_EXPECTATION_EN}</p>
+              </div>
+              <div className="live-cockpit-actions">
+                <span className="live-pill">Beta</span>
+                {recorder.status === 'paused' && (
+                  <span className="live-pill">Paused - text kept</span>
+                )}
+                {isTauriContext() && (
+                  <LectureOverlayButton />
+                )}
+              </div>
+            </div>
+            <div className="live-caption-columns">
             <div className="live-caption live-caption-primary" aria-live="polite">
               <div className="live-caption-head">
                 <div className="live-caption-label">
-                  Primary · {spokenLanguageLabel(liveLang)}{' '}
-                  <span className="live-pill" style={{ fontWeight: 500 }}>
-                    Beta preview
-                  </span>
+                  Primary · {spokenLanguageLabel(liveLang)}
                 </div>
-                {recorder.status === 'paused' && (
-                  <span className="live-pill">Paused — text kept</span>
-                )}
               </div>
-              <p className="live-caption-hint muted small">{LIVE_CAPTIONS_USER_EXPECTATION_EN}</p>
               <p className="live-caption-hint muted small">
                 {useLiveEngineV2 && liveV2CaptionPhase && liveV2CaptionPhase !== 'paused' ? (
                   <>
@@ -4747,8 +5884,7 @@ function RecordingWorkspace({
                   </>
                 ) : (
                   <>
-                    About every {LIVE_WHISPER_SLICE_SEC}s while you speak; faint text means that segment is still
-                    updating. Pause stops new segments.
+                    Live preview is waiting for the next spoken phrase.
                   </>
                 )}
               </p>
@@ -4812,7 +5948,8 @@ function RecordingWorkspace({
                 </div>
               </div>
             )}
-          </>
+            </div>
+          </div>
         )}
 
           {recorder.status === 'idle' && selectedId && !detail && (
@@ -4873,7 +6010,41 @@ function RecordingWorkspace({
       rightPanel={
         <div className="yl-summary-body">
           {!selectedId && (
-            <p className="yl-summary-placeholder muted">Choose a recording to see playback and summaries.</p>
+            <div className="summary-empty-state">
+              <div className="summary-empty-icon" aria-hidden />
+              <h3>No lecture selected</h3>
+              <p>After saving a lecture, Youmi Lens will generate:</p>
+              <ul>
+                <li>English summary</li>
+                <li>Chinese summary</li>
+                <li>Full transcript</li>
+              </ul>
+            </div>
+          )}
+          {recorder.status !== 'idle' && (
+            <section className="current-session-card" aria-label="Current session">
+              <div className="current-session-head">
+                <h3>Current Session</h3>
+                <span className="current-session-status">
+                  <span aria-hidden />
+                  {recorder.status === 'recording' ? 'Listening' : 'Paused'}
+                </span>
+              </div>
+              <dl className="current-session-list">
+                <div>
+                  <dt>Duration</dt>
+                  <dd>{formatClock(recorder.elapsedSec)}</dd>
+                </div>
+                <div>
+                  <dt>Course</dt>
+                  <dd>{course.trim() || 'Untitled course'}</dd>
+                </div>
+                <div>
+                  <dt>Language</dt>
+                  <dd>{spokenLanguageLabel(liveLang)} → {translateTarget === 'zh' ? 'Chinese' : 'English'}</dd>
+                </div>
+              </dl>
+            </section>
           )}
           {selectedId && !detail && <p className="muted">Loading…</p>}
           {detail && (

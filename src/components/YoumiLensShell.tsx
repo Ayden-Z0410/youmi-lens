@@ -17,6 +17,10 @@ export type YoumiLensShellProps = {
   transcript?: ReactNode
   /** Summary / notes column */
   rightPanel?: ReactNode
+  /** Full-page workspace content for non-record views */
+  workspacePage?: ReactNode
+  /** Keep the Summary/detail column visible alongside a non-record workspace page */
+  showWorkspaceSummary?: boolean
   /** Replaces default subtitle under "Summary" in the right column header */
   summaryHint?: ReactNode
   /** Optional Youmi companion strip below transcript */
@@ -24,7 +28,7 @@ export type YoumiLensShellProps = {
 }
 
 /**
- * Low-fidelity layout shell for Youmi Lens desktop main UI.
+ * Premium Record cockpit shell for Youmi Lens desktop.
  * Does not include business logic; pass existing UI fragments as children slots.
  */
 export function YoumiLensShell({
@@ -35,6 +39,8 @@ export function YoumiLensShell({
   mainExtra,
   transcript,
   rightPanel,
+  workspacePage,
+  showWorkspaceSummary = false,
   summaryHint,
   companionHint,
 }: YoumiLensShellProps) {
@@ -136,7 +142,7 @@ export function YoumiLensShell({
   }
 
   return (
-    <div className={`yl-shell${draggingResizer ? ' yl-shell--resizing' : ''}`} style={shellStyle}>
+    <div className={`yl-shell record-shell${draggingResizer ? ' yl-shell--resizing' : ''}`} style={shellStyle}>
       <header className="yl-topbar">
         <div className="yl-topbar-lead">
           <div className="yl-brand">
@@ -187,85 +193,109 @@ export function YoumiLensShell({
         }}
       />
 
-      <main className="yl-main">
-        <section className="yl-recording-strip" aria-label="Lecture and recording">
-          {recordingStrip ?? (
-            <>
-              <div className="yl-recording-strip__lead">
-                <p className="yl-recording-strip__eyebrow">Now</p>
-                <h1 className="yl-lecture-title">Current lecture</h1>
-                <p className="yl-meta">Course / duration / date (placeholder)</p>
-              </div>
-              <div className="yl-recording-strip__controls">
-                <div className="yl-timer-block" title="Elapsed time (placeholder)">
-                  <span className="yl-timer-label">Elapsed</span>
-                  <span className="yl-timer">0:00</span>
+      <section className="record-workspace" aria-label="Record workspace">
+        {workspacePage ? (
+          <>
+            <main className={`yl-main workspace-page-shell${showWorkspaceSummary ? ' workspace-page-shell--with-summary' : ''}`}>
+              {workspacePage}
+            </main>
+            {showWorkspaceSummary ? (
+              <aside className="yl-right summary-panel" aria-label="Summary and notes">
+                <div className="yl-summary-card">
+                  <header className="yl-summary-header">
+                    <div className="yl-panel-label">Summary</div>
+                    {summaryHint ?? (
+                      <p className="yl-summary-hint">Condensed takeaways from this session (placeholder)</p>
+                    )}
+                  </header>
+                  {rightPanel ?? (
+                    <div className="yl-summary-body">
+                      <section className="yl-summary-block" aria-label="Key points">
+                        <h3 className="yl-summary-block-title">Key points</h3>
+                        <p className="yl-summary-placeholder">Notes and highlights will appear here after processing.</p>
+                      </section>
+                      <section className="yl-summary-block" aria-label="Terms and references">
+                        <h3 className="yl-summary-block-title">Terms</h3>
+                        <p className="yl-summary-placeholder muted">Optional glossary from transcript (placeholder)</p>
+                      </section>
+                    </div>
+                  )}
                 </div>
-                <div className="yl-record-actions">
-                  <button type="button" className="yl-btn-primary">
-                    Start
-                  </button>
-                  <button type="button" className="yl-btn-ghost">
-                    Stop &amp; save
-                  </button>
-                </div>
+              </aside>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <main className="yl-main record-cockpit-grid">
+              <section className="yl-recording-strip record-lecture-card" aria-label="Record lecture">
+                {recordingStrip ?? (
+                  <>
+                    <div className="yl-recording-strip__lead">
+                      <p className="yl-recording-strip__eyebrow">Now</p>
+                      <h1 className="yl-lecture-title">Current lecture</h1>
+                      <p className="yl-meta">Course / duration / date (placeholder)</p>
+                    </div>
+                    <div className="yl-recording-strip__controls">
+                      <div className="yl-timer-block" title="Elapsed time (placeholder)">
+                        <span className="yl-timer-label">Elapsed</span>
+                        <span className="yl-timer">0:00</span>
+                      </div>
+                      <div className="yl-record-actions">
+                        <button type="button" className="yl-btn-primary">
+                          Start
+                        </button>
+                        <button type="button" className="yl-btn-ghost">
+                          Stop &amp; save
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </section>
+
+              {mainExtra ? <div className="yl-main-extra">{mainExtra}</div> : null}
+
+              <section className="yl-transcript-panel live-captions-grid" aria-label="Live captions and transcript">
+                {transcript ?? (
+                  <div className="yl-transcript-placeholder">
+                    <p className="yl-transcript-line">
+                      Instructor outlines the midterm scope and mentions problem set four due next week.
+                    </p>
+                    <p className="yl-transcript-line">
+                      Live captions and saved transcripts appear here.
+                    </p>
+                  </div>
+                )}
+              </section>
+
+              {companionHint ? <div className="yl-companion-slot">{companionHint}</div> : null}
+            </main>
+
+            <aside className="yl-right summary-panel" aria-label="Summary and notes">
+              <div className="yl-summary-card">
+                <header className="yl-summary-header">
+                  <div className="yl-panel-label">Summary</div>
+                  {summaryHint ?? (
+                    <p className="yl-summary-hint">Condensed takeaways from this session (placeholder)</p>
+                  )}
+                </header>
+                {rightPanel ?? (
+                  <div className="yl-summary-body">
+                    <section className="yl-summary-block" aria-label="Key points">
+                      <h3 className="yl-summary-block-title">Key points</h3>
+                      <p className="yl-summary-placeholder">Notes and highlights will appear here after processing.</p>
+                    </section>
+                    <section className="yl-summary-block" aria-label="Terms and references">
+                      <h3 className="yl-summary-block-title">Terms</h3>
+                      <p className="yl-summary-placeholder muted">Optional glossary from transcript (placeholder)</p>
+                    </section>
+                  </div>
+                )}
               </div>
-            </>
-          )}
-        </section>
-
-        {mainExtra ? <div className="yl-main-extra">{mainExtra}</div> : null}
-
-        <section className="yl-transcript-panel" aria-label="Transcript">
-          <div className="yl-panel-label yl-panel-label--primary">Transcript</div>
-          {transcript ?? (
-            <div className="yl-transcript-placeholder">
-              <p className="yl-transcript-line">
-                Instructor outlines the midterm scope and mentions problem set four due next week.
-              </p>
-              <p className="yl-transcript-line">
-                (Placeholder copy: live captions and segments would stream here. This panel stays the primary focus.)
-              </p>
-            </div>
-          )}
-        </section>
-
-        {companionHint ? <div className="yl-companion-slot">{companionHint}</div> : null}
-      </main>
-
-      <div
-        className="yl-col-resizer yl-col-resizer--right"
-        role="separator"
-        aria-label="Resize main and summary panel"
-        onPointerDown={(e) => {
-          if (e.button !== 0) return
-          e.preventDefault()
-          startResize('right', e.clientX)
-        }}
-      />
-
-      <aside className="yl-right" aria-label="Summary and notes">
-        <div className="yl-summary-card">
-          <header className="yl-summary-header">
-            <div className="yl-panel-label">Summary</div>
-            {summaryHint ?? (
-              <p className="yl-summary-hint">Condensed takeaways from this session (placeholder)</p>
-            )}
-          </header>
-          {rightPanel ?? (
-            <div className="yl-summary-body">
-              <section className="yl-summary-block" aria-label="Key points">
-                <h3 className="yl-summary-block-title">Key points</h3>
-                <p className="yl-summary-placeholder">Notes and highlights will appear here after processing.</p>
-              </section>
-              <section className="yl-summary-block" aria-label="Terms and references">
-                <h3 className="yl-summary-block-title">Terms</h3>
-                <p className="yl-summary-placeholder muted">Optional glossary from transcript (placeholder)</p>
-              </section>
-            </div>
-          )}
-        </div>
-      </aside>
+            </aside>
+          </>
+        )}
+      </section>
     </div>
   )
 }
