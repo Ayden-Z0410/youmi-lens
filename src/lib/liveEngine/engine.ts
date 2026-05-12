@@ -37,10 +37,9 @@ function log(tag: string, fields?: Record<string, unknown>) {
 // ─── Translation queue ────────────────────────────────────────────────────────
 // translateFinal is fire-and-forget. Without rate-limiting, a slow Qwen API can
 // cause 10+ concurrent fetches after 20+ minutes, degrading the event loop.
-// Cap at MAX_CONCURRENT translations; silently drop oldest when backlog exceeds
-// MAX_QUEUE_SIZE so the queue never grows unboundedly during a long lecture.
+// Cap concurrent requests, but keep queued finals: they become the persisted
+// Track B transcript, so silently discarding them corrupts saved lecture notes.
 const MAX_CONCURRENT_TRANSLATIONS = 2
-const MAX_QUEUE_SIZE = 5
 
 export type LiveEngineOpts = Pick<YoumiAdapterOpts, 'tokenGetter'>
 
@@ -49,6 +48,7 @@ export class LiveEngine {
   private listener: LiveEngineListener | null = null
   private adapter: YoumiLiveAdapter | null = null
   private running = false
+  private runGeneration = 0
   /** Last successful `warmUpstream()` probe rate — used to re-warm after idle TTL teardown. */
   private lastWarmSampleRate: number | null = null
   private translateTarget: 'zh' | 'en' | 'off' = 'off'
@@ -75,9 +75,15 @@ export class LiveEngine {
   private static readonly INTERIM_TRANSLATE_DEBOUNCE_MS = 120
 
   // Translation queue state
-  private translationQueue: Array<{ segmentId: string; text: string; enqueuedAt: number; rev: number }> =
-    []
+  private translationQueue: Array<{
+    segmentId: string
+    text: string
+    enqueuedAt: number
+    rev: number
+    runGeneration: number
+  }> = []
   private activeTranslations = 0
+  private activeInterimTranslations = 0
 
   // Session-level timing for long-run diagnostics: ms since engine.start()
   private sessionStartMs = 0
@@ -96,6 +102,7 @@ export class LiveEngine {
   start(opts: StartOptions) {
     if (this.running) this.stop()
     this.running = true
+    this.runGeneration++
     this.translateTarget = opts.translateTarget
     this.zhRevBySeg.clear()
     this.translateRevBySeg.clear()
@@ -106,14 +113,16 @@ export class LiveEngine {
     this.committedEnFull = ''
     this.translationQueue = []
     this.activeTranslations = 0
+    this.activeInterimTranslations = 0
     this.sessionStartMs = Date.now()
     traceReset()
     log('start')
     this.emit({ type: 'status', status: 'starting' })
     const adapter = new YoumiLiveAdapter({ tokenGetter: this.engineOpts.tokenGetter })
     this.adapter = adapter
+    const runGeneration = this.runGeneration
     adapter.onEvent((ev) => {
-      if (!this.running) return
+      if (!this.running || runGeneration !== this.runGeneration) return
       if (ev.type === 'connected') {
         log('adapter connected')
         this.emit({ type: 'status', status: 'connected' })
@@ -174,8 +183,10 @@ export class LiveEngine {
         }
         const capturedId = ev.segmentId
         const gen = this.zhInterimGenBySeg.get(capturedId) ?? 0
+        const runGeneration = this.runGeneration
         this.interimTranslateTimer = setTimeout(() => {
           this.interimTranslateTimer = null
+          if (runGeneration !== this.runGeneration) return
           if (this.translateTarget !== 'off') {
             console.info(
               '[live-latency] zh_interim_debounce_fired',
@@ -190,7 +201,7 @@ export class LiveEngine {
           if (!rawLatest) return
           const latestDeo = deOverlapEnglish(this.committedEnFull, rawLatest)
           if (!latestDeo.novelText.trim()) return
-          void this.translateInterim(capturedId, latestDeo.novelText, gen)
+          void this.translateInterim(capturedId, latestDeo.novelText, gen, runGeneration)
         }, LiveEngine.INTERIM_TRANSLATE_DEBOUNCE_MS)
         return
       }
@@ -286,13 +297,14 @@ export class LiveEngine {
     while (Date.now() - t0 < opts.maxMs) {
       await new Promise((r) => setTimeout(r, 120))
       const elapsed = Date.now() - t0
-      const qIdle = this.translationQueue.length === 0 && this.activeTranslations === 0
+      const qIdle = this.translationsIdle()
       if (elapsed >= opts.minTailMs && qIdle) break
     }
     log('waitAfterCaptureEnd', {
       waitedMs: Date.now() - t0,
       queueDepth: this.translationQueue.length,
       activeTranslations: this.activeTranslations,
+      activeInterimTranslations: this.activeInterimTranslations,
     })
   }
 
@@ -308,18 +320,21 @@ export class LiveEngine {
       const deo = deOverlapEnglish(this.committedEnFull, raw)
       if (!deo.novelText.trim()) continue
       const gen = this.zhInterimGenBySeg.get(segId) ?? 0
-      void this.translateInterim(segId, deo.novelText, gen)
+      void this.translateInterim(segId, deo.novelText, gen, this.runGeneration)
     }
   }
 
   stop() {
     if (!this.running) return
+    this.runGeneration++
     this.running = false
     if (this.interimTranslateTimer) {
       clearTimeout(this.interimTranslateTimer)
       this.interimTranslateTimer = null
     }
     this.translationQueue = []
+    this.activeTranslations = 0
+    this.activeInterimTranslations = 0
     this.lastWarmSampleRate = null
     this.adapter?.stop()
     this.adapter = null
@@ -350,6 +365,14 @@ export class LiveEngine {
 
   // ─── Translation queue management ──────────────────────────────────────────
 
+  private translationsIdle(): boolean {
+    return (
+      this.translationQueue.length === 0 &&
+      this.activeTranslations === 0 &&
+      this.activeInterimTranslations === 0
+    )
+  }
+
   private enqueueTranslation(segmentId: string, text: string) {
     if (this.translateTarget === 'off') return
     if (!text.trim()) return
@@ -358,16 +381,13 @@ export class LiveEngine {
     this.translateRevBySeg.set(segmentId, rev)
     this.translationQueue = this.translationQueue.filter((j) => j.segmentId !== segmentId)
 
-    this.translationQueue.push({ segmentId, text, enqueuedAt: Date.now(), rev })
-
-    // Drop oldest entries when backlogged — prevents unbounded growth during long sessions
-    if (this.translationQueue.length > MAX_QUEUE_SIZE) {
-      const dropped = this.translationQueue.splice(0, this.translationQueue.length - MAX_QUEUE_SIZE)
-      log('translation queue backlog — dropped stale jobs', {
-        dropped: dropped.length,
-        sessionMs: this.elapsed(),
-      })
-    }
+    this.translationQueue.push({
+      segmentId,
+      text,
+      enqueuedAt: Date.now(),
+      rev,
+      runGeneration: this.runGeneration,
+    })
 
     this.drainTranslationQueue()
   }
@@ -378,16 +398,14 @@ export class LiveEngine {
       this.translationQueue.length > 0
     ) {
       const job = this.translationQueue.shift()!
-      const waitMs = Date.now() - job.enqueuedAt
-      if (waitMs > 8000) {
-        // Discard jobs that sat in queue too long — avoids stale translations appearing after zh_final
-        log('translation job expired in queue', { segmentId: job.segmentId, waitMs, sessionMs: this.elapsed() })
+      if (job.runGeneration !== this.runGeneration || !this.running) {
         continue
       }
       this.activeTranslations++
-      this.translateFinal(job.segmentId, job.text, job.enqueuedAt, job.rev).finally(() => {
-        this.activeTranslations--
-        this.drainTranslationQueue()
+      this.translateFinal(job.segmentId, job.text, job.enqueuedAt, job.rev, job.runGeneration).finally(() => {
+        if (job.runGeneration !== this.runGeneration) return
+        this.activeTranslations = Math.max(0, this.activeTranslations - 1)
+        if (this.running) this.drainTranslationQueue()
       })
     }
   }
@@ -409,13 +427,20 @@ export class LiveEngine {
     return false
   }
 
-  private async translateInterim(segmentId: string, text: string, expectedGen: number) {
+  private async translateInterim(
+    segmentId: string,
+    text: string,
+    expectedGen: number,
+    runGeneration: number,
+  ) {
+    if (runGeneration !== this.runGeneration) return
     if (this.translateTarget === 'off') return
     let t = text.trim()
     if (!t) return
     if (this.translateTarget === 'zh') t = sanitizeEnglishForZhTranslate(t)
     if (!t) return
     if (!this.shouldEmitZhInterimForChunk(segmentId, t)) return
+    this.activeInterimTranslations++
     try {
       const tHttp0 = Date.now()
       const zhRaw = (
@@ -425,7 +450,7 @@ export class LiveEngine {
         })
       ).trim()
       const zh = normalizeZhPayloadOrReject(zhRaw, this.translateTarget)
-      if (!zh || !this.running) return
+      if (!zh || !this.running || runGeneration !== this.runGeneration) return
       if ((this.zhInterimGenBySeg.get(segmentId) ?? 0) !== expectedGen) return
       console.info(
         '[live-latency] zh_interim_http_complete',
@@ -438,6 +463,7 @@ export class LiveEngine {
       log('zh_interim', { segmentId, rev, len: zh.length })
       this.emit({ type: 'zh_interim', segmentId, rev, text: zh, sourceEn: t })
     } catch (e) {
+      if (runGeneration !== this.runGeneration) return
       const friendly =
         e instanceof TranslateCaptionAuthError || e instanceof TranslateCaptionTransientError
           ? e.message
@@ -448,6 +474,10 @@ export class LiveEngine {
         message: friendly,
         recoverable: true,
       })
+    } finally {
+      if (runGeneration === this.runGeneration) {
+        this.activeInterimTranslations = Math.max(0, this.activeInterimTranslations - 1)
+      }
     }
   }
 
@@ -456,7 +486,9 @@ export class LiveEngine {
     text: string,
     enqueuedAt?: number,
     rev?: number,
+    runGeneration = this.runGeneration,
   ) {
+    if (runGeneration !== this.runGeneration) return
     if (this.translateTarget === 'off') return
     let t = text.trim()
     if (!t) return
@@ -473,6 +505,7 @@ export class LiveEngine {
       const zh = normalizeZhPayloadOrReject(zhRaw, this.translateTarget)
       const latencyMs = Date.now() - t0
       const queueWaitMs = enqueuedAt ? t0 - enqueuedAt : 0
+      if (runGeneration !== this.runGeneration) return
       if (rev !== undefined) {
         const latest = this.translateRevBySeg.get(segmentId)
         if (latest !== rev) {
@@ -485,6 +518,7 @@ export class LiveEngine {
       if (!zh || !this.running) return
       this.emit({ type: 'zh_final', segmentId, text: zh, sourceEn: t })
     } catch (e) {
+      if (runGeneration !== this.runGeneration) return
       log('zh_final_failed', { segmentId, ms: Date.now() - t0, sessionMs: this.elapsed() })
       const friendly =
         e instanceof TranslateCaptionAuthError || e instanceof TranslateCaptionTransientError
