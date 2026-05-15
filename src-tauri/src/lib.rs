@@ -7,11 +7,29 @@ const OVERLAY_W: f64 = 600.0;
 const OVERLAY_H: f64 = 118.0;
 const OVERLAY_W_COMPACT: f64 = 260.0;
 const OVERLAY_H_COMPACT: f64 = 56.0;
+const MAIN_WINDOW_LABEL: &str = "main";
+const OVERLAY_WINDOW_LABEL: &str = "overlay";
+
+fn should_close_auxiliary_webview(label: &str) -> bool {
+  label != MAIN_WINDOW_LABEL && label != OVERLAY_WINDOW_LABEL
+}
+
+#[cfg(test)]
+mod tests {
+  use super::should_close_auxiliary_webview;
+
+  #[test]
+  fn preserves_first_class_windows() {
+    assert!(!should_close_auxiliary_webview("main"));
+    assert!(!should_close_auxiliary_webview("overlay"));
+    assert!(should_close_auxiliary_webview("auth-popup"));
+  }
+}
 
 #[tauri::command]
 fn show_overlay(app: tauri::AppHandle) {
   use tauri::Manager;
-  if let Some(w) = app.get_webview_window("overlay") {
+  if let Some(w) = app.get_webview_window(OVERLAY_WINDOW_LABEL) {
     // Ensure expanded size is restored (in case it was left compact)
     let _ = w.set_size(tauri::LogicalSize::new(OVERLAY_W, OVERLAY_H));
     // On first show, position at bottom-center of primary monitor above the Dock.
@@ -35,7 +53,7 @@ fn show_overlay(app: tauri::AppHandle) {
 #[tauri::command]
 fn hide_overlay(app: tauri::AppHandle) {
   use tauri::Manager;
-  if let Some(w) = app.get_webview_window("overlay") {
+  if let Some(w) = app.get_webview_window(OVERLAY_WINDOW_LABEL) {
     let _ = w.hide();
   }
 }
@@ -47,7 +65,7 @@ fn focus_main_window(app: tauri::AppHandle) {
   {
     let _ = app.show();
   }
-  if let Some(w) = app.get_webview_window("main") {
+  if let Some(w) = app.get_webview_window(MAIN_WINDOW_LABEL) {
     let _ = w.show();
     let _ = w.unminimize();
     let _ = w.set_focus();
@@ -57,7 +75,7 @@ fn focus_main_window(app: tauri::AppHandle) {
 #[tauri::command]
 fn minimize_main_window(app: tauri::AppHandle) {
   use tauri::Manager;
-  if let Some(w) = app.get_webview_window("main") {
+  if let Some(w) = app.get_webview_window(MAIN_WINDOW_LABEL) {
     let _ = w.minimize();
   }
 }
@@ -65,7 +83,7 @@ fn minimize_main_window(app: tauri::AppHandle) {
 #[tauri::command]
 fn resize_overlay_compact(app: tauri::AppHandle) {
   use tauri::Manager;
-  if let Some(w) = app.get_webview_window("overlay") {
+  if let Some(w) = app.get_webview_window(OVERLAY_WINDOW_LABEL) {
     let _ = w.set_size(tauri::LogicalSize::new(OVERLAY_W_COMPACT, OVERLAY_H_COMPACT));
   }
 }
@@ -73,7 +91,7 @@ fn resize_overlay_compact(app: tauri::AppHandle) {
 #[tauri::command]
 fn resize_overlay_expanded(app: tauri::AppHandle) {
   use tauri::Manager;
-  if let Some(w) = app.get_webview_window("overlay") {
+  if let Some(w) = app.get_webview_window(OVERLAY_WINDOW_LABEL) {
     let _ = w.set_size(tauri::LogicalSize::new(OVERLAY_W, OVERLAY_H));
   }
 }
@@ -110,7 +128,7 @@ pub fn run() {
       emit_forwarded_deep_link_urls(&app, &args);
 
       for (label, w) in app.webview_windows() {
-        if label != "main" {
+        if should_close_auxiliary_webview(&label) {
           log::info!("[single-instance] closing non-main webview: {}", label);
           let _ = w.close();
         }
@@ -166,7 +184,7 @@ fn activate_main_for_auth_callback<R: Runtime>(app: &tauri::AppHandle<R>) {
   {
     let _ = app.show();
   }
-  if let Some(w) = app.get_webview_window("main") {
+  if let Some(w) = app.get_webview_window(MAIN_WINDOW_LABEL) {
     let _ = w.show();
     let _ = w.unminimize();
     let _ = w.set_focus();
