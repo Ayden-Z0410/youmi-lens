@@ -21,6 +21,7 @@ import { attachLiveRealtimeWs } from './liveRealtimeWs.mjs'
 import * as dashEnv from './dashscopeEnv.mjs'
 import { audioUploadMiddleware, handleUploadAudio } from './uploadAudio.mjs'
 import { handleBetaUsageStatus } from './betaUsageStatus.mjs'
+import { handleAuthCheckEmail } from './authCheckEmail.mjs'
 
 const PORT = Number(process.env.PORT || process.env.AI_SERVER_PORT || 3847)
 
@@ -124,6 +125,10 @@ app.get('/api/health', (_req, res) => {
       env,
     },
   })
+})
+
+app.post('/api/auth/check-email', (req, res) => {
+  void handleAuthCheckEmail(req, res)
 })
 
 app.get('/api/beta-usage-status', (req, res) => {
