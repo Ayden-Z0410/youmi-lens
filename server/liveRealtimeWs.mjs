@@ -377,9 +377,10 @@ export function attachLiveRealtimeWs(server) {
 
         const relayFinal = (text) => {
           relayFinalSeg += 1
+          const id = `${wsSessionId}:${relayFinalSeg}`
           const open = clientRef.ws?.readyState === 1
           const preview = typeof text === 'string' ? text.slice(0, 80) : ''
-          if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final', text })
+          if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final', id, text })
           if (SRV_LIVE_VERBOSE) {
             console.log(
               '[YoumiLive][srv] relay stream_final',
@@ -392,6 +393,36 @@ export function attachLiveRealtimeWs(server) {
               }),
             )
           }
+
+          const trimmed = typeof text === 'string' ? text.trim() : ''
+          if (!trimmed) return
+          console.info(
+            '[liveRealtimeWs] live_translation_requested',
+            JSON.stringify({ wsSessionId, id, textLen: trimmed.length }),
+          )
+          void youmiHosted
+            .translateText(trimmed, 'zh')
+            .then((translationZh) => {
+              const out = typeof translationZh === 'string' ? translationZh.trim() : ''
+              if (!out) return
+              console.info(
+                '[liveRealtimeWs] live_translation_ok',
+                JSON.stringify({ wsSessionId, id, textLen: trimmed.length, translationLen: out.length }),
+              )
+              if (clientRef.ws) {
+                safeSend(clientRef.ws, { type: 'stream_translation', id, translation_zh: out })
+              }
+            })
+            .catch((err) => {
+              console.warn(
+                '[liveRealtimeWs] live_translation_failed',
+                JSON.stringify({
+                  wsSessionId,
+                  id,
+                  message: err instanceof Error ? err.message : String(err),
+                }),
+              )
+            })
         }
 
         if (liveProvider === 'dashscope') {
