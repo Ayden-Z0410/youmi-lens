@@ -63,6 +63,8 @@ export function createDeepgramStreamingSession(apiKey, callbacks = {}, options =
   let T_first_interim = 0
   let interimCount = 0
   let finalCount = 0
+  let upstreamPcmCount = 0
+  let firstResponseLogged = false
 
   // ── Connection parameters ──────────────────────────────────────────────────
   // nova-3:         latest model, best English accuracy for lecture/academic speech
@@ -109,6 +111,18 @@ export function createDeepgramStreamingSession(apiKey, callbacks = {}, options =
   ws.on('message', (data) => {
     let msg
     try { msg = JSON.parse(String(data)) } catch { return }
+    if (!firstResponseLogged) {
+      firstResponseLogged = true
+      console.info(
+        '[liveRealtimeWs] deepgram_first_response',
+        JSON.stringify({
+          wsSessionId,
+          taskTag: tag,
+          type: msg?.type || 'unknown',
+          keys: msg && typeof msg === 'object' ? Object.keys(msg).slice(0, 12) : [],
+        }),
+      )
+    }
 
     const type = msg?.type
     if (!type) return
@@ -187,6 +201,9 @@ export function createDeepgramStreamingSession(apiKey, callbacks = {}, options =
         taskTag: tag,
         closeCode: code,
         intentional: intentionalClose,
+        reason: reasonStr.slice(0, 200),
+        upstreamPcmCount,
+        closedBeforeAnyPcm: upstreamPcmCount === 0,
         interimCount,
         finalCount,
       }),
@@ -198,7 +215,10 @@ export function createDeepgramStreamingSession(apiKey, callbacks = {}, options =
     /** Send a raw PCM buffer (Int16 LE, mono) to Deepgram. */
     sendPcm(buf) {
       if (destroyed || !ws || ws.readyState !== WebSocket.OPEN) return
-      try { ws.send(buf) } catch (e) { L('sendPcm error', { message: e?.message }) }
+      try {
+        ws.send(buf)
+        upstreamPcmCount += 1
+      } catch (e) { L('sendPcm error', { message: e?.message }) }
     },
 
     /** Graceful stop: tell Deepgram we are done sending audio, wait for trailing results. */

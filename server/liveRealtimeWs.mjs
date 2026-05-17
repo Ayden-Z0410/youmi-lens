@@ -633,9 +633,18 @@ export function attachLiveRealtimeWs(server) {
                 if (streamingSession !== deepgramWrapper) return
                 streamingSession = null
                 if (!intentional) {
+                  const noClientPcm = frameCount === 0
+                  if (clientRef.ws) {
+                    safeSend(clientRef.ws, {
+                      type: 'stream_error',
+                      message: noClientPcm
+                        ? 'DEEPGRAM_UPSTREAM_CLOSED_BEFORE_CLIENT_PCM'
+                        : 'DEEPGRAM_UPSTREAM_CLOSED',
+                    })
+                  }
                   console.warn(
                     '[liveRealtimeWs] deepgram_upstream_drop_closing_client_ws',
-                    JSON.stringify({ wsSessionId }),
+                    JSON.stringify({ wsSessionId, frameCount, closedBeforeClientPcm: noClientPcm }),
                   )
                   logServerClosingClientWs(
                     wsSessionId,
