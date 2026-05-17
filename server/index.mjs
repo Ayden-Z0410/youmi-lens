@@ -137,6 +137,11 @@ app.get('/api/health', (_req, res) => {
           ready: postClassTranscript,
         },
         liveRealtimeAsr: liveRt,
+        liveTranslation: {
+          enabled: process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT === 'enabled',
+          envValuePresent: Boolean(process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT),
+          providerReady: Boolean(hosted.translate),
+        },
       },
       capabilities: {
         ...hosted,

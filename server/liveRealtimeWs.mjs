@@ -396,7 +396,23 @@ export function attachLiveRealtimeWs(server) {
 
           const translationEnabled = process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT === 'enabled'
           const trimmed = typeof text === 'string' ? text.trim() : ''
-          if (!translationEnabled) return
+          console.info(
+            '[liveRealtimeWs] live_translation_gate_checked',
+            JSON.stringify({
+              wsSessionId,
+              id,
+              enabled: translationEnabled,
+              envValuePresent: Boolean(process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT),
+              textLen: trimmed.length,
+            }),
+          )
+          if (!translationEnabled) {
+            console.info(
+              '[liveRealtimeWs] live_translation_skipped_gate_off',
+              JSON.stringify({ wsSessionId, id, textLen: trimmed.length }),
+            )
+            return
+          }
           if (!trimmed) return
           console.info(
             '[liveRealtimeWs] live_translation_requested',
@@ -413,6 +429,10 @@ export function attachLiveRealtimeWs(server) {
               )
               if (clientRef.ws) {
                 safeSend(clientRef.ws, { type: 'stream_translation', id, translation_zh: out })
+                console.info(
+                  '[liveRealtimeWs] live_translation_sent',
+                  JSON.stringify({ wsSessionId, id, translationLen: out.length }),
+                )
               }
             })
             .catch((err) => {
