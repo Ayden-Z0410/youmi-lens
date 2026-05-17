@@ -360,7 +360,7 @@ export function attachLiveRealtimeWs(server) {
               JSON.stringify({ wsSessionId, previewLen: preview.length }),
             )
           }
-          if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text })
+          if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text, transcript: text, caption: text })
           if (SRV_LIVE_VERBOSE) {
             console.log(
               '[YoumiLive][srv] relay stream_interim',
@@ -380,7 +380,7 @@ export function attachLiveRealtimeWs(server) {
           const id = `${wsSessionId}:${relayFinalSeg}`
           const open = clientRef.ws?.readyState === 1
           const preview = typeof text === 'string' ? text.slice(0, 80) : ''
-          if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final', id, text })
+          if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_final', id, text, transcript: text, caption: text })
           if (SRV_LIVE_VERBOSE) {
             console.log(
               '[YoumiLive][srv] relay stream_final',
@@ -394,7 +394,9 @@ export function attachLiveRealtimeWs(server) {
             )
           }
 
+          const translationEnabled = process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT === 'enabled'
           const trimmed = typeof text === 'string' ? text.trim() : ''
+          if (!translationEnabled) return
           if (!trimmed) return
           console.info(
             '[liveRealtimeWs] live_translation_requested',
