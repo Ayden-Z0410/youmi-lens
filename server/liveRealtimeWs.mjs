@@ -339,6 +339,134 @@ export function attachLiveRealtimeWs(server) {
         }
         let relayInterimSeg = 0
         let relayFinalSeg   = 0
+        let interimTranslationTimer = null
+        let latestInterimEn = ''
+        let lastTranslatedInterimEn = ''
+        let lastTranslatedInterimAt = 0
+        let interimTranslationGen = 0
+        const finalTranslationQueue = []
+        let activeFinalTranslations = 0
+        const MAX_CONCURRENT_FINAL_TRANSLATIONS = 2
+        const MAX_FINAL_TRANSLATION_QUEUE = 5
+
+        const translationEnabled = () =>
+          process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT === 'enabled'
+
+        const shouldTranslateInterim = (text) => {
+          const t = text.trim()
+          if (!t || t === lastTranslatedInterimEn) return false
+          if (/[.!?,;:\u2026]\s*$/.test(t)) return true
+          if (!lastTranslatedInterimEn) return t.length >= 6
+          if (t.length - lastTranslatedInterimEn.length >= 14) return true
+          return Date.now() - lastTranslatedInterimAt >= 520 && t.length > lastTranslatedInterimEn.length + 4
+        }
+
+        const scheduleInterimTranslation = () => {
+          if (interimTranslationTimer) clearTimeout(interimTranslationTimer)
+          const expectedGen = interimTranslationGen
+          interimTranslationTimer = setTimeout(() => {
+            interimTranslationTimer = null
+            if (!translationEnabled()) return
+            if (expectedGen !== interimTranslationGen) return
+            const text = latestInterimEn.trim()
+            if (!shouldTranslateInterim(text)) return
+            const id = `${wsSessionId}:draft:${relayFinalSeg + 1}`
+            console.info(
+              '[liveRealtimeWs] live_translation_requested',
+              JSON.stringify({ wsSessionId, id, textLen: text.length, interim: true }),
+            )
+            void youmiHosted
+              .translateText(text, 'zh')
+              .then((translationZh) => {
+                if (expectedGen !== interimTranslationGen) return
+                const out = typeof translationZh === 'string' ? translationZh.trim() : ''
+                if (!out) return
+                lastTranslatedInterimEn = text
+                lastTranslatedInterimAt = Date.now()
+                console.info(
+                  '[liveRealtimeWs] live_translation_ok',
+                  JSON.stringify({ wsSessionId, id, textLen: text.length, translationLen: out.length, interim: true }),
+                )
+                if (clientRef.ws) {
+                  safeSend(clientRef.ws, {
+                    type: 'stream_translation',
+                    id,
+                    translation_zh: out,
+                    is_final: false,
+                    source_text: text,
+                  })
+                  console.info(
+                    '[liveRealtimeWs] live_translation_sent',
+                    JSON.stringify({ wsSessionId, id, translationLen: out.length, interim: true }),
+                  )
+                }
+              })
+              .catch((err) => {
+                console.warn(
+                  '[liveRealtimeWs] live_translation_failed',
+                  JSON.stringify({
+                    wsSessionId,
+                    id,
+                    interim: true,
+                    message: err instanceof Error ? err.message : String(err),
+                  }),
+                )
+              })
+          }, 120)
+        }
+
+        const drainFinalTranslationQueue = () => {
+          while (activeFinalTranslations < MAX_CONCURRENT_FINAL_TRANSLATIONS && finalTranslationQueue.length > 0) {
+            const job = finalTranslationQueue.shift()
+            if (!job) return
+            if (Date.now() - job.enqueuedAt > 8000) continue
+            activeFinalTranslations += 1
+            console.info(
+              '[liveRealtimeWs] live_translation_requested',
+              JSON.stringify({ wsSessionId, id: job.id, textLen: job.text.length, interim: false }),
+            )
+            void youmiHosted
+              .translateText(job.text, 'zh')
+              .then((translationZh) => {
+                const out = typeof translationZh === 'string' ? translationZh.trim() : ''
+                if (!out) return
+                console.info(
+                  '[liveRealtimeWs] live_translation_ok',
+                  JSON.stringify({ wsSessionId, id: job.id, textLen: job.text.length, translationLen: out.length }),
+                )
+                if (clientRef.ws) {
+                  safeSend(clientRef.ws, { type: 'stream_translation', id: job.id, translation_zh: out, is_final: true })
+                  console.info(
+                    '[liveRealtimeWs] live_translation_sent',
+                    JSON.stringify({ wsSessionId, id: job.id, translationLen: out.length, interim: false }),
+                  )
+                }
+              })
+              .catch((err) => {
+                console.warn(
+                  '[liveRealtimeWs] live_translation_failed',
+                  JSON.stringify({
+                    wsSessionId,
+                    id: job.id,
+                    interim: false,
+                    message: err instanceof Error ? err.message : String(err),
+                  }),
+                )
+              })
+              .finally(() => {
+                activeFinalTranslations -= 1
+                drainFinalTranslationQueue()
+              })
+          }
+        }
+
+        const enqueueFinalTranslation = (id, text) => {
+          finalTranslationQueue.push({ id, text, enqueuedAt: Date.now() })
+          if (finalTranslationQueue.length > MAX_FINAL_TRANSLATION_QUEUE) {
+            finalTranslationQueue.splice(0, finalTranslationQueue.length - MAX_FINAL_TRANSLATION_QUEUE)
+          }
+          drainFinalTranslationQueue()
+        }
 
         const relayInterim = (text) => {
           relayInterimSeg += 1
@@ -361,6 +489,8 @@ export function attachLiveRealtimeWs(server) {
             )
           }
           if (clientRef.ws) safeSend(clientRef.ws, { type: 'stream_interim', text, transcript: text, caption: text })
+          latestInterimEn = typeof text === 'string' ? text : ''
+          scheduleInterimTranslation()
           if (SRV_LIVE_VERBOSE) {
             console.log(
               '[YoumiLive][srv] relay stream_interim',
@@ -394,19 +524,26 @@ export function attachLiveRealtimeWs(server) {
             )
           }
 
-          const translationEnabled = process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT === 'enabled'
+          interimTranslationGen += 1
+          latestInterimEn = ''
+          lastTranslatedInterimEn = ''
+          if (interimTranslationTimer) {
+            clearTimeout(interimTranslationTimer)
+            interimTranslationTimer = null
+          }
+          const finalTranslationEnabled = translationEnabled()
           const trimmed = typeof text === 'string' ? text.trim() : ''
           console.info(
             '[liveRealtimeWs] live_translation_gate_checked',
             JSON.stringify({
               wsSessionId,
               id,
-              enabled: translationEnabled,
+              enabled: finalTranslationEnabled,
               envValuePresent: Boolean(process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT),
               textLen: trimmed.length,
             }),
           )
-          if (!translationEnabled) {
+          if (!finalTranslationEnabled) {
             console.info(
               '[liveRealtimeWs] live_translation_skipped_gate_off',
               JSON.stringify({ wsSessionId, id, textLen: trimmed.length }),
@@ -414,37 +551,7 @@ export function attachLiveRealtimeWs(server) {
             return
           }
           if (!trimmed) return
-          console.info(
-            '[liveRealtimeWs] live_translation_requested',
-            JSON.stringify({ wsSessionId, id, textLen: trimmed.length }),
-          )
-          void youmiHosted
-            .translateText(trimmed, 'zh')
-            .then((translationZh) => {
-              const out = typeof translationZh === 'string' ? translationZh.trim() : ''
-              if (!out) return
-              console.info(
-                '[liveRealtimeWs] live_translation_ok',
-                JSON.stringify({ wsSessionId, id, textLen: trimmed.length, translationLen: out.length }),
-              )
-              if (clientRef.ws) {
-                safeSend(clientRef.ws, { type: 'stream_translation', id, translation_zh: out })
-                console.info(
-                  '[liveRealtimeWs] live_translation_sent',
-                  JSON.stringify({ wsSessionId, id, translationLen: out.length }),
-                )
-              }
-            })
-            .catch((err) => {
-              console.warn(
-                '[liveRealtimeWs] live_translation_failed',
-                JSON.stringify({
-                  wsSessionId,
-                  id,
-                  message: err instanceof Error ? err.message : String(err),
-                }),
-              )
-            })
+          enqueueFinalTranslation(id, trimmed)
         }
 
         if (liveProvider === 'dashscope') {
