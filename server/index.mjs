@@ -46,6 +46,7 @@ function envDiagnostics() {
   return {
     DASHSCOPE_API_KEY: present(hostedEnv.DASHSCOPE_API_KEY),
     DASHSCOPE_OVERSEAS_API_KEY: present(hostedEnv.DASHSCOPE_OVERSEAS_API_KEY),
+    DEEPGRAM_API_KEY: present(Boolean(process.env.DEEPGRAM_API_KEY?.trim())),
     OPENAI_API_KEY: present(hostedEnv.OPENAI_API_KEY),
     SUPABASE_URL_or_VITE_SUPABASE_URL: present(Boolean(supabaseUrl)),
     SUPABASE_ANON_KEY_or_VITE_SUPABASE_ANON_KEY: present(Boolean(supabaseAnon)),
@@ -70,14 +71,31 @@ function runtimeModeSummary() {
 function liveRealtimeAsrSummary() {
   const exp = (process.env.YOUMI_LIVE_ASR_EXPERIMENT || '').trim().toLowerCase()
   const provider =
-    exp === 'volcengine' || exp === 'volc' || exp === 'vol' ? 'volcengine' : 'dashscope'
+    exp === 'volcengine' || exp === 'volc' || exp === 'vol'
+      ? 'volcengine'
+      : exp === 'deepgram' || exp === 'deep'
+        ? 'deepgram'
+        : 'dashscope'
   if (provider === 'volcengine') {
     const ok =
       Boolean(process.env.VOLCENGINE_ASR_APP_KEY?.trim()) &&
       Boolean(process.env.VOLCENGINE_ASR_ACCESS_KEY?.trim())
     return { provider, ready: ok }
   }
-  return { provider, ready: Boolean(dashEnv.getDashScopeEffectiveKey()) }
+  if (provider === 'deepgram') {
+    return {
+      provider,
+      ready: Boolean(process.env.DEEPGRAM_API_KEY?.trim()),
+      deepgramConfigured: Boolean(process.env.DEEPGRAM_API_KEY?.trim()),
+      liveRealtimeEnabled: true,
+    }
+  }
+  return {
+    provider,
+    ready: Boolean(dashEnv.getDashScopeEffectiveKey()),
+    deepgramConfigured: Boolean(process.env.DEEPGRAM_API_KEY?.trim()),
+    liveRealtimeEnabled: true,
+  }
 }
 
 app.get('/api/health', (_req, res) => {
@@ -108,6 +126,9 @@ app.get('/api/health', (_req, res) => {
         },
         openaiFallback: {
           configured: Boolean(process.env.OPENAI_API_KEY?.trim()),
+        },
+        deepgram: {
+          configured: Boolean(process.env.DEEPGRAM_API_KEY?.trim()),
         },
         postClass: {
           transcribe: Boolean(hosted.transcribe),

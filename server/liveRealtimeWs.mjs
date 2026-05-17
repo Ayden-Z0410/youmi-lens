@@ -132,6 +132,7 @@ async function transcribeViaSignedUrlFallback({ wsSessionId, id, pass, arrayBuff
 
 function liveAsrRoutingReason(activeProvider) {
   if (activeProvider === 'volcengine') return 'experiment_volcengine'
+  if (activeProvider === 'deepgram') return 'experiment_deepgram'
   return 'main_dashscope'
 }
 
@@ -192,6 +193,13 @@ export function attachLiveRealtimeWs(server) {
       // Binary frame = PCM → active live ASR session (main: DashScope).
       if (isBinary) {
         frameCount += 1
+        if (frameCount === 1 || frameCount % 50 === 0) {
+          const bytes = Buffer.isBuffer(raw) ? raw.length : Buffer.from(raw).length
+          console.info(
+            '[liveRealtimeWs] pcm_frame_received',
+            JSON.stringify({ wsSessionId, frameCount, bytes, hasStreamingSession: Boolean(streamingSession) }),
+          )
+        }
         if (!T_firstClientPcm) {
           T_firstClientPcm = Date.now()
           console.info(
@@ -246,8 +254,13 @@ export function attachLiveRealtimeWs(server) {
             message: 'Sign in required for live captions.',
           })
           console.warn('[liveRealtimeWs] stream_start_blocked_no_auth', JSON.stringify({ wsSessionId }))
+          console.warn('[liveRealtimeWs] auth_failed', JSON.stringify({ wsSessionId }))
           return
         }
+        console.info(
+          '[liveRealtimeWs] auth_ok',
+          JSON.stringify({ wsSessionId, userId: liveUser.userId.slice(0, 8) }),
+        )
         const liveQuota = await getOrCreateUserQuota(liveUser.userId, liveUser.email)
         const liveGate = await checkLiveSessionAllowed(liveQuota, liveUser.userId)
         if (!liveGate.allowed) {
@@ -595,6 +608,7 @@ export function attachLiveRealtimeWs(server) {
               JSON.stringify({ wsSessionId, sampleRate, liveProvider: 'deepgram' }),
             )
           }
+          console.info('[liveRealtimeWs] deepgram_connecting', JSON.stringify({ wsSessionId, sampleRate }))
 
           // deepgramWrapper is declared before createDeepgramStreamingSession so that onClose
           // (async) can reference it. By the time any WS event fires, the assignment below

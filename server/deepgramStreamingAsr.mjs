@@ -98,6 +98,10 @@ export function createDeepgramStreamingSession(apiKey, callbacks = {}, options =
       '[liveRealtimeWs] deepgram_upstream_connected',
       JSON.stringify({ taskTag: tag, wsSessionId, wsConnectMs }),
     )
+    console.info(
+      '[liveRealtimeWs] deepgram_open',
+      JSON.stringify({ taskTag: tag, wsSessionId, wsConnectMs }),
+    )
     // Deepgram accepts PCM immediately after WS open.
     onReady?.()
   })
