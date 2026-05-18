@@ -9,6 +9,7 @@ import {
   applySessionFromSupabaseCallbackUrl,
   inspectAuthCallbackUrl,
 } from './lib/supabaseDeepLinkAuth'
+import { shouldCloseAuthCleanupWebview } from './lib/tauriWebviewCleanup'
 
 /**
  * Tauri may deliver `deep-link://new-url` as a JSON array of strings, but if anything coerces it to a
@@ -43,14 +44,14 @@ function summarizeDeepLinkPayloadForLog(payload: unknown): {
   }
 }
 
-/** Same-process safety: if anything created extra webviews, drop them after auth via deep link. */
+/** Same-process safety: if anything created disposable auth webviews, drop them after auth via deep link. */
 async function tauriCloseNonMainWebviewWindows(): Promise<void> {
   if (!isTauri()) return
   try {
     const { getAllWebviewWindows } = await import('@tauri-apps/api/webviewWindow')
     const wins = await getAllWebviewWindows()
     await Promise.all(
-      wins.filter((w) => w.label !== 'main').map((w) => w.close()),
+      wins.filter((w) => shouldCloseAuthCleanupWebview(w.label)).map((w) => w.close()),
     )
   } catch (e) {
     console.warn('[lc-auth] close non-main webview windows failed', e)
