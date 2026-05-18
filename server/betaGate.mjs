@@ -2,7 +2,7 @@
  * Youmi Lens Beta Gate — server-side quota enforcement.
  *
  * Plan tiers:
- *   public_trial  — 20 min lifetime total, 10 min/recording, 10/day, 10 min live session
+ *   public_trial  — free public beta: 2 recordings/day, 20 min/recording, 2400 min lifetime backstop, 10 min live session
  *   core_tester   — 1000 min/month, 120 min/recording, 20/day, 120 min live session
  *   student_basic / student_pro — reserved; treated as public_trial until activated
  *   admin         — bypass all limits
@@ -27,7 +27,11 @@ import { createClient } from '@supabase/supabase-js'
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 export const BETA_LIMIT_MESSAGE =
-  'Free beta limit reached. Please contact Youmi Lens for more access.'
+  'Free beta limit reached. Please contact support for more beta access.'
+
+/** Shown when an account has been put on hold by an admin (status = suspended). */
+export const SUSPENDED_MESSAGE =
+  'Your account is currently on hold. Please contact support for help.'
 
 export const BETA_ERROR_CODES = {
   AUTH_REQUIRED: 'auth_required',
@@ -38,10 +42,17 @@ export const BETA_ERROR_CODES = {
   SUSPENDED: 'quota_suspended',
 }
 
-/** Default limits for new public_trial users (overridable via env for testing). */
-const DEFAULT_TRIAL_MINUTES = Number(process.env.BETA_MAX_TRIAL_MINUTES || 20)
-const DEFAULT_MAX_RECORDING_MINUTES = Number(process.env.BETA_MAX_RECORDING_MINUTES || 10)
-const DEFAULT_MAX_RECORDINGS_PER_DAY = Number(process.env.BETA_MAX_RECORDINGS_PER_DAY || 10)
+/**
+ * Default limits for new public_trial (free public beta) users.
+ *
+ * V1 public beta allowance: 2 recordings/day, 20 min per recording. The daily
+ * recording count is the real gate; the lifetime minute cap is only a generous
+ * abuse backstop (≈60 days of max daily use) so it never blocks normal beta
+ * testers. All values are overridable via env for testing.
+ */
+const DEFAULT_TRIAL_MINUTES = Number(process.env.BETA_MAX_TRIAL_MINUTES || 2400)
+const DEFAULT_MAX_RECORDING_MINUTES = Number(process.env.BETA_MAX_RECORDING_MINUTES || 20)
+const DEFAULT_MAX_RECORDINGS_PER_DAY = Number(process.env.BETA_MAX_RECORDINGS_PER_DAY || 2)
 const DEFAULT_MAX_LIVE_SESSION_MINUTES = Number(process.env.BETA_MAX_LIVE_SESSION_MINUTES || 10)
 
 /** Plans that use monthly quota (calendar-month reset). */
@@ -222,7 +233,7 @@ export function checkUploadAllowed(quota, durationSec) {
     return {
       allowed: false,
       status: 403,
-      body: betaError(BETA_ERROR_CODES.SUSPENDED, BETA_LIMIT_MESSAGE, {}),
+      body: betaError(BETA_ERROR_CODES.SUSPENDED, SUSPENDED_MESSAGE, {}),
     }
   }
 
@@ -235,7 +246,7 @@ export function checkUploadAllowed(quota, durationSec) {
       status: 403,
       body: betaError(
         BETA_ERROR_CODES.RECORDING_TOO_LONG,
-        `Recording is ${Math.ceil(durationSec / 60)} min but your plan allows max ${quota.max_recording_minutes} min per recording. ${BETA_LIMIT_MESSAGE}`,
+        `Free beta recordings are limited to ${quota.max_recording_minutes} minutes each. This recording is about ${Math.ceil(durationSec / 60)} minutes — please record a shorter session.`,
         {
           recording_minutes: Math.ceil(durationSec / 60),
           limit_minutes: quota.max_recording_minutes,
@@ -263,7 +274,7 @@ export async function checkProcessingAllowed(quota, userId, durationSec) {
     return {
       allowed: false,
       status: 403,
-      body: betaError(BETA_ERROR_CODES.SUSPENDED, BETA_LIMIT_MESSAGE, {}),
+      body: betaError(BETA_ERROR_CODES.SUSPENDED, SUSPENDED_MESSAGE, {}),
     }
   }
 
@@ -277,7 +288,7 @@ export async function checkProcessingAllowed(quota, userId, durationSec) {
       status: 403,
       body: betaError(
         BETA_ERROR_CODES.RECORDING_TOO_LONG,
-        `Recording is ${Math.ceil(durationSec / 60)} min but your plan allows max ${quota.max_recording_minutes} min per recording. ${BETA_LIMIT_MESSAGE}`,
+        `Free beta recordings are limited to ${quota.max_recording_minutes} minutes each. This recording is about ${Math.ceil(durationSec / 60)} minutes — please record a shorter session.`,
         {
           recording_minutes: Math.ceil(durationSec / 60),
           limit_minutes: quota.max_recording_minutes,
@@ -294,7 +305,7 @@ export async function checkProcessingAllowed(quota, userId, durationSec) {
       status: 429,
       body: betaError(
         BETA_ERROR_CODES.DAILY_LIMIT_REACHED,
-        `You've reached ${quota.max_recordings_per_day} processed recordings today. ${BETA_LIMIT_MESSAGE}`,
+        `Free beta limit reached. You can record up to ${quota.max_recordings_per_day} lectures per day. Please try again tomorrow or contact support for more beta access.`,
         { used_today: todayCount, limit_today: quota.max_recordings_per_day },
       ),
     }
@@ -351,7 +362,7 @@ export async function checkLiveSessionAllowed(quota, userId) {
     return {
       allowed: false,
       status: 403,
-      body: betaError(BETA_ERROR_CODES.SUSPENDED, BETA_LIMIT_MESSAGE, {}),
+      body: betaError(BETA_ERROR_CODES.SUSPENDED, SUSPENDED_MESSAGE, {}),
     }
   }
 
@@ -411,7 +422,7 @@ export async function checkHostedActionAllowed(quota, userId) {
     return {
       allowed: false,
       status: 403,
-      body: betaError(BETA_ERROR_CODES.SUSPENDED, BETA_LIMIT_MESSAGE, {}),
+      body: betaError(BETA_ERROR_CODES.SUSPENDED, SUSPENDED_MESSAGE, {}),
     }
   }
 
@@ -424,7 +435,7 @@ export async function checkHostedActionAllowed(quota, userId) {
       status: 429,
       body: betaError(
         BETA_ERROR_CODES.DAILY_LIMIT_REACHED,
-        `You've reached ${quota.max_recordings_per_day} processed recordings today. ${BETA_LIMIT_MESSAGE}`,
+        `Free beta limit reached. You can record up to ${quota.max_recordings_per_day} lectures per day. Please try again tomorrow or contact support for more beta access.`,
         { used_today: todayCount, limit_today: quota.max_recordings_per_day },
       ),
     }
