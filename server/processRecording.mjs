@@ -94,6 +94,101 @@ async function tryOptionalV1PipelineExtras(dbSb, recordingId, userId, patch, lab
   return true
 }
 
+const TRANSCRIPT_TRANSLATE_CHUNK_CHARS = 1600
+
+/**
+ * Split a transcript into translation-sized chunks, preferring paragraph then
+ * sentence boundaries, so each LLM translation call stays well within model
+ * input/output limits. A pathologically long sentence is hard-sliced.
+ */
+function chunkTranscriptForTranslation(text, maxChars = TRANSCRIPT_TRANSLATE_CHUNK_CHARS) {
+  const clean = String(text ?? '').trim()
+  if (!clean) return []
+  if (clean.length <= maxChars) return [clean]
+
+  const chunks = []
+  let buf = ''
+  const flush = () => {
+    const trimmed = buf.trim()
+    if (trimmed) chunks.push(trimmed)
+    buf = ''
+  }
+  const pushPiece = (piece, joiner) => {
+    if (!piece) return
+    if (buf && buf.length + joiner.length + piece.length > maxChars) flush()
+    buf = buf ? `${buf}${joiner}${piece}` : piece
+  }
+
+  for (const paragraph of clean.split(/\n{2,}/)) {
+    const para = paragraph.trim()
+    if (!para) continue
+    if (para.length <= maxChars) {
+      pushPiece(para, '\n\n')
+      continue
+    }
+    flush()
+    for (const sentence of para.split(/(?<=[.!?。！？])\s+/)) {
+      const s = sentence.trim()
+      if (!s) continue
+      if (s.length <= maxChars) {
+        pushPiece(s, ' ')
+        continue
+      }
+      flush()
+      for (let i = 0; i < s.length; i += maxChars) chunks.push(s.slice(i, i + maxChars))
+    }
+    flush()
+  }
+  flush()
+  return chunks
+}
+
+/**
+ * Translate an English transcript to Chinese, chunk by chunk, via the existing
+ * hosted translation helper (the same one used for live-caption translation).
+ * Throws if any chunk fails — the caller treats translation as best-effort and
+ * never fails the job over it.
+ */
+async function translateTranscriptToChinese(transcriptEn) {
+  const chunks = chunkTranscriptForTranslation(transcriptEn)
+  if (chunks.length === 0) return ''
+  const out = []
+  for (let i = 0; i < chunks.length; i += 1) {
+    const zh = await youmiHosted.translateText(chunks[i], 'zh')
+    out.push(typeof zh === 'string' ? zh.trim() : '')
+  }
+  return out.join('\n\n').trim()
+}
+
+/**
+ * Best-effort write of the Chinese transcript. Never fails the job: a missing
+ * transcript_zh column (supabase-migration-transcript-zh.sql not yet applied)
+ * or any write error is logged and swallowed so the English transcript and
+ * summaries are unaffected.
+ */
+async function persistTranscriptZh(dbSb, recordingId, userId, transcriptZh) {
+  const { error } = await dbSb
+    .from('recordings')
+    .update({ transcript_zh: transcriptZh })
+    .eq('id', recordingId)
+    .eq('user_id', userId)
+  if (error) {
+    console.warn(
+      '[process-recording] transcript_zh_update_failed',
+      JSON.stringify({
+        recordingId,
+        migrationHint: 'Run supabase-migration-transcript-zh.sql to add the transcript_zh column.',
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint,
+      }),
+    )
+    return false
+  }
+  return true
+}
+
 /**
  * POST /api/process-recording
  * Body: { recordingId: string }
@@ -486,6 +581,35 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
       transcriptLen: transcriptCanonical.length,
       transcriptRawLen: transcriptRaw.length,
     })
+
+    // Best-effort: translate the English transcript to Chinese for bilingual
+    // study support. A failure here must never fail the job — the English
+    // transcript is already persisted and the summaries stand on their own.
+    const canTranslate = youmiHosted.hostedCapabilities().translate
+    if (canTranslate) {
+      try {
+        jobLog('transcript_translate_begin', {
+          recordingId,
+          transcriptLen: transcriptCanonical.length,
+        })
+        const transcriptZh = await translateTranscriptToChinese(transcriptCanonical)
+        if (transcriptZh) {
+          await persistTranscriptZh(dbSb, recordingId, userId, transcriptZh)
+          jobLog('transcript_translate_done', { recordingId, transcriptZhLen: transcriptZh.length })
+        } else {
+          jobLog('transcript_translate_empty', { recordingId })
+        }
+      } catch (e) {
+        // Logged and swallowed — the Chinese transcript is optional study support.
+        console.warn('[process-recording] transcript_translate', e)
+        jobLog('transcript_translate_error', {
+          recordingId,
+          message: e instanceof Error ? e.message : String(e),
+        })
+      }
+    } else {
+      jobLog('transcript_translate_skipped', { recordingId, reason: 'translate_unconfigured' })
+    }
 
     const canSummarize = youmiHosted.hostedCapabilities().summarize
     if (!canSummarize) {
