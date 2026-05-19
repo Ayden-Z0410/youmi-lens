@@ -5,7 +5,7 @@
  *   POST /api/auth/send-signup-code
  *     Validates email + username, rejects emails that already have an account,
  *     generates an 8-digit code, stores only its SHA-256 hash, and emails the
- *     code via Resend. The Supabase Auth user is NOT created here.
+ *     code via Brevo. The Supabase Auth user is NOT created here.
  *
  *   POST /api/auth/verify-signup-code-and-create-user
  *     Verifies the code, and ONLY then creates the Supabase Auth user (admin
@@ -18,14 +18,14 @@
 
 import { createClient } from '@supabase/supabase-js'
 import { randomInt, createHash } from 'node:crypto'
-import { Resend } from 'resend'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
-const RESEND_API_KEY = process.env.RESEND_API_KEY
-/** Verified Resend sender. resend.dev only delivers to the Resend account owner. */
-const SIGNUP_CODE_FROM = process.env.RESEND_FROM_EMAIL || 'Youmi Lens <onboarding@resend.dev>'
+const BREVO_API_KEY = process.env.BREVO_API_KEY
+const BREVO_FROM_EMAIL = process.env.BREVO_FROM_EMAIL
+const BREVO_FROM_NAME = process.env.BREVO_FROM_NAME || 'Youmi Lens'
+const BREVO_EMAIL_ENDPOINT = 'https://api.brevo.com/v3/smtp/email'
 
 const CODE_TTL_MS = 10 * 60 * 1000 // 10 minutes
 const RESEND_COOLDOWN_MS = 30 * 1000
@@ -46,11 +46,55 @@ function getAdminClient() {
   return adminClient
 }
 
-let resendClient = null
-function getResend() {
-  if (!RESEND_API_KEY) return null
-  if (!resendClient) resendClient = new Resend(RESEND_API_KEY)
-  return resendClient
+/**
+ * Send the 8-digit verification code via the Brevo transactional email API.
+ * Returns true on success. The code and API key are never logged.
+ */
+async function sendVerificationEmail(toEmail, code) {
+  const textContent =
+    `Your Youmi Lens verification code is: ${code}\n` +
+    `This code expires in 10 minutes.`
+  const htmlContent = `<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#F3F5F8;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+    <div style="max-width:440px;margin:0 auto;background:#FFFFFF;border-radius:14px;padding:32px;">
+      <p style="margin:0 0 6px;font-size:18px;font-weight:800;color:#0A2342;">Youmi Lens</p>
+      <p style="margin:0 0 20px;font-size:15px;color:#5B6472;">Your verification code</p>
+      <p style="margin:0 0 20px;font-size:34px;font-weight:800;letter-spacing:8px;color:#0A2342;">${code}</p>
+      <p style="margin:0;font-size:13px;color:#8B94A3;">This code expires in 10 minutes.</p>
+    </div>
+  </body>
+</html>`
+
+  try {
+    const response = await fetch(BREVO_EMAIL_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'api-key': BREVO_API_KEY,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        sender: { name: BREVO_FROM_NAME, email: BREVO_FROM_EMAIL },
+        to: [{ email: toEmail }],
+        subject: 'Your Youmi Lens verification code',
+        textContent,
+        htmlContent,
+      }),
+    })
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      console.error(
+        '[send-signup-code] Brevo send failed',
+        JSON.stringify({ status: response.status, detail: detail.slice(0, 300) }),
+      )
+      return false
+    }
+    return true
+  } catch (err) {
+    console.error('[send-signup-code] Brevo send threw', JSON.stringify({ message: err?.message || 'unknown' }))
+    return false
+  }
 }
 
 /** SHA-256 of the code salted with the email. Plaintext codes are never stored. */
@@ -102,10 +146,9 @@ export async function handleSendSignupCode(req, res) {
     res.status(503).json({ ok: false, error: 'unavailable', message: 'Account creation is temporarily unavailable.' })
     return
   }
-  const resend = getResend()
-  if (!resend) {
-    console.error('[send-signup-code] RESEND_API_KEY not configured')
-    res.status(503).json({ ok: false, error: 'email_unavailable', message: 'Verification email is temporarily unavailable.' })
+  if (!BREVO_API_KEY || !BREVO_FROM_EMAIL) {
+    console.error('[send-signup-code] Brevo email not configured — BREVO_API_KEY/BREVO_FROM_EMAIL missing')
+    res.status(503).json({ ok: false, error: 'service_unavailable', message: 'Verification email is temporarily unavailable.' })
     return
   }
 
@@ -167,22 +210,9 @@ export async function handleSendSignupCode(req, res) {
     return
   }
 
-  let sendResult
-  try {
-    sendResult = await resend.emails.send({
-      from: SIGNUP_CODE_FROM,
-      to: email,
-      subject: 'Your Youmi Lens verification code',
-      text: `Hi ${username},\n\nYour Youmi Lens email verification code is:\n\n${code}\n\nEnter this code in the app to finish creating your account. The code expires in 10 minutes.\n\nIf you did not request this, you can ignore this email.`,
-    })
-  } catch (err) {
-    console.error('[send-signup-code] email send threw', err?.message)
-    res.status(502).json({ ok: false, error: 'email_failed', message: 'Could not send the verification email. Please try again.' })
-    return
-  }
-  if (sendResult?.error) {
-    console.error('[send-signup-code] email send error', sendResult.error?.message || 'unknown')
-    res.status(502).json({ ok: false, error: 'email_failed', message: 'Could not send the verification email. Please try again.' })
+  const emailSent = await sendVerificationEmail(email, code)
+  if (!emailSent) {
+    res.status(502).json({ ok: false, error: 'email_send_failed', message: 'Could not send the verification email. Please try again.' })
     return
   }
 
