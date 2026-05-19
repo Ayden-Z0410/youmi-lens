@@ -22,6 +22,7 @@ import * as dashEnv from './dashscopeEnv.mjs'
 import { audioUploadMiddleware, handleUploadAudio } from './uploadAudio.mjs'
 import { handleBetaUsageStatus, handleQuotaStatus } from './betaUsageStatus.mjs'
 import { handleAuthCheckEmail } from './authCheckEmail.mjs'
+import { handleSendSignupCode, handleVerifySignupCodeAndCreateUser } from './authSignupCode.mjs'
 
 const PORT = Number(process.env.PORT || process.env.AI_SERVER_PORT || 3847)
 
@@ -155,6 +156,24 @@ app.get('/api/health', (_req, res) => {
 
 app.post('/api/auth/check-email', (req, res) => {
   void handleAuthCheckEmail(req, res)
+})
+
+app.post('/api/auth/send-signup-code', (req, res) => {
+  void handleSendSignupCode(req, res).catch((err) => {
+    console.error('[send-signup-code]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'server_error', message: 'Account creation is temporarily unavailable.' })
+    }
+  })
+})
+
+app.post('/api/auth/verify-signup-code-and-create-user', (req, res) => {
+  void handleVerifySignupCodeAndCreateUser(req, res).catch((err) => {
+    console.error('[verify-signup-code]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'server_error', message: 'Account creation is temporarily unavailable.' })
+    }
+  })
 })
 
 app.get('/api/beta-usage-status', (req, res) => {
