@@ -905,6 +905,7 @@ export function attachLiveRealtimeWs(server) {
       }
 
       if (msg?.type === 'stream_stop') {
+        console.info('[liveRealtimeWs] stream_stop_received', JSON.stringify({ wsSessionId, frameCount }))
         if (SRV_LIVE_VERBOSE) console.log('[YoumiLive][srv] stream_stop', JSON.stringify({ wsSessionId }))
         streamingSession?.stop()   // graceful: sends LAST_PACKET, waits for server final
         // Log session end when user explicitly stops (timer-based close path handles timeout)
