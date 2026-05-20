@@ -23,33 +23,57 @@ function bridgeOriginFromEnv(): string | null {
   return raw.replace(/\/$/, '')
 }
 
+function isTauriPackagedOrigin(origin: string): boolean {
+  const normalized = origin.replace(/\/$/, '')
+  return normalized === 'http://tauri.localhost' || normalized === 'https://tauri.localhost'
+}
+
+export function resolveAuthRedirectUrl({
+  bridgeOrigin,
+  dev,
+  isTauriRuntime,
+  origin,
+}: {
+  bridgeOrigin: string | null | undefined
+  dev: boolean
+  isTauriRuntime: boolean
+  origin: string
+}): string {
+  const normalizedBridge = bridgeOrigin?.trim().replace(/\/$/, '') || null
+  const desktopShell = isTauriRuntime || isTauriPackagedOrigin(origin)
+
+  if (normalizedBridge && desktopShell) {
+    return `${normalizedBridge}${TAURI_AUTH_BRIDGE_PATH}`
+  }
+  if (!desktopShell) {
+    return origin
+  }
+  if (dev) {
+    return `${origin}${TAURI_AUTH_BRIDGE_PATH}`
+  }
+  return TAURI_AUTH_CALLBACK
+}
+
 /**
  * Email magic link + OAuth `emailRedirectTo` / `redirectTo`.
  *
  * Priority order:
- * 1. `VITE_AUTH_BRIDGE_ORIGIN` set → always use HTTPS bridge (most reliable; not gated on isTauri()).
+ * 1. Desktop shell + `VITE_AUTH_BRIDGE_ORIGIN` set → use HTTPS bridge.
  * 2. Not Tauri (pure web) → same-origin (Supabase detectSessionInUrl handles callback).
  * 3. Tauri + DEV → localhost bridge (Vite dev server serves /tauri-auth-callback).
  * 4. Tauri + PROD → custom scheme direct (lecturecompanion://auth-callback).
  *
- * NOTE: The envBridge check is intentionally FIRST — before isTauri() — so that production packaged
- * builds always use the Railway HTTPS bridge regardless of whether isTauri() resolves correctly
- * (window.location.origin in a packaged Tauri app is http://tauri.localhost, not a usable redirect).
+ * A bridge origin is desktop-only. Web builds may share production env, but browser sign-in must
+ * stay on the current origin so Supabase can complete the normal web callback.
  */
 export function getAuthRedirectUrl(): string {
   if (typeof window === 'undefined') {
     return TAURI_AUTH_CALLBACK
   }
-  // If an explicit HTTPS bridge origin is configured, always use it — independent of isTauri().
-  const envBridge = bridgeOriginFromEnv()
-  if (envBridge) {
-    return `${envBridge}${TAURI_AUTH_BRIDGE_PATH}`
-  }
-  if (!isTauri()) {
-    return window.location.origin
-  }
-  if (import.meta.env.DEV) {
-    return `${window.location.origin}${TAURI_AUTH_BRIDGE_PATH}`
-  }
-  return TAURI_AUTH_CALLBACK
+  return resolveAuthRedirectUrl({
+    bridgeOrigin: bridgeOriginFromEnv(),
+    dev: import.meta.env.DEV,
+    isTauriRuntime: isTauri(),
+    origin: window.location.origin,
+  })
 }
