@@ -118,7 +118,10 @@ pub fn run() {
 
       activate_main_for_auth_callback(&app);
       if !args.is_empty() {
-        log::info!("[single-instance] secondary launch args: {:?}", args);
+        log::info!(
+          "[single-instance] secondary launch args: {}",
+          summarize_secondary_launch_args(&args)
+        );
       }
     }));
   }
@@ -171,6 +174,17 @@ fn activate_main_for_auth_callback<R: Runtime>(app: &tauri::AppHandle<R>) {
     let _ = w.unminimize();
     let _ = w.set_focus();
   }
+}
+
+/// Do not log raw argv: custom-scheme auth callbacks can contain OAuth codes or
+/// Supabase implicit access/refresh tokens.
+#[cfg(all(not(target_os = "android"), not(target_os = "ios")))]
+fn summarize_secondary_launch_args(args: &[String]) -> String {
+  let deep_link_count = args
+    .iter()
+    .filter(|arg| arg.contains("lecturecompanion://"))
+    .count();
+  format!("count={} lecturecompanion_urls={}", args.len(), deep_link_count)
 }
 
 /// macOS: single-instance forwards `std::env::args()` from the secondary process. If the custom
