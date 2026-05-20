@@ -566,6 +566,8 @@ export class YoumiLiveAdapter {
 
   /** Legacy blob path — no-op in streaming mode. Kept for interface compatibility. */
   async pushChunk(_blob: Blob, _mime: string): Promise<void> {
+    void _blob
+    void _mime
     // Audio arrives via pushPcm; blob slices are disabled in streaming mode.
   }
 }
