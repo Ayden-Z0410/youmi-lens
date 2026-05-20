@@ -110,7 +110,7 @@ pub fn run() {
       emit_forwarded_deep_link_urls(&app, &args);
 
       for (label, w) in app.webview_windows() {
-        if label != "main" {
+        if should_close_auth_cleanup_webview(&label) {
           log::info!("[single-instance] closing non-main webview: {}", label);
           let _ = w.close();
         }
@@ -152,6 +152,10 @@ pub fn run() {
     })
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+fn should_close_auth_cleanup_webview(label: &str) -> bool {
+  !matches!(label, "main" | "overlay")
 }
 
 /// Bring the main webview to the foreground after a deep link or second-instance handoff.
