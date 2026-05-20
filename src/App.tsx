@@ -51,7 +51,6 @@ import { getAiApiBase } from './lib/ai/apiBase'
 import {
   hostedRecordingAiStatusLabel,
   liveCaptionBlockedMessage,
-  recordingTooLargeUserMessage,
   userFacingGenericProcessingFailure,
   userFacingHostedJobFailure,
   userFacingSummarizeFailure,
@@ -467,7 +466,6 @@ const LC_USE_LOCAL_KEY = 'lc_use_local_without_cloud'
 type LiveTranslateTarget = 'zh' | 'en' | 'off'
 const SUPPORTED_LIVE_LANG = 'en-US'
 const SUPPORTED_TRANSLATE_TARGET: LiveTranslateTarget = 'zh'
-const MAX_WHISPER_BYTES = 25 * 1024 * 1024
 
 const SAVE_UPLOAD_TIMEOUT_MS = 180_000
 const SAVE_DB_TIMEOUT_MS = 45_000
@@ -3009,17 +3007,6 @@ const [editLectureModal, setEditLectureModal] = useState<{
             ].join('\n')
       const liveTranscriptRaw = liveText
       const { canonical: liveTranscriptCanonical } = canonicalizeLectureTranscript(liveTranscriptRaw)
-      if (blob.size > MAX_WHISPER_BYTES) {
-        endCapture({
-          kind: 'failure',
-          recordingId,
-          outcome: 'other',
-          message: recordingTooLargeUserMessage((blob.size / 1024 / 1024).toFixed(1)),
-          at: Date.now(),
-        })
-        ledgerClear(recordingId)
-        return
-      }
 
       const courseVal = course.trim() || 'Course'
       const titleVal = title.trim() || `Lecture ${formatDate(Date.now())}`
