@@ -16,7 +16,9 @@ const isOverlay =
 if (isOverlay) {
   document.documentElement.classList.add('youmi-overlay')
   document.documentElement.style.setProperty('background', 'transparent', 'important')
+  document.documentElement.style.setProperty('background-color', 'transparent', 'important')
   document.body.style.setProperty('background', 'transparent', 'important')
+  document.body.style.setProperty('background-color', 'transparent', 'important')
 }
 
 const styleGuide =

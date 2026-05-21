@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.7"
+version = "0.1.8"
 description = "A Tauri App"
 authors = ["you"]
 license = ""
@@ -21,9 +21,22 @@ tauri-build = { version = "2.5.6", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.10.3", features = ["devtools"] }
+tauri = { version = "2.10.3", features = ["devtools", "macos-private-api"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-log = "2"
 # "deep-link" feature forwards CLI/deep-link args from killed secondary instances into tauri-plugin-deep-link on the primary app (Windows/Linux; pairs with .plugin order below).
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+
+# macOS overlay = floating companion. Standard NSWindow flags
+# (CanJoinAllSpaces|FullScreenAuxiliary|NSStatusWindowLevel) proved insufficient
+# in real testing — the overlay still acted like a normal app window tied to
+# Youmi Lens's Space. The canonical Apple pattern for cross-Space HUD windows
+# (used by every floating-companion / dock peer / pet app on macOS) is to
+# class-swap the underlying NSWindow into NSPanel and set the
+# NonactivatingPanel style mask, plus raise level to NSPopUpMenuWindowLevel
+# and call orderFrontRegardless so the host app never activates when the
+# overlay is shown. We do that via objc2 here.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSPanel", "NSResponder"] }

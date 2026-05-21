@@ -40,7 +40,11 @@ const FONT       = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang 
 const GLASS_BG      = 'linear-gradient(135deg, rgba(6,27,52,0.78), rgba(20,54,88,0.58))'
 const GLASS_BLUR    = 'blur(32px) saturate(160%)'
 const GLASS_BORDER  = '1px solid rgba(255,255,255,0.18)'
-const GLASS_SHADOW  = '0 24px 70px rgba(0,0,0,0.26), inset 0 1px 0 rgba(255,255,255,0.18)'
+// No outer drop shadow: the overlay window is transparent + native NSWindow
+// shadow is disabled, so any outer box-shadow would either get clipped by the
+// rectangular window frame or leak into the four rounded-corner cutouts and
+// reveal a rectangular boundary. Keep only the inset top highlight.
+const GLASS_SHADOW  = 'inset 0 1px 0 rgba(255,255,255,0.18)'
 const RADIUS_CARD   = 28
 const RADIUS_PILL   = 999
 
@@ -239,18 +243,28 @@ function CaptionRow({
       overflow: 'hidden',
     }}>
       <LangPill label={lang} />
+      {/*
+        Natural left-to-right caption row. The helper in
+        src/lib/overlayCaption.ts already trims to a short tail (~55 EN
+        / ~28 ZH chars) that fits this row width, so we render text
+        normally — left-aligned, single-line, no ellipsis. If text ever
+        overflows by a few chars, `overflow: hidden` clips on the right
+        edge silently (no "..."); the helper's tight char budget keeps
+        that case rare.
+      */}
       <span style={{
+        flex: 1,
+        minWidth: 0,
         color: hasContent ? PEARL : PEARL_42,
         fontSize: 17,
         fontWeight: 450,
         lineHeight: 1.35,
         fontStyle: hasContent ? 'normal' : 'italic',
         fontFamily: FONT,
+        textAlign: 'left',
+        direction: 'ltr',
         whiteSpace: 'nowrap',
         overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        flex: 1,
-        minWidth: 0,
       }}>
         {committed && <span>{committed}</span>}
         {draft && (

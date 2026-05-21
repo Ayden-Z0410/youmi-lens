@@ -43,7 +43,9 @@ export function OverlayApp() {
   // Make html/body transparent so the rounded overlay corners show the desktop
   useEffect(() => {
     document.documentElement.style.background = 'transparent'
+    document.documentElement.style.backgroundColor = 'transparent'
     document.body.style.background = 'transparent'
+    document.body.style.backgroundColor = 'transparent'
     document.documentElement.style.margin = '0'
     document.documentElement.style.padding = '0'
     document.body.style.margin = '0'
@@ -90,6 +92,8 @@ export function OverlayApp() {
         boxSizing: 'border-box',
         overflow: 'hidden',
         background: 'transparent',
+        backgroundColor: 'transparent',
+        display: 'block',
       }}
     >
       <OverlayWindow captions={state} />

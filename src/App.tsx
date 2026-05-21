@@ -131,6 +131,7 @@ import { probeDefaultAudioSampleRate } from './lib/mediaEnvDebug'
 import { getEnArrivalWalls, traceCaptionStop } from './lib/liveCaptionTrace'
 import { canonicalizeLectureTranscript } from './lib/transcriptCanonical'
 import { youmiLiveLog } from './lib/youmiLiveDebug'
+import { getOverlayLiveText } from './lib/overlayCaption'
 import type { Recording, RecordingDetail } from './types'
 import type { CloudTrashedMeta } from './lib/cloudLectureTrash'
 import { loadCloudTrashRegistry, saveCloudTrashRegistry } from './lib/cloudLectureTrash'
@@ -154,46 +155,8 @@ function isTauriContext(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
-/**
- * Show the latest sentence-level delta in the overlay.
- *
- * Strategy:
- *  1. If `current` grew from `prev`, extract the newly-added tail.
- *  2. Find the last sentence in that tail (sentence boundary = . ? ! 。 ？ ！ ； ;).
- *  3. If the extracted delta fits within maxChars, return it.
- *  4. If `current` is shorter than (or unrelated to) `prev` — session was reset —
- *     just take the last sentence of `current`.
- */
-function getLatestOverlaySegment(prev: string, current: string, maxChars: number): string {
-  const c = current.trim().replace(/\s{2,}/g, ' ')
-  if (!c) return ''
-
-  // Determine the delta: newly appended text since prev
-  const p = prev.trim().replace(/\s{2,}/g, ' ')
-  const delta = c.startsWith(p) && c.length > p.length
-    ? c.slice(p.length).trim()
-    : c  // reset or unrelated — use full current
-
-  // Extract the last complete sentence from the delta (or whole delta if none)
-  const boundaries = /[.?!。？！；;]+\s*/g
-  let lastEnd = -1
-  let m: RegExpExecArray | null
-  while ((m = boundaries.exec(delta)) !== null) {
-    lastEnd = m.index + m[0].length
-  }
-  // Prefer the trailing incomplete sentence (after last boundary) if it exists
-  const tail = lastEnd >= 0 && lastEnd < delta.length
-    ? delta.slice(lastEnd).trim()
-    : delta
-
-  if (tail.length === 0) {
-    // Only sentence-ending punctuation was in delta — return last sentence before it
-    const sentence = lastEnd > 0 ? delta.slice(0, lastEnd).trim() : delta
-    return sentence.length <= maxChars ? sentence : '…' + sentence.slice(-maxChars)
-  }
-
-  return tail.length <= maxChars ? tail : '…' + tail.slice(-maxChars)
-}
+// Overlay caption helper lives in src/lib/overlayCaption.ts (pure, unit-tested).
+// Imported below alongside its draft-trim sibling.
 
 function emitOverlayCaptions(payload: {
   primaryBlack: string
@@ -1666,10 +1629,28 @@ function RecordingWorkspace({
   const primaryCaptionRef = useRef('')
   /** Full zh transcript for live v2 (state is windowed to 150 words). */
   const secondaryCaptionFullRef = useRef('')
-  /** Previous overlay committed text — used by getLatestOverlaySegment for delta detection. */
-  const overlayPrevPrimaryRef = useRef('')
-  const overlayPrevSecondaryRef = useRef('')
 
+  // Overlay caption emission: see src/lib/overlayCaption.ts. The overlay
+  // shows ONLY the in-progress phrase the speaker is producing right
+  // now (committed-tail since the last sentence boundary + draft). When
+  // `committed` ends on a sentence boundary AND `draft` is non-empty,
+  // the helper drops the old completed sentence entirely and only
+  // emits the draft, so the overlay never shows a stale "Hello world."
+  // prefixed to a new in-progress phrase.
+  //
+  // We deliberately emit a SINGLE combined string per language as
+  // `primaryBlack` / `secondaryBlack` and leave `primaryGray` /
+  // `secondaryGray` empty: rendering committed (white) + draft (gray
+  // italic) as two adjacent inline spans introduced a visible style
+  // seam mid-line, and made students perceive the row as having two
+  // "zones" rather than one growing left-to-right caption. With one
+  // span, the OverlayWindow renders normal LTR text that grows
+  // naturally to the right as the speaker produces words.
+  //
+  // Budgets (55 EN / 28 ZH) are tuned to fit the 600px-wide overlay
+  // on one left-aligned line at fontSize 17. Main-app transcript
+  // still receives the full accumulated text via primaryCaption /
+  // secondaryCaption refs (unchanged).
   const syncLiveCaptionViewFromModel = useCallback((v: LiveCaptionView) => {
     primaryCaptionRef.current = v.persistPrimaryFull
     secondaryCaptionFullRef.current = v.persistSecondaryFull
@@ -1678,22 +1659,28 @@ function RecordingWorkspace({
     setPrimaryCaptionDraft(v.primaryGray)
     setSecondaryCaption(v.secondaryBlack)
     setSecondaryCaptionDraft(v.secondaryGray)
-    const primarySnippet = getLatestOverlaySegment(overlayPrevPrimaryRef.current, v.primaryBlack, 120)
-    const secondarySnippet = getLatestOverlaySegment(overlayPrevSecondaryRef.current, v.secondaryBlack, 90)
-    if (v.primaryBlack) overlayPrevPrimaryRef.current = v.primaryBlack
-    if (v.secondaryBlack) overlayPrevSecondaryRef.current = v.secondaryBlack
+    const enText = getOverlayLiveText({
+      committed: v.primaryBlack,
+      draft: v.primaryGray,
+      maxChars: 55,
+    })
+    const zhText = getOverlayLiveText({
+      committed: v.secondaryBlack,
+      draft: v.secondaryGray,
+      maxChars: 28,
+    })
     emitOverlayCaptions({
-      primaryBlack: primarySnippet,
-      primaryGray: v.primaryGray.length > 100 ? '…' + v.primaryGray.slice(-100) : v.primaryGray,
-      secondaryBlack: secondarySnippet,
-      secondaryGray: v.secondaryGray.length > 80 ? '…' + v.secondaryGray.slice(-80) : v.secondaryGray,
+      primaryBlack: enText,
+      primaryGray: '',
+      secondaryBlack: zhText,
+      secondaryGray: '',
     })
   }, [])
 
   const resetLiveCaptionSessionUi = useCallback(() => {
-    overlayPrevPrimaryRef.current = ''
-    overlayPrevSecondaryRef.current = ''
     liveCaptionSessionRef.current.reset()
+    // syncLiveCaptionViewFromModel emits empty caption text to the overlay,
+    // clearing any leftover sentence from the previous recording session.
     syncLiveCaptionViewFromModel(liveCaptionSessionRef.current.getView())
   }, [syncLiveCaptionViewFromModel])
 
