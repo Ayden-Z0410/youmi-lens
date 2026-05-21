@@ -4,6 +4,11 @@ export function normalizedDisplayNameKey(raw: string): string {
 }
 
 export const DISPLAY_NAME_MAX_LENGTH = 64
+/**
+ * Minimum length enforced on NEW input only (Create Profile + Edit Username).
+ * Existing rows with shorter values remain readable; we only block saving new short names.
+ */
+export const DISPLAY_NAME_MIN_LENGTH = 2
 
 /** User-facing copy when global unique display name collides (constraint `profiles_username_lower_unique`). */
 export const DISPLAY_NAME_TAKEN_MESSAGE =
@@ -26,6 +31,9 @@ export function validateDisplayName(raw: string): ValidateDisplayNameResult {
   const value = raw.trim()
   if (!value) {
     return { ok: false, message: 'Enter a display name.' }
+  }
+  if (value.length < DISPLAY_NAME_MIN_LENGTH) {
+    return { ok: false, message: `Display name must be at least ${DISPLAY_NAME_MIN_LENGTH} characters.` }
   }
   if (value.length > DISPLAY_NAME_MAX_LENGTH) {
     return { ok: false, message: `Display name must be at most ${DISPLAY_NAME_MAX_LENGTH} characters.` }

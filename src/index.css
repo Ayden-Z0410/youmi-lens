@@ -133,3 +133,20 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+/*
+ * Auth screens: cancel the inherited `:root { letter-spacing: 0.18px }` so email / password /
+ * username inputs render with neutral letter spacing. Only the verification code input opts in to
+ * a spaced/code-style appearance via `.code-input`.
+ */
+.login-screen__email-input,
+.auth-input {
+  letter-spacing: normal;
+}
+
+.code-input {
+  letter-spacing: 0.35em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}

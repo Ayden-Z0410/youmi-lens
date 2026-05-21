@@ -83,6 +83,7 @@ import {
   type UserProfileRow,
 } from './lib/userProfile'
 import { AccountSettingsModal } from './components/AccountSettingsModal'
+import { AuthScreens } from './components/AuthScreens'
 import { RecordingAudioPlayer } from './components/RecordingAudioPlayer'
 import { OnboardingUsername } from './components/OnboardingUsername'
 import { SmoothCaption } from './components/SmoothCaption'
@@ -752,166 +753,6 @@ function readForceLocalPreference(): boolean {
   }
 }
 
-function LoginScreen({ auth }: { auth: ReturnType<typeof useAuth> }) {
-  const [email, setEmail] = useState('')
-  const [emailBusy, setEmailBusy] = useState(false)
-  const [emailHint, setEmailHint] = useState<string | null>(null)
-  const [emailErr, setEmailErr] = useState<string | null>(null)
-  const t = designTokens
-  const px = (n: number) => `${n}px`
-
-  const sendMagicLink = async () => {
-    setEmailErr(null)
-    setEmailHint(null)
-    setEmailBusy(true)
-    try {
-      const { error } = await auth.signInWithEmailOtp(email)
-      if (error) setEmailErr(error)
-      else
-        setEmailHint(
-          'Email sent. Check your inbox or spam folder and open the link to sign in.',
-        )
-    } catch (e) {
-      setEmailErr(e instanceof Error ? e.message : 'Request failed')
-    } finally {
-      setEmailBusy(false)
-    }
-  }
-
-  return (
-    <div
-      className="ds-root login-screen"
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        padding: px(t.spacing[8]),
-        boxSizing: 'border-box',
-      }}
-    >
-      <header
-        style={{
-          marginBottom: px(t.spacing[8]),
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: px(t.spacing[4]),
-        }}
-      >
-        <YoumiLensMonogramY size={32} color={t.colors.primary} aria-hidden />
-        <span
-          style={{
-            fontSize: t.fontSize.xl,
-            fontWeight: 600,
-            letterSpacing: '-0.035em',
-            color: t.colors.primary,
-          }}
-        >
-          Youmi Lens
-        </span>
-      </header>
-
-      <div style={{ width: '100%', maxWidth: 400, position: 'relative', zIndex: 1 }}>
-        <div
-          className="ds-card login-screen__card"
-          style={{
-            padding: `${px(t.spacing[6])} ${px(t.spacing[8])}`,
-            border: `1px solid ${t.colors.border}`,
-            background: t.colors.surface,
-          }}
-        >
-          <h1
-            style={{
-              margin: `0 0 ${px(t.spacing[3])}`,
-              fontSize: t.fontSize.md,
-              fontWeight: 600,
-              color: t.colors.text,
-              letterSpacing: '-0.02em',
-            }}
-          >
-            Sign in to sync recordings
-          </h1>
-          <p
-            style={{
-              margin: `0 0 ${px(t.spacing[4])}`,
-              fontSize: t.fontSize.sm,
-              color: t.colors.textMuted,
-              lineHeight: t.lineHeight.relaxed,
-            }}
-          >
-            Recordings and transcripts sync to your Youmi Lens account. Sign in on any device with the same
-            email to access them.
-          </p>
-
-          <label
-            htmlFor="login-email"
-            style={{
-              display: 'block',
-              fontSize: t.fontSize.sm,
-              fontWeight: 600,
-              color: t.colors.text,
-              marginBottom: px(t.spacing[2]),
-            }}
-          >
-            Email
-          </label>
-          <input
-            id="login-email"
-            type="email"
-            className="login-screen__email-input"
-            placeholder="you@example.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="email"
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              padding: `${px(t.spacing[3])} ${px(t.spacing[4])}`,
-              borderRadius: t.radii.lg,
-              border: `1px solid ${t.colors.border}`,
-              fontSize: t.fontSize.base,
-              marginBottom: px(t.spacing[3]),
-              background: t.colors.surface,
-              color: t.colors.text,
-              caretColor: t.colors.accent,
-            }}
-          />
-          <button
-            type="button"
-            className="ds-btn ds-btn--primary"
-            style={{ width: '100%' }}
-            disabled={emailBusy || !email.trim()}
-            onClick={() => void sendMagicLink()}
-          >
-            {emailBusy ? 'Sending…' : 'Send sign-in link'}
-          </button>
-          {emailHint && (
-            <p style={{ marginTop: px(t.spacing[3]), fontSize: t.fontSize.sm, color: t.colors.textMuted }}>
-              {emailHint}
-            </p>
-          )}
-          {emailErr && (
-            <p style={{ marginTop: px(t.spacing[2]), color: t.colors.danger, fontSize: t.fontSize.sm }}>
-              {emailErr}
-            </p>
-          )}
-          {auth.deepLinkAuthError && (
-            <p style={{ marginTop: px(t.spacing[2]), color: t.colors.danger, fontSize: t.fontSize.sm }}>
-              {auth.deepLinkAuthError}
-            </p>
-          )}
-        </div>
-      </div>
-
-      {/*
-        Dev note (not shown in UI): local-only mode — clear VITE_SUPABASE_ANON_KEY in .env, restart dev server,
-        pick local mode on the setup screen. Optional: show in UI only when import.meta.env.DEV if needed.
-      */}
-    </div>
-  )
-}
-
 function CloudSetupSplash({
   onUseLocal,
   onBack,
@@ -1120,6 +961,9 @@ export default function App() {
         hasUser: Boolean(auth.user),
         hasSupabaseClient: Boolean(supabase),
       }
+    } else if (auth.inPasswordRecovery) {
+      gate = 'password-recovery'
+      detail = { screen: gate }
     } else {
       gate = 'recording-workspace'
       detail = { screen: gate, userIdPrefix: auth.user.id.slice(0, 8) }
@@ -1128,7 +972,7 @@ export default function App() {
       authUiGateLogged.current = gate
       console.info('[lc-auth ui] render gate', detail)
     }
-  }, [cloudReady, auth.loading, auth.session, auth.user, supabase])
+  }, [cloudReady, auth.loading, auth.session, auth.user, supabase, auth.inPasswordRecovery])
 
   if (!cloudReady) {
     if (!forceLocalWithoutCloud) {
@@ -1182,7 +1026,14 @@ export default function App() {
   }
 
   if (!auth.session || !auth.user || !supabase) {
-    return <LoginScreen auth={auth} />
+    return <AuthScreens />
+  }
+
+  // Recovery session: keep rendering the auth flow until the user finishes setting a new
+  // password. The recovery session is a real Supabase session, but mounting AuthenticatedApp
+  // here would let the user into the workspace without a fresh sign-in.
+  if (auth.inPasswordRecovery) {
+    return <AuthScreens />
   }
 
   return (

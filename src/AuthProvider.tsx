@@ -6,6 +6,10 @@ import { AuthContext, type AuthContextValue } from './authContext'
 import { getAuthRedirectUrl } from './lib/authRedirect'
 import { getSupabase, isSupabaseConfigured } from './lib/supabase'
 import {
+  sendSignupCode as apiSendSignupCode,
+  verifySignupCodeAndCreateUser as apiVerifySignupCodeAndCreateUser,
+} from './lib/signupCodeApi'
+import {
   applySessionFromSupabaseCallbackUrl,
   inspectAuthCallbackUrl,
 } from './lib/supabaseDeepLinkAuth'
@@ -94,6 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(configured)
   const [deepLinkAuthError, setDeepLinkAuthError] = useState<string | null>(null)
+  const [inPasswordRecovery, setInPasswordRecovery] = useState(false)
 
   /**
    * Single bootstrap: subscribe first, then (Tauri) apply any pending deep-link auth before
@@ -107,7 +112,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, next) => {
       console.info('[Auth] onAuthStateChange event:', event, { hasSession: Boolean(next) })
-      if (!cancelled) setSession(next)
+      if (cancelled) return
+      setSession(next)
+      // Supabase emits PASSWORD_RECOVERY after verifyOtp({type:'recovery'}) (typed code or deep
+      // link). The recovery session must not route into AuthenticatedApp until the user finishes
+      // setting a new password; cleared on SIGNED_OUT which follows updateUser({password}).
+      if (event === 'PASSWORD_RECOVERY') {
+        setInPasswordRecovery(true)
+      } else if (event === 'SIGNED_OUT') {
+        setInPasswordRecovery(false)
+      }
     })
 
     void (async () => {
@@ -351,6 +365,141 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [supabase],
   )
 
+  const signInWithPassword = useCallback(
+    async (email: string, password: string) => {
+      if (!supabase) {
+        return {
+          error:
+            'Cloud sign-in isn’t available in this build. Use an official Youmi Lens release, or continue without an account.',
+        }
+      }
+      const trimmed = email.trim()
+      if (!trimmed) return { error: 'Enter your email address.' }
+      if (!password) return { error: 'Enter your password.' }
+      setDeepLinkAuthError(null)
+      const { error } = await supabase.auth.signInWithPassword({ email: trimmed, password })
+      if (!error) return { error: null }
+      const raw = (error.message || '').toLowerCase()
+      if (raw.includes('invalid login') || raw.includes('invalid credentials')) {
+        return { error: 'Incorrect email or password.' }
+      }
+      if (raw.includes('email not confirmed')) {
+        return { error: 'Please verify your email before signing in.' }
+      }
+      return { error: error.message || 'Sign-in failed. Please try again.' }
+    },
+    [supabase],
+  )
+
+  const requestSignupCode = useCallback(
+    async (args: { email: string; username: string }) => {
+      if (!supabase) {
+        return {
+          error:
+            'Cloud sign-in isn’t available in this build. Use an official Youmi Lens release, or continue without an account.',
+          code: null,
+        }
+      }
+      return apiSendSignupCode({
+        email: args.email.trim(),
+        username: args.username.trim(),
+      })
+    },
+    [supabase],
+  )
+
+  const verifySignupCodeAndCreateUser = useCallback(
+    async (args: { email: string; username: string; password: string; code: string }) => {
+      if (!supabase) {
+        return {
+          error:
+            'Cloud sign-in isn’t available in this build. Use an official Youmi Lens release, or continue without an account.',
+          code: null,
+        }
+      }
+      return apiVerifySignupCodeAndCreateUser({
+        email: args.email.trim(),
+        username: args.username.trim(),
+        password: args.password,
+        code: args.code.replace(/\s/g, ''),
+      })
+    },
+    [supabase],
+  )
+
+  const requestPasswordResetCode = useCallback(
+    async (email: string) => {
+      if (!supabase) {
+        return {
+          error:
+            'Cloud sign-in isn’t available in this build. Use an official Youmi Lens release, or continue without an account.',
+        }
+      }
+      const trimmed = email.trim()
+      if (!trimmed) return { error: 'Enter your email address.' }
+      const redirectUrl = getAuthRedirectUrl()
+      const { error } = await supabase.auth.resetPasswordForEmail(trimmed, {
+        redirectTo: redirectUrl,
+      })
+      if (error) {
+        console.info('[Auth] resetPasswordForEmail error suppressed (no enumeration)', error.message)
+      }
+      return { error: null }
+    },
+    [supabase],
+  )
+
+  const verifyPasswordResetCode = useCallback(
+    async (email: string, code: string) => {
+      if (!supabase) {
+        return {
+          error:
+            'Cloud sign-in isn’t available in this build. Use an official Youmi Lens release, or continue without an account.',
+        }
+      }
+      const trimmedEmail = email.trim()
+      const trimmedCode = code.replace(/\s/g, '')
+      if (!trimmedEmail) return { error: 'Enter your email address.' }
+      if (!trimmedCode) return { error: 'Enter the verification code.' }
+      const { error } = await supabase.auth.verifyOtp({
+        email: trimmedEmail,
+        token: trimmedCode,
+        type: 'recovery',
+      })
+      if (!error) {
+        // Defensive: set recovery flag immediately so a race between this resolving and the
+        // PASSWORD_RECOVERY event can never let App.tsx mount AuthenticatedApp first.
+        setInPasswordRecovery(true)
+        return { error: null }
+      }
+      const raw = (error.message || '').toLowerCase()
+      if (raw.includes('expired')) return { error: 'This code has expired. Please request a new code.' }
+      if (raw.includes('invalid') || raw.includes('token')) {
+        return { error: 'Incorrect code. Please check it and try again.' }
+      }
+      return { error: error.message || 'Could not verify the code.' }
+    },
+    [supabase],
+  )
+
+  const updatePassword = useCallback(
+    async (newPassword: string) => {
+      if (!supabase) {
+        return {
+          error:
+            'Cloud sign-in isn’t available in this build. Use an official Youmi Lens release, or continue without an account.',
+        }
+      }
+      if (newPassword.length < 8) {
+        return { error: 'Password must be at least 8 characters.' }
+      }
+      const { error } = await supabase.auth.updateUser({ password: newPassword })
+      if (!error) return { error: null }
+      return { error: error.message || 'Could not update the password.' }
+    },
+    [supabase],
+  )
+
   const signOut = useCallback(async () => {
     if (!supabase) return
     const { error } = await supabase.auth.signOut()
@@ -367,9 +516,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       session,
       user: session?.user ?? null,
+      inPasswordRecovery,
       signInWithGoogle,
       signInWithApple,
       signInWithEmailOtp,
+      signInWithPassword,
+      requestSignupCode,
+      verifySignupCodeAndCreateUser,
+      requestPasswordResetCode,
+      verifyPasswordResetCode,
+      updatePassword,
       signOut,
       deepLinkAuthError,
       clearDeepLinkAuthError,
@@ -378,9 +534,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       configured,
       loading,
       session,
+      inPasswordRecovery,
       signInWithGoogle,
       signInWithApple,
       signInWithEmailOtp,
+      signInWithPassword,
+      requestSignupCode,
+      verifySignupCodeAndCreateUser,
+      requestPasswordResetCode,
+      verifyPasswordResetCode,
+      updatePassword,
       signOut,
       deepLinkAuthError,
       clearDeepLinkAuthError,

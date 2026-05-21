@@ -109,7 +109,7 @@ function generateCode() {
 
 function validUsername(name) {
   const trimmed = typeof name === 'string' ? name.trim() : ''
-  return trimmed.length >= 2 && trimmed.length <= 32
+  return trimmed.length >= 2 && trimmed.length <= 64
 }
 
 /** Whether a Supabase Auth user already exists for this email. */
@@ -136,7 +136,7 @@ export async function handleSendSignupCode(req, res) {
     return
   }
   if (!validUsername(username)) {
-    res.status(400).json({ ok: false, error: 'invalid_request', message: 'Username must be 2–32 characters.' })
+    res.status(400).json({ ok: false, error: 'invalid_request', message: 'Username must be 2–64 characters.' })
     return
   }
 
@@ -146,13 +146,10 @@ export async function handleSendSignupCode(req, res) {
     res.status(503).json({ ok: false, error: 'unavailable', message: 'Account creation is temporarily unavailable.' })
     return
   }
-  if (!BREVO_API_KEY || !BREVO_FROM_EMAIL) {
-    console.error('[send-signup-code] Brevo email not configured — BREVO_API_KEY/BREVO_FROM_EMAIL missing')
-    res.status(503).json({ ok: false, error: 'service_unavailable', message: 'Verification email is temporarily unavailable.' })
-    return
-  }
 
-  // Prevent duplicate accounts for an existing email.
+  // Check for an existing Supabase Auth user BEFORE the Brevo availability check, so an
+  // already-registered email always surfaces the friendly 409 (regardless of whether the
+  // outbound email service is reachable).
   try {
     if (await authUserExistsByEmail(db, email)) {
       res.status(409).json({ ok: false, error: 'email_exists', message: EXISTING_ACCOUNT_MESSAGE })
@@ -165,6 +162,12 @@ export async function handleSendSignupCode(req, res) {
       error: 'check_failed',
       message: 'Could not verify whether this email is available. Please try again.',
     })
+    return
+  }
+
+  if (!BREVO_API_KEY || !BREVO_FROM_EMAIL) {
+    console.error('[send-signup-code] Brevo email not configured — BREVO_API_KEY/BREVO_FROM_EMAIL missing')
+    res.status(503).json({ ok: false, error: 'service_unavailable', message: 'Verification email is temporarily unavailable.' })
     return
   }
 
@@ -232,7 +235,7 @@ export async function handleVerifySignupCodeAndCreateUser(req, res) {
     return
   }
   if (!validUsername(username)) {
-    res.status(400).json({ ok: false, error: 'invalid_request', message: 'Username must be 2–32 characters.' })
+    res.status(400).json({ ok: false, error: 'invalid_request', message: 'Username must be 2–64 characters.' })
     return
   }
   if (password.length < 8) {
