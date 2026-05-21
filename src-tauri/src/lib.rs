@@ -3,6 +3,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 static OVERLAY_POSITIONED: AtomicBool = AtomicBool::new(false);
 
+/// Set when the user explicitly quits via Cmd+Q / Quit menu (RunEvent::ExitRequested).
+/// While false, the main window's red close button only hides the window so the user can
+/// reopen it from the Dock — matching the standard macOS app lifecycle (ChatGPT, Linear, etc.).
+/// While true, CloseRequested is allowed to proceed so the app shuts down normally.
+static APP_QUITTING: AtomicBool = AtomicBool::new(false);
+
 const OVERLAY_W: f64 = 600.0;
 const OVERLAY_H: f64 = 118.0;
 const OVERLAY_W_COMPACT: f64 = 260.0;
@@ -361,10 +367,84 @@ pub fn run() {
             .build(),
         )?;
       }
+
+      // macOS-style close behavior for the main window. The red close button hides the window
+      // (the Tauri app keeps running, dock icon stays visible, reopen works). Cmd+Q / Quit menu
+      // sets APP_QUITTING via RunEvent::ExitRequested below and is allowed through.
+      //
+      // Fullscreen caveat: calling `hide()` on a window that owns its own macOS fullscreen Space
+      // leaves the Space alive with no visible content — the user is left staring at a black
+      // fullscreen Space they can't escape. We must exit fullscreen FIRST, wait for the AppKit
+      // exit-fullscreen animation to complete, then hide on the main thread.
+      //
+      // Overlay window is not affected: it has `decorations: false` (no close button) and is
+      // hidden via the existing hide_overlay command from the overlay UI.
+      if let Some(main) = app.get_webview_window("main") {
+        let main_for_handler = main.clone();
+        main.on_window_event(move |event| {
+          if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            if APP_QUITTING.load(Ordering::SeqCst) {
+              // Real quit in progress — allow the window to close.
+              return;
+            }
+            api.prevent_close();
+            let win = main_for_handler.clone();
+            let was_fullscreen = win.is_fullscreen().unwrap_or(false);
+            if was_fullscreen {
+              // Step 1: tell AppKit to leave fullscreen. This kicks off the ~500 ms exit
+              // animation; the window's NSWindow.styleMask drops .fullScreen when done.
+              let _ = win.set_fullscreen(false);
+              // Step 2: wait for the animation to finish, then hide on the main thread.
+              // Hiding mid-animation reproduces the original black-Space bug. 700 ms is a
+              // safe margin above the ~500 ms animation and is unnoticeable in practice.
+              let win_for_thread = win.clone();
+              std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(700));
+                let win_for_main_thread = win_for_thread.clone();
+                let _ = win_for_thread.run_on_main_thread(move || {
+                  let _ = win_for_main_thread.hide();
+                });
+              });
+            } else {
+              let _ = win.hide();
+            }
+          }
+        });
+      }
+
       Ok(())
     })
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application")
+    .run(|app_handle, event| match event {
+      // Cmd+Q / Quit menu. Flag the close handler so the next CloseRequested isn't intercepted.
+      tauri::RunEvent::ExitRequested { .. } => {
+        APP_QUITTING.store(true, Ordering::SeqCst);
+      }
+      // macOS Dock icon click (applicationShouldHandleReopen). Always attempt to restore so
+      // the user never has to Force Quit — works whether the window is hidden, minimized, in
+      // a separate Space, or already visible. `has_visible_windows` can be unreliable after a
+      // fullscreen-exit-then-hide flow, so we don't gate on it.
+      tauri::RunEvent::Reopen { .. } => {
+        #[cfg(target_os = "macos")]
+        {
+          let _ = app_handle.show();
+        }
+        if let Some(w) = app_handle.get_webview_window("main") {
+          // Defensive: only force-exit fullscreen if the window is currently hidden — that
+          // means a prior CloseRequested left it in an inconsistent state. Don't disturb an
+          // intentionally fullscreen window the user is reactivating.
+          let visible = w.is_visible().unwrap_or(false);
+          if !visible && w.is_fullscreen().unwrap_or(false) {
+            let _ = w.set_fullscreen(false);
+          }
+          let _ = w.show();
+          let _ = w.unminimize();
+          let _ = w.set_focus();
+        }
+      }
+      _ => {}
+    });
 }
 
 /// Bring the main webview to the foreground after a deep link or second-instance handoff.
