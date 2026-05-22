@@ -121,6 +121,8 @@ export type ApplySessionResult = {
   branch: ApplySessionBranch
   /** Session returned by Supabase for this step (prefer over a follow-up getSession when non-null). */
   session: Session | null
+  /** True when the callback was explicitly a Supabase password-recovery OTP. */
+  isPasswordRecovery: boolean
 }
 
 /**
@@ -137,7 +139,7 @@ export async function applySessionFromSupabaseCallbackUrl(
     params = parseParametersFromURL(callbackUrl)
   } catch (e) {
     console.error(`${LOG} parseParametersFromURL threw [${meta.source}]`, e)
-    return { error: 'Invalid callback URL', branch: 'parse_error', session: null }
+    return { error: 'Invalid callback URL', branch: 'parse_error', session: null, isPasswordRecovery: false }
   }
 
   console.info(`${LOG} applySession start [${meta.source}]`, inspectAuthCallbackUrl(callbackUrl))
@@ -148,6 +150,7 @@ export async function applySessionFromSupabaseCallbackUrl(
       error: params.error_description || params.error || 'Authentication failed',
       branch: 'oauth_error',
       session: null,
+      isPasswordRecovery: false,
     }
   }
 
@@ -168,6 +171,7 @@ export async function applySessionFromSupabaseCallbackUrl(
       error: error?.message ?? null,
       branch: 'verify_token_hash',
       session: data?.session ?? null,
+      isPasswordRecovery: typeRaw === 'recovery',
     }
   }
 
@@ -189,6 +193,7 @@ export async function applySessionFromSupabaseCallbackUrl(
       error: error?.message ?? null,
       branch: 'verify_email_token',
       session: data?.session ?? null,
+      isPasswordRecovery: typeRaw === 'recovery',
     }
   }
 
@@ -204,6 +209,7 @@ export async function applySessionFromSupabaseCallbackUrl(
       error: error?.message ?? null,
       branch: 'exchange_code',
       session: data?.session ?? null,
+      isPasswordRecovery: typeRaw === 'recovery',
     }
   }
 
@@ -221,6 +227,7 @@ export async function applySessionFromSupabaseCallbackUrl(
       error: error?.message ?? null,
       branch: 'set_session_implicit',
       session: data?.session ?? null,
+      isPasswordRecovery: typeRaw === 'recovery',
     }
   }
 
@@ -231,5 +238,6 @@ export async function applySessionFromSupabaseCallbackUrl(
     error: 'No auth parameters found in callback URL',
     branch: 'no_usable_params',
     session: null,
+    isPasswordRecovery: false,
   }
 }
