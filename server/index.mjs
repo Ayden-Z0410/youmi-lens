@@ -23,6 +23,7 @@ import { audioUploadMiddleware, handleUploadAudio } from './uploadAudio.mjs'
 import { handleBetaUsageStatus, handleQuotaStatus } from './betaUsageStatus.mjs'
 import { handleAuthCheckEmail } from './authCheckEmail.mjs'
 import { handleSendSignupCode, handleVerifySignupCodeAndCreateUser } from './authSignupCode.mjs'
+import { handleIapRestore, handleIapVerify } from './iapRoutes.mjs'
 
 const PORT = Number(process.env.PORT || process.env.AI_SERVER_PORT || 3847)
 
@@ -52,6 +53,18 @@ function envDiagnostics() {
     SUPABASE_URL_or_VITE_SUPABASE_URL: present(Boolean(supabaseUrl)),
     SUPABASE_ANON_KEY_or_VITE_SUPABASE_ANON_KEY: present(Boolean(supabaseAnon)),
     SUPABASE_SERVICE_ROLE_KEY: present(Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY?.trim())),
+    APPLE_IAP_PRIVATE_KEY: present(Boolean(process.env.APPLE_IAP_PRIVATE_KEY?.trim())),
+    APPLE_IAP_KEY_ID: present(Boolean(process.env.APPLE_IAP_KEY_ID?.trim())),
+    APPLE_IAP_ISSUER_ID: present(Boolean(process.env.APPLE_IAP_ISSUER_ID?.trim())),
+    APPLE_BUNDLE_ID: present(Boolean(process.env.APPLE_BUNDLE_ID?.trim())),
+    APPLE_APP_APPLE_ID: present(Boolean(process.env.APPLE_APP_APPLE_ID?.trim())),
+    APPLE_IAP_ENVIRONMENT: process.env.APPLE_IAP_ENVIRONMENT || 'Sandbox',
+    APPLE_IAP_ROOT_CERTIFICATES: present(
+      Boolean(
+        process.env.APPLE_IAP_ROOT_CERTIFICATE_PATHS?.trim() ||
+          process.env.APPLE_IAP_ROOT_CERTIFICATES_BASE64?.trim(),
+      ),
+    ),
     ENABLE_STUB_AI: hostedEnv.ENABLE_STUB_AI ? 'enabled' : 'disabled',
   }
 }
@@ -194,6 +207,24 @@ app.get('/api/quota/status', (req, res) => {
   })
 })
 
+app.post('/api/iap/verify', (req, res) => {
+  void handleIapVerify(req, res).catch((err) => {
+    console.error('[iap-verify]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'iap_verify_failed', message: 'Could not verify purchase.' })
+    }
+  })
+})
+
+app.post('/api/iap/restore', (req, res) => {
+  void handleIapRestore(req, res).catch((err) => {
+    console.error('[iap-restore]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'iap_restore_failed', message: 'Could not restore purchases.' })
+    }
+  })
+})
+
 app.post('/api/transcribe', hostedUpload.single('file'), (req, res) => {
   void handleHostedTranscribe(req, res)
 })
@@ -288,7 +319,7 @@ server.listen(PORT, '0.0.0.0', () => {
   const env = envDiagnostics()
   const mode = runtimeModeSummary()
   console.log(
-    `[youmi-ai/diag] DASHSCOPE_API_KEY=${env.DASHSCOPE_API_KEY} DASHSCOPE_OVERSEAS_API_KEY=${env.DASHSCOPE_OVERSEAS_API_KEY} OPENAI_API_KEY=${env.OPENAI_API_KEY} SUPABASE_URL=${env.SUPABASE_URL_or_VITE_SUPABASE_URL} SUPABASE_ANON_KEY=${env.SUPABASE_ANON_KEY_or_VITE_SUPABASE_ANON_KEY} SUPABASE_SERVICE_ROLE_KEY=${env.SUPABASE_SERVICE_ROLE_KEY}`,
+    `[youmi-ai/diag] DASHSCOPE_API_KEY=${env.DASHSCOPE_API_KEY} DASHSCOPE_OVERSEAS_API_KEY=${env.DASHSCOPE_OVERSEAS_API_KEY} OPENAI_API_KEY=${env.OPENAI_API_KEY} SUPABASE_URL=${env.SUPABASE_URL_or_VITE_SUPABASE_URL} SUPABASE_ANON_KEY=${env.SUPABASE_ANON_KEY_or_VITE_SUPABASE_ANON_KEY} SUPABASE_SERVICE_ROLE_KEY=${env.SUPABASE_SERVICE_ROLE_KEY} APPLE_IAP=${env.APPLE_IAP_PRIVATE_KEY}/${env.APPLE_IAP_KEY_ID}/${env.APPLE_IAP_ISSUER_ID}/${env.APPLE_BUNDLE_ID}/${env.APPLE_IAP_ROOT_CERTIFICATES}`,
   )
   console.log(
     `[youmi-ai/diag] adapter=${mode.hostedAdapterId} transcribeImpl=${mode.hostedTranscribeImpl} productAiMode=${mode.productAiModeFlag} capabilities=${JSON.stringify(hosted)}`,

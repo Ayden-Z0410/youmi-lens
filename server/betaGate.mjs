@@ -4,7 +4,9 @@
  * Plan tiers:
  *   public_trial  — free public beta: 2 recordings/day, 20 min/recording, 2400 min lifetime backstop, 10 min live session
  *   core_tester   — 1000 min/month, 120 min/recording, 20/day, 120 min live session
- *   student_basic / student_pro — reserved; treated as public_trial until activated
+ *   student_basic — 200 min/month, 60 min/recording, 10/day, 60 min live session
+ *   student_plus  — 600 min/month, 120 min/recording, 20/day, 120 min live session
+ *   student_pro   — 1500 min/month, 180 min/recording, 50/day, 180 min live session
  *   admin         — bypass all limits
  *
  * Billable actions (count toward quota):
@@ -55,10 +57,31 @@ const DEFAULT_MAX_RECORDING_MINUTES = Number(process.env.BETA_MAX_RECORDING_MINU
 const DEFAULT_MAX_RECORDINGS_PER_DAY = Number(process.env.BETA_MAX_RECORDINGS_PER_DAY || 2)
 const DEFAULT_MAX_LIVE_SESSION_MINUTES = Number(process.env.BETA_MAX_LIVE_SESSION_MINUTES || 10)
 
+export const PAID_PLAN_LIMITS = {
+  student_basic: {
+    monthly_minutes_limit: 200,
+    max_recording_minutes: 60,
+    max_recordings_per_day: 10,
+    max_live_session_minutes: 60,
+  },
+  student_plus: {
+    monthly_minutes_limit: 600,
+    max_recording_minutes: 120,
+    max_recordings_per_day: 20,
+    max_live_session_minutes: 120,
+  },
+  student_pro: {
+    monthly_minutes_limit: 1500,
+    max_recording_minutes: 180,
+    max_recordings_per_day: 50,
+    max_live_session_minutes: 180,
+  },
+}
+
 /** Plans that use monthly quota (calendar-month reset). */
-const MONTHLY_PLANS = new Set(['core_tester'])
+const MONTHLY_PLANS = new Set(['core_tester', ...Object.keys(PAID_PLAN_LIMITS)])
 /** Plans that use lifetime quota (never resets). */
-const LIFETIME_PLANS = new Set(['public_trial', 'student_basic', 'student_pro'])
+const LIFETIME_PLANS = new Set(['public_trial'])
 
 // ── Supabase admin client ──────────────────────────────────────────────────────
 
@@ -153,6 +176,23 @@ export async function getOrCreateUserQuota(userId, email) {
   return created
 }
 
+export function quotaPatchForPlan(planType) {
+  const limits = PAID_PLAN_LIMITS[planType]
+  if (!limits) return { plan_type: planType }
+  return {
+    plan_type: planType,
+    monthly_minutes_limit: limits.monthly_minutes_limit,
+    max_recording_minutes: limits.max_recording_minutes,
+    max_recordings_per_day: limits.max_recordings_per_day,
+    max_live_session_minutes: limits.max_live_session_minutes,
+    status: 'active',
+  }
+}
+
+function planLimit(quota, key) {
+  return PAID_PLAN_LIMITS[quota?.plan_type]?.[key] ?? quota?.[key]
+}
+
 // ── Usage queries ──────────────────────────────────────────────────────────────
 
 /** Sum of billable_minutes for billable action types (process_recording + regenerate_summary). */
@@ -239,17 +279,18 @@ export function checkUploadAllowed(quota, durationSec) {
 
   if (quota.plan_type === 'admin') return { allowed: true }
 
-  const maxSec = quota.max_recording_minutes * 60
+  const maxRecordingMinutes = Number(planLimit(quota, 'max_recording_minutes') ?? DEFAULT_MAX_RECORDING_MINUTES)
+  const maxSec = maxRecordingMinutes * 60
   if (durationSec > maxSec) {
     return {
       allowed: false,
       status: 403,
       body: betaError(
         BETA_ERROR_CODES.RECORDING_TOO_LONG,
-        `Free beta recordings are limited to ${quota.max_recording_minutes} minutes each. This recording is about ${Math.ceil(durationSec / 60)} minutes — please record a shorter session.`,
+        `This plan is limited to ${maxRecordingMinutes} minutes per recording. This recording is about ${Math.ceil(durationSec / 60)} minutes — please record a shorter session.`,
         {
           recording_minutes: Math.ceil(durationSec / 60),
-          limit_minutes: quota.max_recording_minutes,
+          limit_minutes: maxRecordingMinutes,
         },
       ),
     }
@@ -281,17 +322,18 @@ export async function checkProcessingAllowed(quota, userId, durationSec) {
   if (quota.plan_type === 'admin') return { allowed: true }
 
   // Per-recording duration check
-  const maxSec = quota.max_recording_minutes * 60
+  const maxRecordingMinutes = Number(planLimit(quota, 'max_recording_minutes') ?? DEFAULT_MAX_RECORDING_MINUTES)
+  const maxSec = maxRecordingMinutes * 60
   if (durationSec > maxSec) {
     return {
       allowed: false,
       status: 403,
       body: betaError(
         BETA_ERROR_CODES.RECORDING_TOO_LONG,
-        `Free beta recordings are limited to ${quota.max_recording_minutes} minutes each. This recording is about ${Math.ceil(durationSec / 60)} minutes — please record a shorter session.`,
+        `This plan is limited to ${maxRecordingMinutes} minutes per recording. This recording is about ${Math.ceil(durationSec / 60)} minutes — please record a shorter session.`,
         {
           recording_minutes: Math.ceil(durationSec / 60),
-          limit_minutes: quota.max_recording_minutes,
+          limit_minutes: maxRecordingMinutes,
         },
       ),
     }
@@ -299,14 +341,15 @@ export async function checkProcessingAllowed(quota, userId, durationSec) {
 
   // Daily count check
   const todayCount = await getDailyRecordingCount(userId)
-  if (todayCount >= quota.max_recordings_per_day) {
+  const maxRecordingsPerDay = Number(planLimit(quota, 'max_recordings_per_day') ?? DEFAULT_MAX_RECORDINGS_PER_DAY)
+  if (todayCount >= maxRecordingsPerDay) {
     return {
       allowed: false,
       status: 429,
       body: betaError(
         BETA_ERROR_CODES.DAILY_LIMIT_REACHED,
-        `Free beta limit reached. You can record up to ${quota.max_recordings_per_day} lectures per day. Please try again tomorrow or contact support for more beta access.`,
-        { used_today: todayCount, limit_today: quota.max_recordings_per_day },
+        `Daily limit reached. You can process up to ${maxRecordingsPerDay} lectures per day on this plan.`,
+        { used_today: todayCount, limit_today: maxRecordingsPerDay },
       ),
     }
   }
@@ -319,13 +362,13 @@ export async function checkProcessingAllowed(quota, userId, durationSec) {
   if (LIFETIME_PLANS.has(quota.plan_type)) {
     usedMinutes = await getBillableMinutesUsed(userId)
     limitMinutes = quota.total_trial_minutes_limit + (quota.extra_minutes_balance || 0)
-  } else if (MONTHLY_PLANS.has(quota.plan_type) && quota.monthly_minutes_limit != null) {
+  } else if (MONTHLY_PLANS.has(quota.plan_type)) {
     const now = new Date()
     const monthStart = new Date(
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
     ).toISOString()
     usedMinutes = await getBillableMinutesUsed(userId, { sinceIso: monthStart })
-    limitMinutes = quota.monthly_minutes_limit + (quota.extra_minutes_balance || 0)
+    limitMinutes = Number(planLimit(quota, 'monthly_minutes_limit') ?? Infinity) + (quota.extra_minutes_balance || 0)
   }
 
   if (usedMinutes + billableMinutes > limitMinutes) {
@@ -377,13 +420,13 @@ export async function checkLiveSessionAllowed(quota, userId) {
   if (LIFETIME_PLANS.has(quota.plan_type)) {
     usedMinutes = await getBillableMinutesUsed(userId)
     limitMinutes = quota.total_trial_minutes_limit + (quota.extra_minutes_balance || 0)
-  } else if (MONTHLY_PLANS.has(quota.plan_type) && quota.monthly_minutes_limit != null) {
+  } else if (MONTHLY_PLANS.has(quota.plan_type)) {
     const now = new Date()
     const monthStart = new Date(
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
     ).toISOString()
     usedMinutes = await getBillableMinutesUsed(userId, { sinceIso: monthStart })
-    limitMinutes = quota.monthly_minutes_limit + (quota.extra_minutes_balance || 0)
+    limitMinutes = Number(planLimit(quota, 'monthly_minutes_limit') ?? Infinity) + (quota.extra_minutes_balance || 0)
   }
 
   if (usedMinutes >= limitMinutes) {
@@ -400,7 +443,7 @@ export async function checkLiveSessionAllowed(quota, userId) {
 
   return {
     allowed: true,
-    maxSessionMinutes: quota.max_live_session_minutes ?? DEFAULT_MAX_LIVE_SESSION_MINUTES,
+    maxSessionMinutes: planLimit(quota, 'max_live_session_minutes') ?? DEFAULT_MAX_LIVE_SESSION_MINUTES,
   }
 }
 
@@ -429,14 +472,15 @@ export async function checkHostedActionAllowed(quota, userId) {
   if (quota.plan_type === 'admin') return { allowed: true }
 
   const todayCount = await getDailyRecordingCount(userId)
-  if (todayCount >= quota.max_recordings_per_day) {
+  const maxRecordingsPerDay = Number(planLimit(quota, 'max_recordings_per_day') ?? DEFAULT_MAX_RECORDINGS_PER_DAY)
+  if (todayCount >= maxRecordingsPerDay) {
     return {
       allowed: false,
       status: 429,
       body: betaError(
         BETA_ERROR_CODES.DAILY_LIMIT_REACHED,
-        `Free beta limit reached. You can record up to ${quota.max_recordings_per_day} lectures per day. Please try again tomorrow or contact support for more beta access.`,
-        { used_today: todayCount, limit_today: quota.max_recordings_per_day },
+        `Daily limit reached. You can process up to ${maxRecordingsPerDay} lectures per day on this plan.`,
+        { used_today: todayCount, limit_today: maxRecordingsPerDay },
       ),
     }
   }
@@ -446,13 +490,13 @@ export async function checkHostedActionAllowed(quota, userId) {
   if (LIFETIME_PLANS.has(quota.plan_type)) {
     usedMinutes = await getBillableMinutesUsed(userId)
     limitMinutes = quota.total_trial_minutes_limit + (quota.extra_minutes_balance || 0)
-  } else if (MONTHLY_PLANS.has(quota.plan_type) && quota.monthly_minutes_limit != null) {
+  } else if (MONTHLY_PLANS.has(quota.plan_type)) {
     const now = new Date()
     const monthStart = new Date(
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
     ).toISOString()
     usedMinutes = await getBillableMinutesUsed(userId, { sinceIso: monthStart })
-    limitMinutes = quota.monthly_minutes_limit + (quota.extra_minutes_balance || 0)
+    limitMinutes = Number(planLimit(quota, 'monthly_minutes_limit') ?? Infinity) + (quota.extra_minutes_balance || 0)
   }
 
   if (usedMinutes >= limitMinutes) {
