@@ -78,6 +78,12 @@ export const PAID_PLAN_LIMITS = {
   },
 }
 
+export const PAID_PLAN_PRIORITY = {
+  student_basic: 1,
+  student_plus: 2,
+  student_pro: 3,
+}
+
 /** Plans that use monthly quota (calendar-month reset). */
 const MONTHLY_PLANS = new Set(['core_tester', ...Object.keys(PAID_PLAN_LIMITS)])
 /** Plans that use lifetime quota (never resets). */
@@ -107,6 +113,91 @@ export function getAnonClient() {
     })
   }
   return _anonClient
+}
+
+// ── App Store entitlement reconciliation ───────────────────────────────────────
+
+function publicTrialQuotaPatch() {
+  return {
+    plan_type: 'public_trial',
+    total_trial_minutes_limit: DEFAULT_TRIAL_MINUTES,
+    monthly_minutes_limit: null,
+    max_recording_minutes: DEFAULT_MAX_RECORDING_MINUTES,
+    max_recordings_per_day: DEFAULT_MAX_RECORDINGS_PER_DAY,
+    max_live_session_minutes: DEFAULT_MAX_LIVE_SESSION_MINUTES,
+    status: 'active',
+  }
+}
+
+function subscriptionPlanType(row) {
+  return row?.plan_type ?? row?.planType ?? null
+}
+
+function subscriptionExpiresMs(row) {
+  const expiresAt = row?.expires_at ?? row?.expiresAt ?? null
+  if (!expiresAt) return Infinity
+  const parsed = Date.parse(expiresAt)
+  return Number.isFinite(parsed) ? parsed : -Infinity
+}
+
+export function highestActivePaidPlanType(subscriptions = [], now = new Date()) {
+  const nowMs = now.getTime()
+  return (subscriptions ?? []).reduce((best, row) => {
+    const planType = subscriptionPlanType(row)
+    if (!PAID_PLAN_LIMITS[planType]) return best
+    if (row?.status !== 'active') return best
+    if (subscriptionExpiresMs(row) <= nowMs) return best
+    if (!best) return planType
+    return PAID_PLAN_PRIORITY[planType] > PAID_PLAN_PRIORITY[best] ? planType : best
+  }, null)
+}
+
+async function getActivePaidPlanTypeFromLedger(db, userId) {
+  const { data, error } = await db
+    .from('app_store_subscriptions')
+    .select('plan_type,status,expires_at')
+    .eq('user_id', userId)
+    .in('plan_type', Object.keys(PAID_PLAN_LIMITS))
+  if (error) throw error
+  return highestActivePaidPlanType(data)
+}
+
+async function updateQuotaPlan(db, quota, planType, email) {
+  const patch = quotaPatchForPlan(planType)
+  if (quota?.status === 'suspended' && planType === 'public_trial') {
+    delete patch.status
+  }
+  if (email) patch.email = email.toLowerCase()
+
+  const { data, error } = await db
+    .from('user_quota')
+    .update(patch)
+    .eq('user_id', quota.user_id)
+    .select('*')
+    .maybeSingle()
+  if (error) throw error
+  return data || { ...quota, ...patch }
+}
+
+async function reconcilePaidQuotaWithAppStore(db, quota) {
+  if (!db || !quota || !PAID_PLAN_LIMITS[quota.plan_type]) return quota
+  const activePlanType = await getActivePaidPlanTypeFromLedger(db, quota.user_id)
+  const targetPlanType = activePlanType ?? 'public_trial'
+  if (targetPlanType === quota.plan_type) return quota
+  return updateQuotaPlan(db, quota, targetPlanType, quota.email)
+}
+
+export async function syncQuotaToActiveAppStorePlan(db, userId, email = '') {
+  if (!db) return null
+  const quota = await getOrCreateUserQuota(userId, email)
+  if (!quota) return null
+
+  const activePlanType = await getActivePaidPlanTypeFromLedger(db, userId)
+  const targetPlanType = activePlanType ?? (PAID_PLAN_LIMITS[quota.plan_type] ? 'public_trial' : quota.plan_type)
+  if (targetPlanType === quota.plan_type && (!email || quota.email === email.toLowerCase())) {
+    return quota
+  }
+  return updateQuotaPlan(db, quota, targetPlanType, email)
 }
 
 // ── JWT verification ───────────────────────────────────────────────────────────
@@ -144,7 +235,20 @@ export async function getOrCreateUserQuota(userId, email) {
     .eq('user_id', userId)
     .maybeSingle()
 
-  if (existing) return existing
+  if (existing) {
+    try {
+      return await reconcilePaidQuotaWithAppStore(db, existing)
+    } catch (err) {
+      console.warn(
+        '[betaGate] app_store_quota_reconcile_failed',
+        JSON.stringify({
+          userIdPrefix: userId.slice(0, 8),
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      )
+      return existing
+    }
+  }
 
   // First-time user: create public_trial row
   const { data: created, error } = await db
@@ -177,6 +281,7 @@ export async function getOrCreateUserQuota(userId, email) {
 }
 
 export function quotaPatchForPlan(planType) {
+  if (planType === 'public_trial') return publicTrialQuotaPatch()
   const limits = PAID_PLAN_LIMITS[planType]
   if (!limits) return { plan_type: planType }
   return {

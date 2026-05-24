@@ -2,8 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import { buildQuotaStatus } from './betaUsageStatus.mjs'
 import {
   BETA_ERROR_CODES,
-  getOrCreateUserQuota,
-  quotaPatchForPlan,
+  syncQuotaToActiveAppStorePlan,
 } from './betaGate.mjs'
 import { highestActivePlan, verifyAppleTransaction } from './iapApple.mjs'
 
@@ -98,18 +97,6 @@ async function upsertSubscription(db, user, verified) {
   return data
 }
 
-async function syncUserQuotaToPlan(db, user, planType) {
-  await getOrCreateUserQuota(user.userId, user.email)
-  const { error } = await db
-    .from('user_quota')
-    .update({
-      ...quotaPatchForPlan(planType),
-      email: (user.email || '').toLowerCase(),
-    })
-    .eq('user_id', user.userId)
-  if (error) throw error
-}
-
 function safeIapError(err) {
   const message = err instanceof Error ? err.message : 'IAP verification failed'
   if (
@@ -142,19 +129,20 @@ export async function handleIapVerify(req, res) {
   try {
     const verified = await verifyAppleTransaction(req.body)
     await upsertSubscription(db, user, verified)
+    const quota = await syncQuotaToActiveAppStorePlan(db, user.userId, user.email)
     if (verified.status !== 'active') {
       res.status(403).json({
         ok: false,
         error: 'inactive_subscription',
         message: 'The verified App Store subscription is not active.',
         status: verified.status,
+        planType: quota?.plan_type ?? null,
       })
       return
     }
 
-    await syncUserQuotaToPlan(db, user, verified.planType)
     const quotaStatus = await buildQuotaStatus(user.userId, user.email)
-    res.json({ ok: true, planType: verified.planType, quotaStatus })
+    res.json({ ok: true, planType: quota?.plan_type ?? verified.planType, quotaStatus })
   } catch (err) {
     console.warn(
       '[iap/verify] failed',
@@ -225,11 +213,11 @@ export async function handleIapRestore(req, res) {
 
   const best = highestActivePlan(verifiedPurchases)
   try {
-    if (best) await syncUserQuotaToPlan(db, user, best.planType)
+    const quota = await syncQuotaToActiveAppStorePlan(db, user.userId, user.email)
     const quotaStatus = await buildQuotaStatus(user.userId, user.email)
     res.json({
       ok: true,
-      planType: best?.planType ?? quotaStatus?.planType ?? null,
+      planType: quota?.plan_type ?? best?.planType ?? quotaStatus?.planType ?? null,
       quotaStatus,
       restoredCount: verifiedPurchases.length,
       activeRestoredCount: verifiedPurchases.filter((p) => p.status === 'active').length,
