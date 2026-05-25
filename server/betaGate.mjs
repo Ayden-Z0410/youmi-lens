@@ -1,27 +1,33 @@
 /**
  * Youmi Lens Beta Gate — server-side quota enforcement.
  *
- * Plan tiers:
- *   public_trial  — free public beta: 2 recordings/day, 20 min/recording, 2400 min lifetime backstop, 10 min live session
- *   core_tester   — 1000 min/month, 120 min/recording, 20/day, 120 min live session
- *   student_basic — 200 min/month, 60 min/recording, 10/day, 60 min live session
- *   student_plus  — 600 min/month, 120 min/recording, 20/day, 120 min live session
- *   student_pro   — 1500 min/month, 180 min/recording, 50/day, 180 min live session
+ * Plan tiers (free-beta launch):
+ *   public_trial  — Free Beta: 300 min/month, 120 min/day, 60 min/recording, 4 recordings/day, 60 min live session
+ *   core_tester   — Core Tester: 1000 min/month, 240 min/day, 120 min/recording, 10 recordings/day, 120 min live session
+ *   student_basic — kept for IAP back-compat (UI hidden): 200 min/month, 120 min/day, 60 min/recording, 10/day, 60 min live
+ *   student_plus  — kept for IAP back-compat (UI hidden): 600 min/month, 240 min/day, 120 min/recording, 20/day, 120 min live
+ *   student_pro   — kept for IAP back-compat (UI hidden): 1500 min/month, 360 min/day, 180 min/recording, 50/day, 180 min live
  *   admin         — bypass all limits
  *
- * Billable actions (count toward quota):
+ * Billable actions (count toward monthly + daily minute quotas):
  *   process_recording, regenerate_summary
  *
- * Non-billable (logged for monitoring only):
+ * Non-billable (logged for monitoring only; gated against daily/monthly minute
+ * caps when the user is already over, but do not increment usage themselves):
  *   upload_audio, live_caption_session, transcription, summary_generation, translate_caption
  *
+ * Quota is shared per Supabase user_id across iPad and Mac (single user_quota
+ * row per user; single beta_usage ledger keyed by user_id only, no platform
+ * column anywhere).
+ *
  * Error codes returned to clients:
- *   auth_required              — JWT missing or invalid
- *   quota_required             — quota row could not be created/read
- *   beta_limit_reached         — lifetime or monthly quota exhausted
- *   recording_too_long         — recording exceeds per-recording minute limit
- *   daily_recording_limit_reached — too many recordings processed today
- *   quota_suspended            — account suspended
+ *   auth_required                  — JWT missing or invalid
+ *   quota_required                 — quota row could not be created/read
+ *   beta_limit_reached             — lifetime or monthly quota exhausted
+ *   recording_too_long             — recording exceeds per-recording minute limit
+ *   daily_recording_limit_reached  — too many recordings processed today
+ *   daily_minutes_limit_reached    — daily billable-minute cap exhausted
+ *   quota_suspended                — account suspended
  */
 
 import { createClient } from '@supabase/supabase-js'
@@ -41,47 +47,105 @@ export const BETA_ERROR_CODES = {
   BETA_LIMIT_REACHED: 'beta_limit_reached',
   RECORDING_TOO_LONG: 'recording_too_long',
   DAILY_LIMIT_REACHED: 'daily_recording_limit_reached',
+  DAILY_MINUTES_LIMIT_REACHED: 'daily_minutes_limit_reached',
   SUSPENDED: 'quota_suspended',
 }
 
 /**
- * Default limits for new public_trial (free public beta) users.
+ * Default limits for new public_trial (Free Beta) users.
  *
- * V1 public beta allowance: 2 recordings/day, 20 min per recording. The daily
- * recording count is the real gate; the lifetime minute cap is only a generous
- * abuse backstop (≈60 days of max daily use) so it never blocks normal beta
- * testers. All values are overridable via env for testing.
+ * Free-beta launch policy:
+ *   - public_trial (Free Beta): 300 min/month, 120 min/day, 60 min/recording,
+ *     4 recordings/day, 60 min live.
+ *   - core_tester (Core Tester): 1000 min/month, 240 min/day, 120 min/recording,
+ *     10 recordings/day, 120 min live.
+ *   - admin: unlimited / bypass.
+ *
+ * All numbers below can be overridden at deploy time via the BETA_* env vars
+ * without code changes.
+ *
+ * BETA_MAX_TRIAL_MINUTES is retained only as the legacy lifetime-backstop
+ * column default for new rows; it no longer drives quota enforcement.
  */
-const DEFAULT_TRIAL_MINUTES = Number(process.env.BETA_MAX_TRIAL_MINUTES || 2400)
-const DEFAULT_MAX_RECORDING_MINUTES = Number(process.env.BETA_MAX_RECORDING_MINUTES || 20)
-const DEFAULT_MAX_RECORDINGS_PER_DAY = Number(process.env.BETA_MAX_RECORDINGS_PER_DAY || 2)
-const DEFAULT_MAX_LIVE_SESSION_MINUTES = Number(process.env.BETA_MAX_LIVE_SESSION_MINUTES || 10)
+const LEGACY_LIFETIME_BACKSTOP_MINUTES = Number(process.env.BETA_MAX_TRIAL_MINUTES || 20)
+const PUBLIC_TRIAL_MONTHLY_MINUTES = Number(process.env.BETA_PUBLIC_TRIAL_MONTHLY_MINUTES || 300)
+const PUBLIC_TRIAL_DAILY_MINUTES = Number(process.env.BETA_PUBLIC_TRIAL_DAILY_MINUTES || 120)
+const CORE_TESTER_MONTHLY_MINUTES = Number(process.env.BETA_CORE_TESTER_MONTHLY_MINUTES || 1000)
+const CORE_TESTER_DAILY_MINUTES = Number(process.env.BETA_CORE_TESTER_DAILY_MINUTES || 240)
+const DEFAULT_MAX_RECORDING_MINUTES = Number(process.env.BETA_MAX_RECORDING_MINUTES || 60)
+const DEFAULT_MAX_RECORDINGS_PER_DAY = Number(process.env.BETA_MAX_RECORDINGS_PER_DAY || 4)
+const DEFAULT_MAX_LIVE_SESSION_MINUTES = Number(process.env.BETA_MAX_LIVE_SESSION_MINUTES || 60)
 
-export const PAID_PLAN_LIMITS = {
+/**
+ * Single source of truth for per-plan limits. Server constants win over any
+ * stale value on the user_quota row — `planLimit()` checks PLAN_LIMITS first.
+ *
+ * `daily_minutes_limit` is the per-UTC-day cap on billable processing minutes
+ * (sum of beta_usage.billable_minutes for action_type in process_recording /
+ * regenerate_summary). admin bypasses all limits and has no entry here.
+ */
+export const PLAN_LIMITS = {
+  public_trial: {
+    monthly_minutes_limit: PUBLIC_TRIAL_MONTHLY_MINUTES,
+    daily_minutes_limit: PUBLIC_TRIAL_DAILY_MINUTES,
+    max_recording_minutes: DEFAULT_MAX_RECORDING_MINUTES,
+    max_recordings_per_day: DEFAULT_MAX_RECORDINGS_PER_DAY,
+    max_live_session_minutes: DEFAULT_MAX_LIVE_SESSION_MINUTES,
+  },
+  core_tester: {
+    monthly_minutes_limit: CORE_TESTER_MONTHLY_MINUTES,
+    daily_minutes_limit: CORE_TESTER_DAILY_MINUTES,
+    max_recording_minutes: 120,
+    max_recordings_per_day: 10,
+    max_live_session_minutes: 120,
+  },
   student_basic: {
     monthly_minutes_limit: 200,
+    daily_minutes_limit: 120,
     max_recording_minutes: 60,
     max_recordings_per_day: 10,
     max_live_session_minutes: 60,
   },
   student_plus: {
     monthly_minutes_limit: 600,
+    daily_minutes_limit: 240,
     max_recording_minutes: 120,
     max_recordings_per_day: 20,
     max_live_session_minutes: 120,
   },
   student_pro: {
     monthly_minutes_limit: 1500,
+    daily_minutes_limit: 360,
     max_recording_minutes: 180,
     max_recordings_per_day: 50,
     max_live_session_minutes: 180,
   },
 }
 
-/** Plans that use monthly quota (calendar-month reset). */
-const MONTHLY_PLANS = new Set(['core_tester', ...Object.keys(PAID_PLAN_LIMITS)])
-/** Plans that use lifetime quota (never resets). */
-const LIFETIME_PLANS = new Set(['public_trial'])
+/**
+ * Back-compat export. Other modules (notably iapRoutes.mjs / betaUsageStatus.mjs)
+ * still import PAID_PLAN_LIMITS by name; keep it pointing at the paid subset so
+ * iPad IAP code paths are not disturbed.
+ */
+export const PAID_PLAN_LIMITS = {
+  student_basic: PLAN_LIMITS.student_basic,
+  student_plus: PLAN_LIMITS.student_plus,
+  student_pro: PLAN_LIMITS.student_pro,
+}
+
+/** Plans that use monthly quota (calendar-month reset). public_trial is now monthly. */
+export const MONTHLY_PLANS = new Set([
+  'public_trial',
+  'core_tester',
+  'student_basic',
+  'student_plus',
+  'student_pro',
+])
+/**
+ * Lifetime-quota plans. Empty after the student-beta tightening — kept as a
+ * defensive no-op so any future caller branching on it still type-checks.
+ */
+const LIFETIME_PLANS = new Set()
 
 // ── Supabase admin client ──────────────────────────────────────────────────────
 
@@ -153,8 +217,9 @@ export async function getOrCreateUserQuota(userId, email) {
       user_id: userId,
       email: (email || '').toLowerCase(),
       plan_type: 'public_trial',
-      total_trial_minutes_limit: DEFAULT_TRIAL_MINUTES,
-      monthly_minutes_limit: null,
+      total_trial_minutes_limit: LEGACY_LIFETIME_BACKSTOP_MINUTES,
+      monthly_minutes_limit: PUBLIC_TRIAL_MONTHLY_MINUTES,
+      daily_minutes_limit: PUBLIC_TRIAL_DAILY_MINUTES,
       max_recording_minutes: DEFAULT_MAX_RECORDING_MINUTES,
       max_recordings_per_day: DEFAULT_MAX_RECORDINGS_PER_DAY,
       max_live_session_minutes: DEFAULT_MAX_LIVE_SESSION_MINUTES,
@@ -177,11 +242,17 @@ export async function getOrCreateUserQuota(userId, email) {
 }
 
 export function quotaPatchForPlan(planType) {
+  // Preserve the iPad IAP contract: this helper is called by iapRoutes.mjs to
+  // promote a user to a paid plan. Restrict it to paid plans only so a typo
+  // can't write a public_trial / core_tester patch through this path.
+  // IAP is dormant in the free-beta launch; the patch shape is kept current
+  // (including daily_minutes_limit) so a future relaunch still works.
   const limits = PAID_PLAN_LIMITS[planType]
   if (!limits) return { plan_type: planType }
   return {
     plan_type: planType,
     monthly_minutes_limit: limits.monthly_minutes_limit,
+    daily_minutes_limit: limits.daily_minutes_limit,
     max_recording_minutes: limits.max_recording_minutes,
     max_recordings_per_day: limits.max_recordings_per_day,
     max_live_session_minutes: limits.max_live_session_minutes,
@@ -190,7 +261,7 @@ export function quotaPatchForPlan(planType) {
 }
 
 function planLimit(quota, key) {
-  return PAID_PLAN_LIMITS[quota?.plan_type]?.[key] ?? quota?.[key]
+  return PLAN_LIMITS[quota?.plan_type]?.[key] ?? quota?.[key]
 }
 
 // ── Usage queries ──────────────────────────────────────────────────────────────
@@ -225,6 +296,20 @@ export async function getDailyRecordingCount(userId) {
     .gte('created_at', todayStart)
   if (error) return 0
   return count ?? 0
+}
+
+/**
+ * Sum of billable_minutes for billable action types since the current UTC
+ * day start. Uses the same day boundary as getDailyRecordingCount so the
+ * "today" window is consistent across all gate checks and status endpoints.
+ * Server-derived time only — never trusts the client clock.
+ */
+export async function getDailyMinutesUsed(userId) {
+  const now = new Date()
+  const todayStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  ).toISOString()
+  return getBillableMinutesUsed(userId, { sinceIso: todayStart })
 }
 
 /** Sum billable usage for the quota period used by the user's current plan. */
@@ -354,8 +439,32 @@ export async function checkProcessingAllowed(quota, userId, durationSec) {
     }
   }
 
-  // Quota (lifetime or monthly) check
   const billableMinutes = Math.ceil((durationSec || 0) / 60)
+
+  // Daily MINUTE check. Enforces a strict per-UTC-day ceiling on billable
+  // minutes — independent of and stricter than max_recordings_per_day x
+  // max_recording_minutes. Skipped if the plan has no daily cap configured
+  // (planLimit returns undefined → Infinity).
+  const dailyMinutesUsed = await getDailyMinutesUsed(userId)
+  const dailyMinutesLimitRaw = planLimit(quota, 'daily_minutes_limit')
+  const dailyMinutesLimit = dailyMinutesLimitRaw == null ? Infinity : Number(dailyMinutesLimitRaw)
+  if (dailyMinutesUsed + billableMinutes > dailyMinutesLimit) {
+    return {
+      allowed: false,
+      status: 429,
+      body: betaError(
+        BETA_ERROR_CODES.DAILY_MINUTES_LIMIT_REACHED,
+        `Daily minute limit reached (${dailyMinutesLimit} min/day on this plan). You have used ${Math.round(dailyMinutesUsed)} min today.`,
+        {
+          used_minutes_today: Math.round(dailyMinutesUsed),
+          limit_minutes_today: dailyMinutesLimit,
+          recording_minutes: billableMinutes,
+        },
+      ),
+    }
+  }
+
+  // Quota (lifetime or monthly) check
   let usedMinutes = 0
   let limitMinutes = Infinity
 
@@ -411,6 +520,25 @@ export async function checkLiveSessionAllowed(quota, userId) {
 
   if (quota.plan_type === 'admin') {
     return { allowed: true, maxSessionMinutes: Infinity }
+  }
+
+  // Daily MINUTE gate. Live caption sessions don't increment billable_minutes
+  // themselves (they record with billable_minutes=0), but we still refuse to
+  // start one when the user has already exhausted their daily budget on
+  // processed recordings — the experience would be a tease otherwise.
+  const dailyMinutesUsed = await getDailyMinutesUsed(userId)
+  const dailyMinutesLimitRaw = planLimit(quota, 'daily_minutes_limit')
+  const dailyMinutesLimit = dailyMinutesLimitRaw == null ? Infinity : Number(dailyMinutesLimitRaw)
+  if (dailyMinutesUsed >= dailyMinutesLimit) {
+    return {
+      allowed: false,
+      status: 429,
+      body: betaError(
+        BETA_ERROR_CODES.DAILY_MINUTES_LIMIT_REACHED,
+        `Daily minute limit reached (${dailyMinutesLimit} min/day on this plan).`,
+        { used_minutes_today: Math.round(dailyMinutesUsed), limit_minutes_today: dailyMinutesLimit },
+      ),
+    }
   }
 
   // Check if quota is already exhausted (block live session start if so)
@@ -481,6 +609,25 @@ export async function checkHostedActionAllowed(quota, userId) {
         BETA_ERROR_CODES.DAILY_LIMIT_REACHED,
         `Daily limit reached. You can process up to ${maxRecordingsPerDay} lectures per day on this plan.`,
         { used_today: todayCount, limit_today: maxRecordingsPerDay },
+      ),
+    }
+  }
+
+  // Daily MINUTE gate. Hosted actions (transcribe/summarize) record with
+  // billable_minutes=0 today, so they never increment the daily counter, but
+  // we still refuse to run them when the user has already exhausted their
+  // daily budget on processed recordings — same rationale as live sessions.
+  const dailyMinutesUsed = await getDailyMinutesUsed(userId)
+  const dailyMinutesLimitRaw = planLimit(quota, 'daily_minutes_limit')
+  const dailyMinutesLimit = dailyMinutesLimitRaw == null ? Infinity : Number(dailyMinutesLimitRaw)
+  if (dailyMinutesUsed >= dailyMinutesLimit) {
+    return {
+      allowed: false,
+      status: 429,
+      body: betaError(
+        BETA_ERROR_CODES.DAILY_MINUTES_LIMIT_REACHED,
+        `Daily minute limit reached (${dailyMinutesLimit} min/day on this plan).`,
+        { used_minutes_today: Math.round(dailyMinutesUsed), limit_minutes_today: dailyMinutesLimit },
       ),
     }
   }
