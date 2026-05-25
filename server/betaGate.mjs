@@ -154,7 +154,7 @@ const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 const ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
 
 let _adminClient = null
-function getAdminClient() {
+export function getAdminClient() {
   if (!_adminClient && SUPABASE_URL && SERVICE_ROLE_KEY) {
     _adminClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { persistSession: false, autoRefreshToken: false },

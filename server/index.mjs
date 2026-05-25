@@ -24,6 +24,7 @@ import { handleBetaUsageStatus, handleQuotaStatus } from './betaUsageStatus.mjs'
 import { handleAuthCheckEmail } from './authCheckEmail.mjs'
 import { handleSendSignupCode, handleVerifySignupCodeAndCreateUser } from './authSignupCode.mjs'
 import { handleIapRestore, handleIapVerify } from './iapRoutes.mjs'
+import { handleDeleteAccount } from './accountRoutes.mjs'
 
 const PORT = Number(process.env.PORT || process.env.AI_SERVER_PORT || 3847)
 
@@ -185,6 +186,15 @@ app.post('/api/auth/verify-signup-code-and-create-user', (req, res) => {
     console.error('[verify-signup-code]', err)
     if (!res.headersSent) {
       res.status(500).json({ ok: false, error: 'server_error', message: 'Account creation is temporarily unavailable.' })
+    }
+  })
+})
+
+app.delete('/api/account', (req, res) => {
+  void handleDeleteAccount(req, res).catch((err) => {
+    console.error('[account-delete]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'account_delete_failed', message: 'Could not delete account.' })
     }
   })
 })
