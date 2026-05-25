@@ -187,13 +187,20 @@ function emitOverlayStatus(payload: {
 const UI_BUILD_MARKER = 'SAFE-DELETE-V1'
 
 type SidebarPlanUsage = {
-  planLabel: string
+  /** User-facing access label from the backend (e.g. 'Free Beta', 'Core Tester', 'Developer'). */
+  displayName: string
   /** Raw plan_type from the API, e.g. 'public_trial', 'core_tester', 'admin'. Empty string for fallback. */
   planType: string
-  usedMinutes: number
-  limitMinutes: number
-  /** True when the API indicates no quota cap (null limit, admin, etc.). */
+  /** True when the API indicates no quota cap (admin / developer). */
   unlimited: boolean
+  /** Monthly billable minutes used this calendar month. null while loading. */
+  minutesUsed: number | null
+  minutesLimit: number | null
+  minutesRemaining: number | null
+  /** Daily billable minutes used today (UTC). null while loading. */
+  dailyMinutesUsed: number | null
+  dailyMinutesLimit: number | null
+  dailyMinutesRemaining: number | null
   source: 'api' | 'fallback'
 }
 
@@ -204,38 +211,43 @@ type CourseView =
   | { type: 'unfiled' }
   | { type: 'folder'; folderId: string }
 
-type BetaUsageStatusPayload =
-  | {
-      plan_type: 'admin'
-      display_name?: string
-    }
-  | {
-      plan_type: 'public_trial'
-      display_name?: string
-      used_minutes?: number
-      limit_minutes?: number
-    }
-  | {
-      plan_type: 'core_tester'
-      display_name?: string
-      used_minutes_this_month?: number
-      monthly_minutes_limit?: number
-    }
-  | {
-      plan_type?: string
-      display_name?: string
-      used_minutes?: number
-      limit_minutes?: number
-      used_minutes_this_month?: number
-      monthly_minutes_limit?: number
-    }
+/**
+ * Shape returned by GET /api/quota/status (the camelCase endpoint used by
+ * iPad and Mac). Mac is on the same endpoint so usage stays consistent across
+ * both platforms — the backend is the single source of truth.
+ */
+type QuotaStatusPayload = {
+  ok: boolean
+  plan?: {
+    planType: string
+    displayName: string
+    status?: 'active' | 'suspended'
+    unlimited: boolean
+    monthlyMinutesLimit?: number | null
+    minutesUsed?: number
+    minutesLimit?: number | null
+    minutesRemaining?: number | null
+    dailyMinutesUsed?: number
+    dailyMinutesLimit?: number | null
+    dailyMinutesRemaining?: number | null
+    maxRecordingsPerDay?: number
+    recordingsUsedToday?: number
+    recordingsRemainingToday?: number
+    maxRecordingMinutes?: number
+    maxLiveSessionMinutes?: number
+  }
+}
 
 const FALLBACK_PLAN_USAGE: SidebarPlanUsage = {
-  planLabel: 'Basic',
+  displayName: '',
   planType: '',
-  usedMinutes: 0,
-  limitMinutes: 20,
   unlimited: false,
+  minutesUsed: null,
+  minutesLimit: null,
+  minutesRemaining: null,
+  dailyMinutesUsed: null,
+  dailyMinutesLimit: null,
+  dailyMinutesRemaining: null,
   source: 'fallback',
 }
 
@@ -297,81 +309,69 @@ function LectureOverlayButton() {
   )
 }
 
-// Default quota cap used when Supabase returns null/undefined for a non-unlimited plan.
-const PLUS_FALLBACK_LIMIT = 1000
-const BASIC_FALLBACK_LIMIT = 20
-
-function planUsageFromApi(payload: BetaUsageStatusPayload): SidebarPlanUsage {
-  if (payload.plan_type === 'admin') {
-    // Admin/internal accounts are always unlimited.
+/**
+ * Map the camelCase /api/quota/status payload into the sidebar's compact shape.
+ * Backend-only — never hardcodes limit numbers. Missing fields surface as null
+ * so the UI can render "—" rather than a fabricated cap.
+ */
+function planUsageFromApi(payload: QuotaStatusPayload): SidebarPlanUsage {
+  const plan = payload.plan
+  if (!plan) return FALLBACK_PLAN_USAGE
+  const planType = plan.planType ?? ''
+  const displayName = plan.displayName ?? ''
+  if (plan.unlimited) {
     return {
-      planLabel: 'Developer',
-      planType: 'admin',
-      usedMinutes: 0,
-      limitMinutes: 9999,
+      displayName,
+      planType,
       unlimited: true,
+      minutesUsed: null,
+      minutesLimit: null,
+      minutesRemaining: null,
+      dailyMinutesUsed: null,
+      dailyMinutesLimit: null,
+      dailyMinutesRemaining: null,
       source: 'api',
     }
   }
-  if (payload.plan_type === 'core_tester') {
-    // core_tester = Plus tier; real quota from Supabase, never treated as unlimited.
-    // If monthly_minutes_limit is null/undefined (missing data), fall back to PLUS_FALLBACK_LIMIT.
-    const rawLimit = payload.monthly_minutes_limit as number | null | undefined
-    const rawUsed = payload.used_minutes_this_month as number | null | undefined
-    return {
-      planLabel: 'Plus',
-      planType: 'core_tester',
-      usedMinutes: Math.max(0, Math.round(rawUsed ?? 0)),
-      limitMinutes: rawLimit != null ? Math.max(1, Math.round(rawLimit)) : PLUS_FALLBACK_LIMIT,
-      unlimited: false,
-      source: 'api',
-    }
-  }
-  if (payload.plan_type === 'public_trial') {
-    return {
-      planLabel: 'Basic',
-      planType: 'public_trial',
-      usedMinutes: Math.max(0, Math.round(payload.used_minutes ?? 0)),
-      limitMinutes: Math.max(1, Math.round(payload.limit_minutes ?? BASIC_FALLBACK_LIMIT)),
-      unlimited: false,
-      source: 'api',
-    }
-  }
-  // Unknown or future plan types — extract available fields via loose cast.
-  // Null limit = missing data, not unlimited (unless it's a developer-type plan).
-  type AnyPayload = { plan_type?: string; used_minutes?: number; limit_minutes?: number; used_minutes_this_month?: number; monthly_minutes_limit?: number | null }
-  const p = payload as AnyPayload
-  const pt = p.plan_type ?? ''
-  const isDeveloperType = ['developer', 'dev', 'internal_developer'].includes(pt.toLowerCase())
-  const rawLimit2 = (p.monthly_minutes_limit ?? p.limit_minutes) as number | null | undefined
-  const unlimited2 = isDeveloperType  // only infer unlimited for developer-type plans
+  const numOrNull = (v: number | null | undefined): number | null =>
+    v == null || !Number.isFinite(v) ? null : Number(v)
   return {
-    planLabel: 'Basic',
-    planType: pt,
-    usedMinutes: Math.max(0, Math.round((p.used_minutes_this_month ?? p.used_minutes ?? 0))),
-    limitMinutes: unlimited2 ? 9999 : Math.max(1, Math.round(rawLimit2 ?? BASIC_FALLBACK_LIMIT)),
-    unlimited: unlimited2,
+    displayName,
+    planType,
+    unlimited: false,
+    minutesUsed: numOrNull(plan.minutesUsed),
+    minutesLimit: numOrNull(plan.minutesLimit),
+    minutesRemaining: numOrNull(plan.minutesRemaining),
+    dailyMinutesUsed: numOrNull(plan.dailyMinutesUsed),
+    dailyMinutesLimit: numOrNull(plan.dailyMinutesLimit),
+    dailyMinutesRemaining: numOrNull(plan.dailyMinutesRemaining),
     source: 'api',
   }
 }
 
 /**
- * Maps raw internal plan_type + unlimited flag to a user-facing product name.
- * Never shows raw snake_case values to users.
+ * User-facing access label. Free Beta / Core Tester / Developer are the only
+ * surfaces — no paid-tier wording. Falls back to the backend's display name if
+ * one is provided, otherwise to 'Free Beta' for any limited public_trial-like
+ * plan_type.
  */
-function getDisplayPlanLabel(planType: string, _unlimited: boolean): string {
-  const t = planType.toLowerCase().trim()
+function getDisplayAccessLabel(usage: SidebarPlanUsage): string {
+  if (usage.displayName) return usage.displayName
+  const t = usage.planType.toLowerCase().trim()
   if (['admin', 'developer', 'dev', 'internal_developer'].includes(t)) return 'Developer'
-  if (['pro', 'student_pro'].includes(t)) return 'Pro'
-  if (['core_tester', 'tester'].includes(t)) return 'Plus'
-  // public_trial, trial, free, basic, student_basic, '' and unknowns → Basic (safe fallback)
-  return 'Basic'
+  if (['core_tester', 'tester'].includes(t)) return 'Core Tester'
+  return 'Free Beta'
 }
 
-/** Returns a clean user-facing minutes string. Handles unlimited plans. */
-function formatMinutesUsage(usage: SidebarPlanUsage): string {
-  if (usage.unlimited) return 'Unlimited lecture minutes'
-  return `${usage.usedMinutes} / ${usage.limitMinutes} min used`
+function formatLoadingNumber(value: number | null): string {
+  return value == null ? '—' : Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
+
+/** Returns the workspace Settings page "Monthly minutes" row content. */
+function formatMonthlyMinutesUsage(usage: SidebarPlanUsage): string {
+  if (usage.unlimited) return 'Unlimited access'
+  if (usage.source === 'fallback' || usage.minutesLimit == null) return 'Loading…'
+  return `${formatLoadingNumber(usage.minutesUsed)} / ${formatLoadingNumber(usage.minutesLimit)} min used`
 }
 
 function SidebarPlanCard({
@@ -379,34 +379,48 @@ function SidebarPlanCard({
 }: {
   usage: SidebarPlanUsage
 }) {
-  const displayLabel = getDisplayPlanLabel(usage.planType, usage.unlimited)
-  const percent = usage.unlimited ? 0 : Math.max(0, Math.min(100, (usage.usedMinutes / usage.limitMinutes) * 100))
+  const displayLabel = getDisplayAccessLabel(usage)
+  const isLoading = usage.source === 'fallback'
+  const showMonthly = !usage.unlimited && usage.minutesLimit != null
+  const showDaily = !usage.unlimited && usage.dailyMinutesLimit != null
+  const monthlyPercent =
+    showMonthly && usage.minutesLimit && usage.minutesLimit > 0
+      ? Math.max(0, Math.min(100, ((usage.minutesUsed ?? 0) / usage.minutesLimit) * 100))
+      : 0
   return (
-    <section className="sidebar-plan-card" aria-label={`${displayLabel} plan lecture minutes`}>
+    <section className="sidebar-plan-card" aria-label="Access and usage">
       <div className="sidebar-plan-head">
         <span className="sidebar-plan-icon" aria-hidden>
           ◇
         </span>
-        <strong>Current Plan</strong>
+        <strong>Access &amp; Usage</strong>
       </div>
-      <p className="sidebar-plan-label">{displayLabel} · Lecture minutes</p>
-      <p className="sidebar-plan-usage">
-        {usage.unlimited
-          ? <span>Unlimited</span>
-          : <><span>{usage.usedMinutes}</span> / {usage.limitMinutes} min used</>
-        }
-      </p>
-      <div className="sidebar-plan-meter" aria-hidden>
-        <span style={{ width: `${percent}%` }} />
-      </div>
-      <ul className="sidebar-plan-benefits">
-        <li>More lecture minutes</li>
-        <li>Longer recordings</li>
-        <li>Faster summaries</li>
-      </ul>
-      <button type="button" className="sidebar-plan-button" disabled>
-        Coming soon
-      </button>
+      <p className="sidebar-plan-label">{isLoading ? 'Loading…' : displayLabel}</p>
+      {usage.unlimited ? (
+        <p className="sidebar-plan-usage">
+          <span>Unlimited access</span>
+        </p>
+      ) : showMonthly ? (
+        <>
+          <p className="sidebar-plan-usage">
+            <span>{formatLoadingNumber(usage.minutesUsed)}</span> /{' '}
+            {formatLoadingNumber(usage.minutesLimit)} min this month
+          </p>
+          <div className="sidebar-plan-meter" aria-hidden>
+            <span style={{ width: `${monthlyPercent}%` }} />
+          </div>
+        </>
+      ) : (
+        <p className="sidebar-plan-usage">
+          <span>Loading…</span>
+        </p>
+      )}
+      {showDaily && (
+        <p className="sidebar-plan-usage" style={{ marginTop: '0.35rem' }}>
+          <span>{formatLoadingNumber(usage.dailyMinutesUsed)}</span> /{' '}
+          {formatLoadingNumber(usage.dailyMinutesLimit)} min today
+        </p>
+      )}
     </section>
   )
 }
@@ -1302,11 +1316,11 @@ function RecordingWorkspace({
         const { data } = await supabase.auth.getSession()
         const token = data.session?.access_token
         if (!token) throw new Error('missing_session')
-        const res = await fetch(`${getAiApiBase()}/beta-usage-status`, {
+        const res = await fetch(`${getAiApiBase()}/quota/status`, {
           headers: { Authorization: `Bearer ${token}` },
         })
         if (!res.ok) throw new Error(`usage_${res.status}`)
-        const payload = (await res.json()) as BetaUsageStatusPayload
+        const payload = (await res.json()) as QuotaStatusPayload
         if (!cancelled) setSidebarPlanUsage(planUsageFromApi(payload))
       } catch {
         if (!cancelled) setSidebarPlanUsage(FALLBACK_PLAN_USAGE)
@@ -4295,9 +4309,9 @@ useEffect(() => {
         </div>
         <div className="settings-placeholder-grid">
 
-          {/* ── 1. Account & Plan ──────────────────────────────────────────── */}
+          {/* ── 1. Account & Access ────────────────────────────────────────── */}
           <section className="workspace-placeholder-card">
-            <h2 style={{ marginBottom: '1rem' }}>Account &amp; Plan</h2>
+            <h2 style={{ marginBottom: '1rem' }}>Account &amp; Access</h2>
             <dl style={{ margin: 0, display: 'grid', gap: '0.65rem' }}>
               {!localOnly && userEmail ? (
                 <div>
@@ -4311,18 +4325,18 @@ useEffect(() => {
                 </div>
               ) : null}
               <div>
-                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Plan</dt>
+                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Account access</dt>
                 <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
-                  {getDisplayPlanLabel(sidebarPlanUsage.planType, sidebarPlanUsage.unlimited)}
+                  {getDisplayAccessLabel(sidebarPlanUsage)}
                   {sidebarPlanUsage.source === 'fallback' && (
                     <span style={{ marginLeft: '0.4rem', fontSize: '0.75rem', color: '#9ba3af' }}>(loading…)</span>
                   )}
                 </dd>
               </div>
               <div>
-                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Lecture minutes</dt>
+                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Monthly minutes</dt>
                 <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
-                  {formatMinutesUsage(sidebarPlanUsage)}
+                  {formatMonthlyMinutesUsage(sidebarPlanUsage)}
                 </dd>
               </div>
             </dl>
