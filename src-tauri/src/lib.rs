@@ -14,6 +14,27 @@ const OVERLAY_H: f64 = 118.0;
 const OVERLAY_W_COMPACT: f64 = 260.0;
 const OVERLAY_H_COMPACT: f64 = 56.0;
 
+fn should_close_webview_after_auth_cleanup(label: &str) -> bool {
+  !matches!(label, "main" | "overlay")
+}
+
+#[cfg(test)]
+mod tests {
+  use super::should_close_webview_after_auth_cleanup;
+
+  #[test]
+  fn preserves_app_owned_webviews_during_auth_cleanup() {
+    assert!(!should_close_webview_after_auth_cleanup("main"));
+    assert!(!should_close_webview_after_auth_cleanup("overlay"));
+  }
+
+  #[test]
+  fn closes_temporary_non_app_webviews_during_auth_cleanup() {
+    assert!(should_close_webview_after_auth_cleanup("auth"));
+    assert!(should_close_webview_after_auth_cleanup("oauth-popup"));
+  }
+}
+
 /// Make the overlay a real macOS floating companion (NSPanel-style HUD):
 ///   1. Class-swap the underlying NSWindow → NSPanel via `object_setClass`.
 ///      tao creates a `TaoWindow` subclass of NSWindow; we swap it to NSPanel
@@ -315,7 +336,7 @@ pub fn run() {
       emit_forwarded_deep_link_urls(&app, &args);
 
       for (label, w) in app.webview_windows() {
-        if label != "main" {
+        if should_close_webview_after_auth_cleanup(&label) {
           log::info!("[single-instance] closing non-main webview: {}", label);
           let _ = w.close();
         }
