@@ -410,45 +410,49 @@ function SidebarPlanCard({
   const showMonthly = !usage.unlimited && usage.minutesLimit != null
   const showDaily = !usage.unlimited && usage.dailyMinutesLimit != null
   const showRecordings = !usage.unlimited && usage.maxRecordingsPerDay != null
+  const pillLabel = usage.unlimited ? 'Unlimited' : 'Active'
   return (
     <section className="sidebar-plan-card" aria-label="Usage">
-      <div className="sidebar-plan-head">
-        <strong>Usage</strong>
+      <div className="sidebar-plan-head">Usage</div>
+      <div className="sidebar-plan-name">
+        <span className="sidebar-plan-name__label">
+          {isLoading ? 'Loading…' : displayLabel}
+        </span>
+        {!isLoading && <span className="sidebar-plan-active-pill">{pillLabel}</span>}
       </div>
-      <p className="sidebar-plan-label">{isLoading ? 'Loading…' : displayLabel}</p>
       {usage.unlimited ? (
-        <p className="sidebar-plan-usage">
-          <span>Unlimited access</span>
-        </p>
+        <p className="sidebar-plan-unlimited">Unlimited access</p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', marginTop: '0.05rem' }}>
-          {showMonthly ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-              <div className="sidebar-plan-row">
-                <span>{formatLoadingNumber(usage.minutesUsed)} / {formatLoadingNumber(usage.minutesLimit)} min</span>
-                <span style={{ color: '#9ba3af' }}>this month</span>
+        <>
+          {showMonthly && (
+            <div className="sidebar-plan-metric">
+              <div className="sidebar-plan-metric__row">
+                <span className="sidebar-plan-metric__label">This month</span>
+                <span className="sidebar-plan-metric__value">
+                  {formatLoadingNumber(usage.minutesUsed)} / {formatLoadingNumber(usage.minutesLimit)} min
+                </span>
               </div>
               <UsageBar used={usage.minutesUsed} limit={usage.minutesLimit} height={3} />
             </div>
-          ) : (
-            <p className="sidebar-plan-usage" style={{ margin: 0 }}>
-              <span>Loading…</span>
-            </p>
           )}
           {showDaily && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-              <div className="sidebar-plan-row">
-                <span>{formatLoadingNumber(usage.dailyMinutesUsed)} / {formatLoadingNumber(usage.dailyMinutesLimit)} min</span>
-                <span style={{ color: '#9ba3af' }}>today</span>
+            <div className="sidebar-plan-metric">
+              <div className="sidebar-plan-metric__row">
+                <span className="sidebar-plan-metric__label">Today</span>
+                <span className="sidebar-plan-metric__value">
+                  {formatLoadingNumber(usage.dailyMinutesUsed)} / {formatLoadingNumber(usage.dailyMinutesLimit)} min
+                </span>
               </div>
               <UsageBar used={usage.dailyMinutesUsed} limit={usage.dailyMinutesLimit} height={3} />
             </div>
           )}
           {showRecordings && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-              <div className="sidebar-plan-row">
-                <span>{usage.recordingsUsedToday ?? 0} / {usage.maxRecordingsPerDay}</span>
-                <span style={{ color: '#9ba3af' }}>recordings today</span>
+            <div className="sidebar-plan-metric">
+              <div className="sidebar-plan-metric__row">
+                <span className="sidebar-plan-metric__label">Recordings today</span>
+                <span className="sidebar-plan-metric__value">
+                  {usage.recordingsUsedToday ?? 0} / {usage.maxRecordingsPerDay}
+                </span>
               </div>
               <UsageBar
                 used={usage.recordingsUsedToday}
@@ -457,7 +461,7 @@ function SidebarPlanCard({
               />
             </div>
           )}
-        </div>
+        </>
       )}
     </section>
   )
