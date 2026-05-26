@@ -100,6 +100,45 @@ function MetricRow({
   )
 }
 
+/**
+ * Subtle 4px usage bar used under MetricRow inside the detail modal. Returns
+ * null when the limit value is missing so we never fake progress.
+ */
+function ModalUsageBar({
+  used,
+  limit,
+}: {
+  used: number | null | undefined
+  limit: number | null | undefined
+}) {
+  if (limit == null || !Number.isFinite(limit) || limit <= 0) return null
+  const u = Number.isFinite(used as number) ? Math.max(0, Number(used)) : 0
+  const pct = Math.max(0, Math.min(100, (u / limit) * 100))
+  return (
+    <div
+      aria-hidden
+      style={{
+        height: 4,
+        borderRadius: 999,
+        background: 'rgba(6, 27, 52, 0.08)',
+        overflow: 'hidden',
+        width: '100%',
+        marginTop: 4,
+      }}
+    >
+      <div
+        style={{
+          width: `${pct}%`,
+          height: '100%',
+          borderRadius: 'inherit',
+          background: 'rgba(47, 101, 184, 0.78)',
+          transition: 'width 240ms ease',
+        }}
+      />
+    </div>
+  )
+}
+
 export function BetaUsageStatus({ open, supabase }: Props) {
   const t = designTokens
   const px = (n: number) => `${n}px`
@@ -242,22 +281,31 @@ export function BetaUsageStatus({ open, supabase }: Props) {
             ) : (
               <>
                 {status.minutesLimit != null && (
-                  <MetricRow
-                    label="Monthly minutes"
-                    value={`${formatMinutes(status.minutesUsed)} / ${formatMinutes(status.minutesLimit)} used · ${formatMinutes(status.minutesRemaining)} left`}
-                  />
+                  <div>
+                    <MetricRow
+                      label="Monthly minutes"
+                      value={`${formatMinutes(status.minutesUsed)} / ${formatMinutes(status.minutesLimit)} used · ${formatMinutes(status.minutesRemaining)} left`}
+                    />
+                    <ModalUsageBar used={status.minutesUsed} limit={status.minutesLimit} />
+                  </div>
                 )}
                 {status.dailyMinutesLimit != null && (
-                  <MetricRow
-                    label="Daily minutes"
-                    value={`${formatMinutes(status.dailyMinutesUsed)} / ${formatMinutes(status.dailyMinutesLimit)} used · ${formatMinutes(status.dailyMinutesRemaining)} left`}
-                  />
+                  <div>
+                    <MetricRow
+                      label="Daily minutes"
+                      value={`${formatMinutes(status.dailyMinutesUsed)} / ${formatMinutes(status.dailyMinutesLimit)} used · ${formatMinutes(status.dailyMinutesRemaining)} left`}
+                    />
+                    <ModalUsageBar used={status.dailyMinutesUsed} limit={status.dailyMinutesLimit} />
+                  </div>
                 )}
                 {status.maxRecordingsPerDay != null && status.maxRecordingsPerDay > 0 && (
-                  <MetricRow
-                    label="Recordings today"
-                    value={`${status.recordingsUsedToday ?? 0} / ${status.maxRecordingsPerDay} used · ${status.recordingsRemainingToday ?? 0} left`}
-                  />
+                  <div>
+                    <MetricRow
+                      label="Recordings today"
+                      value={`${status.recordingsUsedToday ?? 0} / ${status.maxRecordingsPerDay} used · ${status.recordingsRemainingToday ?? 0} left`}
+                    />
+                    <ModalUsageBar used={status.recordingsUsedToday} limit={status.maxRecordingsPerDay} />
+                  </div>
                 )}
                 {status.maxRecordingMinutes != null && status.maxRecordingMinutes > 0 && (
                   <MetricRow

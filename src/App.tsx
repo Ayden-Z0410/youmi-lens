@@ -413,9 +413,6 @@ function SidebarPlanCard({
   return (
     <section className="sidebar-plan-card" aria-label="Usage">
       <div className="sidebar-plan-head">
-        <span className="sidebar-plan-icon" aria-hidden>
-          ◇
-        </span>
         <strong>Usage</strong>
       </div>
       <p className="sidebar-plan-label">{isLoading ? 'Loading…' : displayLabel}</p>
@@ -423,27 +420,44 @@ function SidebarPlanCard({
         <p className="sidebar-plan-usage">
           <span>Unlimited access</span>
         </p>
-      ) : showMonthly ? (
-        <p className="sidebar-plan-usage">
-          <span>{formatLoadingNumber(usage.minutesUsed)}</span> /{' '}
-          {formatLoadingNumber(usage.minutesLimit)} min this month
-        </p>
       ) : (
-        <p className="sidebar-plan-usage">
-          <span>Loading…</span>
-        </p>
-      )}
-      {showDaily && (
-        <p className="sidebar-plan-usage" style={{ marginTop: '0.35rem' }}>
-          <span>{formatLoadingNumber(usage.dailyMinutesUsed)}</span> /{' '}
-          {formatLoadingNumber(usage.dailyMinutesLimit)} min today
-        </p>
-      )}
-      {showRecordings && (
-        <p className="sidebar-plan-usage" style={{ marginTop: '0.35rem' }}>
-          <span>{usage.recordingsUsedToday ?? 0}</span> / {usage.maxRecordingsPerDay}{' '}
-          recordings today
-        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', marginTop: '0.05rem' }}>
+          {showMonthly ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+              <div className="sidebar-plan-row">
+                <span>{formatLoadingNumber(usage.minutesUsed)} / {formatLoadingNumber(usage.minutesLimit)} min</span>
+                <span style={{ color: '#9ba3af' }}>this month</span>
+              </div>
+              <UsageBar used={usage.minutesUsed} limit={usage.minutesLimit} height={3} />
+            </div>
+          ) : (
+            <p className="sidebar-plan-usage" style={{ margin: 0 }}>
+              <span>Loading…</span>
+            </p>
+          )}
+          {showDaily && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+              <div className="sidebar-plan-row">
+                <span>{formatLoadingNumber(usage.dailyMinutesUsed)} / {formatLoadingNumber(usage.dailyMinutesLimit)} min</span>
+                <span style={{ color: '#9ba3af' }}>today</span>
+              </div>
+              <UsageBar used={usage.dailyMinutesUsed} limit={usage.dailyMinutesLimit} height={3} />
+            </div>
+          )}
+          {showRecordings && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+              <div className="sidebar-plan-row">
+                <span>{usage.recordingsUsedToday ?? 0} / {usage.maxRecordingsPerDay}</span>
+                <span style={{ color: '#9ba3af' }}>recordings today</span>
+              </div>
+              <UsageBar
+                used={usage.recordingsUsedToday}
+                limit={usage.maxRecordingsPerDay}
+                height={3}
+              />
+            </div>
+          )}
+        </div>
       )}
     </section>
   )
@@ -476,6 +490,154 @@ function SettingsUsageRow({ label, value }: { label: string; value: string }) {
         }}
       >
         {value}
+      </span>
+    </div>
+  )
+}
+
+/**
+ * Subtle horizontal usage meter. ~4px tall, soft rounded corners, deep-navy
+ * fill on a neutral track. Returns null when limit data is missing so the
+ * bar never fakes progress. Hidden by the caller when unlimited.
+ */
+function UsageBar({
+  used,
+  limit,
+  height = 4,
+  trackColor = 'rgba(6, 27, 52, 0.08)',
+  fillColor = 'rgba(47, 101, 184, 0.78)',
+}: {
+  used: number | null | undefined
+  limit: number | null | undefined
+  height?: number
+  trackColor?: string
+  fillColor?: string
+}) {
+  if (limit == null || !Number.isFinite(limit) || limit <= 0) return null
+  const u = Number.isFinite(used as number) ? Math.max(0, Number(used)) : 0
+  const pct = Math.max(0, Math.min(100, (u / limit) * 100))
+  return (
+    <div
+      aria-hidden
+      style={{
+        height,
+        borderRadius: 999,
+        background: trackColor,
+        overflow: 'hidden',
+        width: '100%',
+      }}
+    >
+      <div
+        style={{
+          width: `${pct}%`,
+          height: '100%',
+          borderRadius: 'inherit',
+          background: fillColor,
+          transition: 'width 240ms ease',
+        }}
+      />
+    </div>
+  )
+}
+
+/**
+ * Derive a 1–2 character initials string from a profile name (preferred) or
+ * an email local part. Never returns an empty string — falls back to '·'.
+ */
+function deriveInitials(email: string | null | undefined, displayName?: string | null): string {
+  const raw = (displayName || '').trim()
+  if (raw) {
+    const parts = raw.split(/\s+/).filter(Boolean)
+    if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase()
+    if (parts.length === 1) {
+      const w = parts[0]!
+      return (w.length >= 2 ? w.slice(0, 2) : w[0]!).toUpperCase()
+    }
+  }
+  const local = (email || '').split('@')[0] || ''
+  if (!local) return '·'
+  const segments = local.split(/[._\-+]+/).filter(Boolean)
+  if (segments.length >= 2) {
+    return (segments[0]![0]! + segments[1]![0]!).toUpperCase()
+  }
+  return local.slice(0, 2).toUpperCase()
+}
+
+/**
+ * Circular initials avatar. Deep navy background, white initials. Quiet
+ * affordance — communicates "this is the signed-in account" without any
+ * profile editing intent.
+ */
+function AccountAvatar({ initials, size = 36 }: { initials: string; size?: number }) {
+  return (
+    <div
+      aria-hidden
+      style={{
+        flexShrink: 0,
+        width: size,
+        height: size,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 999,
+        background: '#061b34',
+        border: '1px solid rgba(255, 255, 255, 0.4)',
+        boxShadow: '0 6px 14px rgba(6, 27, 52, 0.18)',
+        color: '#ffffff',
+        fontSize: size <= 32 ? 12 : 13,
+        fontWeight: 700,
+        letterSpacing: '0.02em',
+      }}
+    >
+      {initials}
+    </div>
+  )
+}
+
+/**
+ * Soft pill used for Lecture Defaults values. Subtle background, small font,
+ * deep navy text — visually distinct from labels without screaming.
+ */
+function SettingsChip({ children }: { children: React.ReactNode }) {
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '0.16rem 0.55rem',
+        borderRadius: 999,
+        background: 'rgba(6, 27, 52, 0.06)',
+        color: '#071a33',
+        fontSize: '0.78rem',
+        fontWeight: 600,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {children}
+    </span>
+  )
+}
+
+/**
+ * Row variant where the value is one or more chips instead of plain text.
+ */
+function SettingsChipRow({ label, chips }: { label: string; chips: string[] }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '0.85rem',
+        fontSize: '0.875rem',
+        lineHeight: 1.45,
+      }}
+    >
+      <span style={{ color: '#6b7890' }}>{label}</span>
+      <span style={{ display: 'inline-flex', gap: '0.35rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        {chips.map((c) => (
+          <SettingsChip key={c}>{c}</SettingsChip>
+        ))}
       </span>
     </div>
   )
@@ -4390,48 +4552,52 @@ useEffect(() => {
               >
                 {/* Left: identity */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.7rem', minWidth: 0 }}>
-                  {userEmail ? (
-                    <div
-                      style={{
-                        margin: 0,
-                        color: '#071a33',
-                        fontSize: '0.95rem',
-                        fontWeight: 600,
-                        wordBreak: 'break-all',
-                        lineHeight: 1.35,
-                      }}
-                    >
-                      {userEmail}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem', minWidth: 0 }}>
+                    <AccountAvatar initials={deriveInitials(userEmail, profileRow?.username)} />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', minWidth: 0 }}>
+                      {userEmail ? (
+                        <div
+                          style={{
+                            margin: 0,
+                            color: '#071a33',
+                            fontSize: '0.9rem',
+                            fontWeight: 600,
+                            wordBreak: 'break-all',
+                            lineHeight: 1.3,
+                          }}
+                        >
+                          {userEmail}
+                        </div>
+                      ) : null}
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          alignSelf: 'flex-start',
+                          padding: '0.18rem 0.55rem',
+                          borderRadius: 999,
+                          background: 'rgba(220, 235, 250, 0.78)',
+                          color: '#2f65b7',
+                          fontSize: '0.74rem',
+                          fontWeight: 700,
+                          letterSpacing: '0.01em',
+                        }}
+                      >
+                        {getDisplayAccessLabel(sidebarPlanUsage)}
+                        {sidebarPlanUsage.source === 'fallback' && (
+                          <span style={{ marginLeft: '0.4rem', color: '#6b7890', fontWeight: 500 }}>
+                            loading…
+                          </span>
+                        )}
+                      </span>
                     </div>
-                  ) : null}
-                  <div>
-                    <span
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        padding: '0.22rem 0.65rem',
-                        borderRadius: 999,
-                        background: 'rgba(220, 235, 250, 0.78)',
-                        color: '#2f65b7',
-                        fontSize: '0.78rem',
-                        fontWeight: 700,
-                        letterSpacing: '0.01em',
-                      }}
-                    >
-                      {getDisplayAccessLabel(sidebarPlanUsage)}
-                      {sidebarPlanUsage.source === 'fallback' && (
-                        <span style={{ marginLeft: '0.4rem', color: '#6b7890', fontWeight: 500 }}>
-                          loading…
-                        </span>
-                      )}
-                    </span>
                   </div>
                   {onSignOut ? (
                     <button
                       type="button"
                       className="btn ghost small"
                       onClick={onSignOut}
-                      style={{ marginTop: '0.5rem', alignSelf: 'flex-start' }}
+                      style={{ marginTop: '0.35rem', alignSelf: 'flex-start' }}
                     >
                       Sign out
                     </button>
@@ -4439,7 +4605,7 @@ useEffect(() => {
                 </div>
 
                 {/* Right: compact usage summary */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', minWidth: 0 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', minWidth: 0 }}>
                   {sidebarPlanUsage.unlimited ? (
                     <div
                       style={{
@@ -4452,21 +4618,39 @@ useEffect(() => {
                     </div>
                   ) : (
                     <>
-                      <SettingsUsageRow
-                        label="Monthly"
-                        value={formatMonthlyMinutesUsage(sidebarPlanUsage)}
-                      />
-                      {sidebarPlanUsage.dailyMinutesLimit != null && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
                         <SettingsUsageRow
-                          label="Today"
-                          value={`${formatLoadingNumber(sidebarPlanUsage.dailyMinutesUsed)} / ${formatLoadingNumber(sidebarPlanUsage.dailyMinutesLimit)} min`}
+                          label="Monthly"
+                          value={formatMonthlyMinutesUsage(sidebarPlanUsage)}
                         />
+                        <UsageBar
+                          used={sidebarPlanUsage.minutesUsed}
+                          limit={sidebarPlanUsage.minutesLimit}
+                        />
+                      </div>
+                      {sidebarPlanUsage.dailyMinutesLimit != null && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                          <SettingsUsageRow
+                            label="Today"
+                            value={`${formatLoadingNumber(sidebarPlanUsage.dailyMinutesUsed)} / ${formatLoadingNumber(sidebarPlanUsage.dailyMinutesLimit)} min`}
+                          />
+                          <UsageBar
+                            used={sidebarPlanUsage.dailyMinutesUsed}
+                            limit={sidebarPlanUsage.dailyMinutesLimit}
+                          />
+                        </div>
                       )}
                       {sidebarPlanUsage.maxRecordingsPerDay != null && (
-                        <SettingsUsageRow
-                          label="Recordings"
-                          value={`${sidebarPlanUsage.recordingsUsedToday ?? 0} / ${sidebarPlanUsage.maxRecordingsPerDay} today`}
-                        />
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                          <SettingsUsageRow
+                            label="Recordings"
+                            value={`${sidebarPlanUsage.recordingsUsedToday ?? 0} / ${sidebarPlanUsage.maxRecordingsPerDay} today`}
+                          />
+                          <UsageBar
+                            used={sidebarPlanUsage.recordingsUsedToday}
+                            limit={sidebarPlanUsage.maxRecordingsPerDay}
+                          />
+                        </div>
                       )}
                     </>
                   )}
@@ -4474,7 +4658,7 @@ useEffect(() => {
                     type="button"
                     className="btn ghost small"
                     onClick={() => setAccessUsageOpen(true)}
-                    style={{ marginTop: '0.35rem', alignSelf: 'flex-start' }}
+                    style={{ marginTop: '0.1rem', alignSelf: 'flex-start' }}
                   >
                     View details
                   </button>
@@ -4497,13 +4681,10 @@ useEffect(() => {
           <section className="workspace-placeholder-card">
             <h2 style={{ marginBottom: '0.85rem' }}>Lecture Defaults</h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
-              <SettingsUsageRow label="Spoken language" value="English" />
-              <SettingsUsageRow label="Translation" value="Chinese Simplified" />
-              <SettingsUsageRow label="Default output" value="Live captions + bilingual summary" />
-              <SettingsUsageRow
-                label="Overlay"
-                value="Minimize on open · Visible across Spaces"
-              />
+              <SettingsChipRow label="Spoken language" chips={['English']} />
+              <SettingsChipRow label="Translation" chips={['Chinese Simplified']} />
+              <SettingsChipRow label="Output" chips={['Transcript + Summary']} />
+              <SettingsChipRow label="Overlay" chips={['Overlay captions']} />
             </div>
             <p style={{ margin: '0.85rem 0 0', fontSize: '0.78rem', color: '#9ba3af' }}>
               Configurable language and output controls coming soon.
@@ -4521,13 +4702,32 @@ useEffect(() => {
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: '0.6rem',
+                gap: '0.75rem',
                 flexWrap: 'wrap',
               }}
             >
-              <span style={{ color: '#071a33', fontSize: '0.9rem', fontWeight: 600 }}>
+              <button
+                type="button"
+                onClick={() => void openExternalContact(SUPPORT_CONTACT_URL)}
+                title="Email Youmi Lens support"
+                style={{
+                  appearance: 'none',
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  margin: 0,
+                  color: '#2f65b7',
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  textDecoration: 'underline',
+                  textUnderlineOffset: '2px',
+                  fontFamily: 'inherit',
+                }}
+              >
                 youmilens@gmail.com
-              </span>
+              </button>
+              <div style={{ flex: 1 }} />
               <button
                 type="button"
                 className="btn primary small"

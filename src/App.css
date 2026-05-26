@@ -1848,54 +1848,54 @@ select.input {
 
 .sidebar-plan-card {
   margin: auto 1rem 1.35rem;
-  padding: 0.85rem 0.95rem;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.46);
-  border: 1px solid rgba(255, 255, 255, 0.58);
-  box-shadow: 0 14px 36px rgba(6, 27, 52, 0.08);
-  backdrop-filter: blur(24px) saturate(140%);
-  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  padding: 0.7rem 0.85rem;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 10px 28px rgba(6, 27, 52, 0.06);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
   color: #071a33;
 }
 
 .sidebar-plan-head {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  margin-bottom: 0.45rem;
-  color: #4a5b75;
-  font-size: 0.74rem;
+  gap: 0.4rem;
+  margin-bottom: 0.35rem;
+  color: #6b7890;
+  font-size: 0.7rem;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
 .sidebar-plan-icon {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: rgba(220, 235, 250, 0.82);
+  background: rgba(220, 235, 250, 0.78);
   color: #2f65b7;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   font-weight: 700;
 }
 
 .sidebar-plan-label {
-  margin: 0 0 0.45rem;
+  margin: 0 0 0.4rem;
   color: #071a33;
   font-weight: 700;
-  font-size: 0.95rem;
+  font-size: 0.88rem;
 }
 
 .sidebar-plan-usage {
   margin: 0 0 0.3rem;
   color: #4a5b75;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 500;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .sidebar-plan-usage:last-child {
@@ -1904,8 +1904,20 @@ select.input {
 
 .sidebar-plan-usage span {
   color: #071a33;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 700;
+}
+
+.sidebar-plan-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  color: #071a33;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .sidebar-plan-meter {
