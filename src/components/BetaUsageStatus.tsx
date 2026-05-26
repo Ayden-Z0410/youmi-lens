@@ -158,7 +158,7 @@ export function BetaUsageStatus({ open, supabase }: Props) {
         marginBottom: px(t.spacing[4]),
       }}
     >
-      {/* Header: title + Refresh status button */}
+      {/* Subtitle + Refresh status button. The owning modal renders the title. */}
       <div
         style={{
           display: 'flex',
@@ -167,28 +167,16 @@ export function BetaUsageStatus({ open, supabase }: Props) {
           gap: px(t.spacing[3]),
         }}
       >
-        <div style={{ minWidth: 0 }}>
-          <div
-            style={{
-              fontSize: t.fontSize.md,
-              fontWeight: 600,
-              color: t.colors.text,
-              lineHeight: t.lineHeight.tight,
-            }}
-          >
-            Access &amp; Usage
-          </div>
-          <p
-            style={{
-              margin: `${px(t.spacing[1])} 0 0`,
-              fontSize: t.fontSize.sm,
-              color: t.colors.textMuted,
-              lineHeight: t.lineHeight.relaxed,
-            }}
-          >
-            {SUBTITLE_COPY}
-          </p>
-        </div>
+        <p
+          style={{
+            margin: 0,
+            fontSize: t.fontSize.sm,
+            color: t.colors.textMuted,
+            lineHeight: t.lineHeight.relaxed,
+          }}
+        >
+          {SUBTITLE_COPY}
+        </p>
         <button
           type="button"
           className="ds-btn ds-btn--secondary"
@@ -258,7 +246,7 @@ export function BetaUsageStatus({ open, supabase }: Props) {
           >
             {unlimited ? (
               <div style={{ fontSize: t.fontSize.sm, color: t.colors.text, fontWeight: 500 }}>
-                Unlimited access
+                This account has unlimited developer access.
               </div>
             ) : (
               <>
@@ -282,7 +270,7 @@ export function BetaUsageStatus({ open, supabase }: Props) {
                 )}
                 {status.maxRecordingMinutes != null && status.maxRecordingMinutes > 0 && (
                   <MetricRow
-                    label="Max recording length"
+                    label="Per-session recording limit"
                     value={`${formatMinutes(status.maxRecordingMinutes)} min`}
                   />
                 )}

@@ -83,6 +83,7 @@ import {
   type UserProfileRow,
 } from './lib/userProfile'
 import { AccountSettingsModal } from './components/AccountSettingsModal'
+import { AccessUsageModal } from './components/AccessUsageModal'
 import { AuthScreens } from './components/AuthScreens'
 import { RecordingAudioPlayer } from './components/RecordingAudioPlayer'
 import { OnboardingUsername } from './components/OnboardingUsername'
@@ -201,6 +202,10 @@ type SidebarPlanUsage = {
   dailyMinutesUsed: number | null
   dailyMinutesLimit: number | null
   dailyMinutesRemaining: number | null
+  /** Recordings processed today (UTC). null while loading. */
+  recordingsUsedToday: number | null
+  maxRecordingsPerDay: number | null
+  recordingsRemainingToday: number | null
   source: 'api' | 'fallback'
 }
 
@@ -224,17 +229,17 @@ type QuotaStatusPayload = {
     status?: 'active' | 'suspended'
     unlimited: boolean
     monthlyMinutesLimit?: number | null
-    minutesUsed?: number
+    minutesUsed?: number | null
     minutesLimit?: number | null
     minutesRemaining?: number | null
-    dailyMinutesUsed?: number
+    dailyMinutesUsed?: number | null
     dailyMinutesLimit?: number | null
     dailyMinutesRemaining?: number | null
-    maxRecordingsPerDay?: number
-    recordingsUsedToday?: number
-    recordingsRemainingToday?: number
-    maxRecordingMinutes?: number
-    maxLiveSessionMinutes?: number
+    maxRecordingsPerDay?: number | null
+    recordingsUsedToday?: number | null
+    recordingsRemainingToday?: number | null
+    maxRecordingMinutes?: number | null
+    maxLiveSessionMinutes?: number | null
   }
 }
 
@@ -248,6 +253,9 @@ const FALLBACK_PLAN_USAGE: SidebarPlanUsage = {
   dailyMinutesUsed: null,
   dailyMinutesLimit: null,
   dailyMinutesRemaining: null,
+  recordingsUsedToday: null,
+  maxRecordingsPerDay: null,
+  recordingsRemainingToday: null,
   source: 'fallback',
 }
 
@@ -330,6 +338,9 @@ function planUsageFromApi(payload: QuotaStatusPayload): SidebarPlanUsage {
       dailyMinutesUsed: null,
       dailyMinutesLimit: null,
       dailyMinutesRemaining: null,
+      recordingsUsedToday: null,
+      maxRecordingsPerDay: null,
+      recordingsRemainingToday: null,
       source: 'api',
     }
   }
@@ -345,6 +356,9 @@ function planUsageFromApi(payload: QuotaStatusPayload): SidebarPlanUsage {
     dailyMinutesUsed: numOrNull(plan.dailyMinutesUsed),
     dailyMinutesLimit: numOrNull(plan.dailyMinutesLimit),
     dailyMinutesRemaining: numOrNull(plan.dailyMinutesRemaining),
+    recordingsUsedToday: numOrNull(plan.recordingsUsedToday),
+    maxRecordingsPerDay: numOrNull(plan.maxRecordingsPerDay),
+    recordingsRemainingToday: numOrNull(plan.recordingsRemainingToday),
     source: 'api',
   }
 }
@@ -383,17 +397,14 @@ function SidebarPlanCard({
   const isLoading = usage.source === 'fallback'
   const showMonthly = !usage.unlimited && usage.minutesLimit != null
   const showDaily = !usage.unlimited && usage.dailyMinutesLimit != null
-  const monthlyPercent =
-    showMonthly && usage.minutesLimit && usage.minutesLimit > 0
-      ? Math.max(0, Math.min(100, ((usage.minutesUsed ?? 0) / usage.minutesLimit) * 100))
-      : 0
+  const showRecordings = !usage.unlimited && usage.maxRecordingsPerDay != null
   return (
-    <section className="sidebar-plan-card" aria-label="Access and usage">
+    <section className="sidebar-plan-card" aria-label="Usage">
       <div className="sidebar-plan-head">
         <span className="sidebar-plan-icon" aria-hidden>
           ◇
         </span>
-        <strong>Access &amp; Usage</strong>
+        <strong>Usage</strong>
       </div>
       <p className="sidebar-plan-label">{isLoading ? 'Loading…' : displayLabel}</p>
       {usage.unlimited ? (
@@ -401,15 +412,10 @@ function SidebarPlanCard({
           <span>Unlimited access</span>
         </p>
       ) : showMonthly ? (
-        <>
-          <p className="sidebar-plan-usage">
-            <span>{formatLoadingNumber(usage.minutesUsed)}</span> /{' '}
-            {formatLoadingNumber(usage.minutesLimit)} min this month
-          </p>
-          <div className="sidebar-plan-meter" aria-hidden>
-            <span style={{ width: `${monthlyPercent}%` }} />
-          </div>
-        </>
+        <p className="sidebar-plan-usage">
+          <span>{formatLoadingNumber(usage.minutesUsed)}</span> /{' '}
+          {formatLoadingNumber(usage.minutesLimit)} min this month
+        </p>
       ) : (
         <p className="sidebar-plan-usage">
           <span>Loading…</span>
@@ -419,6 +425,12 @@ function SidebarPlanCard({
         <p className="sidebar-plan-usage" style={{ marginTop: '0.35rem' }}>
           <span>{formatLoadingNumber(usage.dailyMinutesUsed)}</span> /{' '}
           {formatLoadingNumber(usage.dailyMinutesLimit)} min today
+        </p>
+      )}
+      {showRecordings && (
+        <p className="sidebar-plan-usage" style={{ marginTop: '0.35rem' }}>
+          <span>{usage.recordingsUsedToday ?? 0}</span> / {usage.maxRecordingsPerDay}{' '}
+          recordings today
         </p>
       )}
     </section>
@@ -1567,6 +1579,7 @@ function RecordingWorkspace({
   const liveChunkFailStreakRef = useRef(0)
   const [liveCaptionPendingSlices, setLiveCaptionPendingSlices] = useState(0)
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false)
+  const [accessUsageOpen, setAccessUsageOpen] = useState(false)
 
   useEffect(() => {
     if (!LIVE_ROUTE_DIAG_ENABLED) return
@@ -4309,9 +4322,9 @@ useEffect(() => {
         </div>
         <div className="settings-placeholder-grid">
 
-          {/* ── 1. Account & Access ────────────────────────────────────────── */}
+          {/* ── 1. Account ──────────────────────────────────────────────────── */}
           <section className="workspace-placeholder-card">
-            <h2 style={{ marginBottom: '1rem' }}>Account &amp; Access</h2>
+            <h2 style={{ marginBottom: '1rem' }}>Account</h2>
             <dl style={{ margin: 0, display: 'grid', gap: '0.65rem' }}>
               {!localOnly && userEmail ? (
                 <div>
@@ -4324,21 +4337,6 @@ useEffect(() => {
                   <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>Local only</dd>
                 </div>
               ) : null}
-              <div>
-                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Account access</dt>
-                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
-                  {getDisplayAccessLabel(sidebarPlanUsage)}
-                  {sidebarPlanUsage.source === 'fallback' && (
-                    <span style={{ marginLeft: '0.4rem', fontSize: '0.75rem', color: '#9ba3af' }}>(loading…)</span>
-                  )}
-                </dd>
-              </div>
-              <div>
-                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Monthly minutes</dt>
-                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
-                  {formatMonthlyMinutesUsage(sidebarPlanUsage)}
-                </dd>
-              </div>
             </dl>
             {!localOnly && onSignOut ? (
               <button
@@ -4351,6 +4349,63 @@ useEffect(() => {
               </button>
             ) : null}
           </section>
+
+          {/* ── 2. Access & Usage (compact summary; View details opens modal) ── */}
+          {!localOnly ? (
+            <section className="workspace-placeholder-card">
+              <h2 style={{ marginBottom: '1rem' }}>Access &amp; Usage</h2>
+              <dl style={{ margin: 0, display: 'grid', gap: '0.65rem' }}>
+                <div>
+                  <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Account access</dt>
+                  <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
+                    {getDisplayAccessLabel(sidebarPlanUsage)}
+                    {sidebarPlanUsage.source === 'fallback' && (
+                      <span style={{ marginLeft: '0.4rem', fontSize: '0.75rem', color: '#9ba3af' }}>(loading…)</span>
+                    )}
+                  </dd>
+                </div>
+                {sidebarPlanUsage.unlimited ? (
+                  <div>
+                    <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Limits</dt>
+                    <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>Unlimited access</dd>
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Monthly</dt>
+                      <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
+                        {formatMonthlyMinutesUsage(sidebarPlanUsage)}
+                      </dd>
+                    </div>
+                    {sidebarPlanUsage.dailyMinutesLimit != null && (
+                      <div>
+                        <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Today</dt>
+                        <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
+                          {formatLoadingNumber(sidebarPlanUsage.dailyMinutesUsed)} / {formatLoadingNumber(sidebarPlanUsage.dailyMinutesLimit)} min used
+                        </dd>
+                      </div>
+                    )}
+                    {sidebarPlanUsage.maxRecordingsPerDay != null && (
+                      <div>
+                        <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Recordings</dt>
+                        <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
+                          {sidebarPlanUsage.recordingsUsedToday ?? 0} / {sidebarPlanUsage.maxRecordingsPerDay} today
+                        </dd>
+                      </div>
+                    )}
+                  </>
+                )}
+              </dl>
+              <button
+                type="button"
+                className="btn ghost small"
+                onClick={() => setAccessUsageOpen(true)}
+                style={{ marginTop: '1.1rem' }}
+              >
+                View details
+              </button>
+            </section>
+          ) : null}
 
           {/* ── 2. Lecture Defaults ────────────────────────────────────────── */}
           <section className="workspace-placeholder-card">
@@ -4427,6 +4482,13 @@ useEffect(() => {
             setAccountSettingsOpen(false)
             onSignOut?.()
           }}
+        />
+      ) : null}
+      {showAccountPanel && supabase ? (
+        <AccessUsageModal
+          open={accessUsageOpen}
+          onClose={() => setAccessUsageOpen(false)}
+          supabase={supabase}
         />
       ) : null}
       {trashConfirmModal ? (

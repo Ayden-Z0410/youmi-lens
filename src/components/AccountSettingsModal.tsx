@@ -16,7 +16,6 @@ import {
 } from '../lib/userProfile'
 import { AiPreferencesSection } from './AiPreferencesSection'
 import { INTERNAL_BETA_NOTE, PRODUCT_VERSION_LABEL } from '../lib/productMeta'
-import { BetaUsageStatus } from './BetaUsageStatus'
 
 type Props = {
   open: boolean
@@ -214,8 +213,6 @@ export function AccountSettingsModal({
               }}
             />
           </label>
-
-          <BetaUsageStatus open={open} supabase={supabase} />
 
           <label className="field" style={{ display: 'block', marginBottom: px(t.spacing[4]) }}>
             <span
