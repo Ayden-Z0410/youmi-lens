@@ -411,8 +411,10 @@ export function useRecorder(opts?: {
         }, 120)
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Microphone access failed'
-      setError(msg)
+      console.warn('[useRecorder] microphone access failed', e)
+      setError(
+        'Microphone access is required to record lectures. Please allow Youmi Lens in System Settings -> Privacy & Security -> Microphone, then restart the app.',
+      )
       stopStream()
     }
   }, [opts?.onLiveAudioChunkRef, opts?.experimentalSkipLiveSlice, stopStream])
