@@ -41,12 +41,12 @@ type Props = {
 }
 
 const SUBTITLE_COPY =
-  'Youmi Lens is free during beta. Daily and monthly limits help keep the service stable for students.'
+  'Youmi Lens is free to use. Daily and monthly limits help keep the service stable for students.'
 
 const SHARED_USAGE_COPY = 'Your usage is shared across iPad and Mac.'
 
 const FOOTER_COPY =
-  'Youmi Lens is currently a free educational beta. There are no paid subscriptions or in-app purchases.'
+  'Youmi Lens currently provides free educational access. There are no paid subscriptions or in-app purchases.'
 
 const CORE_TESTER_COPY =
   'Extended testing access is available for active users. Contact youmilens@gmail.com if you need more capacity for coursework.'
@@ -57,17 +57,34 @@ const REQUEST_HELPER_COPY =
 const UNLIMITED_BODY_COPY = 'This account has unlimited developer access.'
 
 /**
- * Gmail compose URL for beta-access requests. We use Gmail compose instead
- * of a `mailto:` link because mailto handlers on macOS often resolve to
- * Chrome, leaving the user on a blank browser page instead of in a compose
- * window. The Gmail compose URL is predictable for Youmi Lens support.
+ * Gmail compose URL for access requests. We use Gmail compose instead of a
+ * `mailto:` link because mailto handlers on macOS often resolve to Chrome,
+ * leaving the user on a blank browser page instead of in a compose window.
+ * The Gmail compose URL is predictable for Youmi Lens support.
  */
 const REQUEST_CONTACT_URL =
   'https://mail.google.com/mail/?view=cm&fs=1&to=youmilens@gmail.com' +
-  '&su=Youmi%20Lens%20Beta%20Access%20Request' +
-  '&body=Hi%20Youmi%20Lens%20team%2C%0A%0AI%20would%20like%20to%20request%20more%20beta%20access.' +
+  '&su=Youmi%20Lens%20Access%20Request' +
+  '&body=Hi%20Youmi%20Lens%20team%2C%0A%0AI%20would%20like%20to%20request%20more%20access.' +
   '%0A%0AMy%20use%20case%3A%0A%5BPlease%20briefly%20describe%20how%20you%20use%20Youmi%20Lens%20for%20coursework.%5D' +
   '%0A%0AThanks.'
+
+/**
+ * Frontend display normalizer. Backend `/api/quota/status` may still return
+ * `displayName: "Free Beta"` for `public_trial` users; the Mac UI no longer
+ * uses Beta wording, so we remap it here without changing backend logic.
+ */
+function normalizeAccessLabel(planType: string | undefined | null, displayName: string | undefined | null): string {
+  const t = (planType || '').toLowerCase().trim()
+  if (['admin', 'developer', 'dev', 'internal_developer'].includes(t)) {
+    if (displayName && !/beta/i.test(displayName)) return displayName
+    return 'Developer'
+  }
+  if (['core_tester', 'tester'].includes(t)) return 'Core Tester'
+  if (t === 'public_trial') return 'Free Access'
+  if (displayName && !/beta/i.test(displayName)) return displayName
+  return 'Free Access'
+}
 
 function formatMinutes(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '—'
@@ -173,7 +190,11 @@ export function BetaUsageStatus({ open, supabase }: Props) {
     void loadStatus()
   }, [open, loadStatus])
 
-  const displayName = status?.displayName ?? (loading ? 'Loading…' : 'Not available')
+  const displayName = status
+    ? normalizeAccessLabel(status.planType, status.displayName)
+    : loading
+      ? 'Loading…'
+      : 'Not available'
   const unlimited = status?.unlimited === true
   const planType = status?.planType ?? ''
   const isCoreTester = planType === 'core_tester'

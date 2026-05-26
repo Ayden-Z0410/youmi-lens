@@ -376,17 +376,21 @@ function planUsageFromApi(payload: QuotaStatusPayload): SidebarPlanUsage {
 }
 
 /**
- * User-facing access label. Free Beta / Core Tester / Developer are the only
- * surfaces — no paid-tier wording. Falls back to the backend's display name if
- * one is provided, otherwise to 'Free Beta' for any limited public_trial-like
- * plan_type.
+ * User-facing access label. Free Access / Core Tester / Developer are the
+ * only surfaces in the Mac UI. Backend may still return `displayName:
+ * 'Free Beta'` for public_trial users — we normalize that to 'Free Access'
+ * here without changing backend logic.
  */
 function getDisplayAccessLabel(usage: SidebarPlanUsage): string {
-  if (usage.displayName) return usage.displayName
   const t = usage.planType.toLowerCase().trim()
-  if (['admin', 'developer', 'dev', 'internal_developer'].includes(t)) return 'Developer'
+  if (['admin', 'developer', 'dev', 'internal_developer'].includes(t)) {
+    if (usage.displayName && !/beta/i.test(usage.displayName)) return usage.displayName
+    return 'Developer'
+  }
   if (['core_tester', 'tester'].includes(t)) return 'Core Tester'
-  return 'Free Beta'
+  if (t === 'public_trial') return 'Free Access'
+  if (usage.displayName && !/beta/i.test(usage.displayName)) return usage.displayName
+  return 'Free Access'
 }
 
 function formatLoadingNumber(value: number | null): string {
@@ -426,33 +430,33 @@ function SidebarPlanCard({
         <>
           {showMonthly && (
             <div className="sidebar-plan-metric">
-              <div className="sidebar-plan-metric__row">
-                <span className="sidebar-plan-metric__label">This month</span>
-                <span className="sidebar-plan-metric__value">
+              <div className="sidebar-plan-metric__line">
+                This month ·{' '}
+                <strong>
                   {formatLoadingNumber(usage.minutesUsed)} / {formatLoadingNumber(usage.minutesLimit)} min
-                </span>
+                </strong>
               </div>
               <UsageBar used={usage.minutesUsed} limit={usage.minutesLimit} height={3} />
             </div>
           )}
           {showDaily && (
             <div className="sidebar-plan-metric">
-              <div className="sidebar-plan-metric__row">
-                <span className="sidebar-plan-metric__label">Today</span>
-                <span className="sidebar-plan-metric__value">
+              <div className="sidebar-plan-metric__line">
+                Today ·{' '}
+                <strong>
                   {formatLoadingNumber(usage.dailyMinutesUsed)} / {formatLoadingNumber(usage.dailyMinutesLimit)} min
-                </span>
+                </strong>
               </div>
               <UsageBar used={usage.dailyMinutesUsed} limit={usage.dailyMinutesLimit} height={3} />
             </div>
           )}
           {showRecordings && (
             <div className="sidebar-plan-metric">
-              <div className="sidebar-plan-metric__row">
-                <span className="sidebar-plan-metric__label">Recordings today</span>
-                <span className="sidebar-plan-metric__value">
+              <div className="sidebar-plan-metric__line">
+                Recordings today ·{' '}
+                <strong>
                   {usage.recordingsUsedToday ?? 0} / {usage.maxRecordingsPerDay}
-                </span>
+                </strong>
               </div>
               <UsageBar
                 used={usage.recordingsUsedToday}
@@ -2447,7 +2451,7 @@ function RecordingWorkspace({
         if (BETA_CODES.has(ev.code)) {
           const betaMsg = ev.code === 'auth_required'
             ? 'Sign in again to use live captions.'
-            : 'Free beta limit reached. Please contact Youmi Lens for more access.'
+            : 'Free access limit reached. Please contact Youmi Lens for more access.'
           setLiveCaptionChunkNotice({ kind: 'fatal', message: betaMsg })
           setLiveRouteState('v2_error')
           return
@@ -3204,7 +3208,7 @@ const [editLectureModal, setEditLectureModal] = useState<{
             return
           }
 
-          // If the recording is too long for beta cloud processing,
+          // If the recording is too long for cloud processing,
           // fall back to local save so the audio is never lost.
           if (/recording_too_long/i.test(msg) || /recording.*too long|too long.*recording/i.test(msg)) {
             console.warn('[capture] recording_too_long — falling back to local save', JSON.stringify({ recordingId, durationSec }))
@@ -3228,7 +3232,7 @@ const [editLectureModal, setEditLectureModal] = useState<{
                 kind: 'list_refresh_warn',
                 recordingId,
                 message:
-                  'Recording saved locally (too long for beta cloud processing). Free beta limit reached. Please contact Youmi Lens for more access.',
+                  'Recording saved locally (too long for cloud processing). Free access limit reached. Please contact Youmi Lens for more access.',
                 at: Date.now(),
               })
             } catch (locFallbackErr) {
@@ -3236,7 +3240,7 @@ const [editLectureModal, setEditLectureModal] = useState<{
                 kind: 'failure',
                 recordingId,
                 outcome: 'storage_failed',
-                message: 'Free beta limit reached. Please contact Youmi Lens for more access.',
+                message: 'Free access limit reached. Please contact Youmi Lens for more access.',
                 at: Date.now(),
               })
             }
@@ -4699,8 +4703,8 @@ useEffect(() => {
           <section className="workspace-placeholder-card" style={{ gridColumn: '1 / -1' }}>
             <h2 style={{ marginBottom: '0.5rem' }}>Feedback &amp; Support</h2>
             <p style={{ margin: '0 0 0.85rem', color: '#6b7890', fontSize: '0.875rem', lineHeight: 1.55 }}>
-              Need help with recording, live captions, summaries, or overlay display? Email us
-              and we&rsquo;ll take a look.
+              Youmi Lens is available as a free educational tool. Please report issues with
+              recording, live captions, translation, summary generation, or overlay display.
             </p>
             <div
               style={{
@@ -6050,7 +6054,6 @@ useEffect(() => {
                 <p className="live-caption-hint muted small">{LIVE_CAPTIONS_USER_EXPECTATION_EN}</p>
               </div>
               <div className="live-cockpit-actions">
-                <span className="live-pill">Beta</span>
                 {recorder.status === 'paused' && (
                   <span className="live-pill">Paused - text kept</span>
                 )}
