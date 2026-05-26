@@ -48,11 +48,18 @@ export function YoumiLensShell({
   const RESIZER_W = 8
   const LEFT_MIN = 260
   const LEFT_MAX = 520
-  const RIGHT_MIN = 260
-  const RIGHT_MAX = 620
+  const RIGHT_MIN = 280
+  const RIGHT_MAX = 560
   const MAIN_MIN = 480
+  const WORKSPACE_CHROME_W = 88
 
   const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
+  const maxRightForViewport = (total: number, left: number) => {
+    const availableWorkspace = Math.max(0, total - left - RESIZER_W - WORKSPACE_CHROME_W)
+    const maxByMain = availableWorkspace - MAIN_MIN
+    const maxByRatio = Math.floor(availableWorkspace * 0.45)
+    return Math.max(RIGHT_MIN, Math.min(RIGHT_MAX, maxByMain, maxByRatio))
+  }
 
   const readStoredWidths = () => {
     try {
@@ -67,7 +74,7 @@ export function YoumiLensShell({
   }
 
   const [leftWidth, setLeftWidth] = useState(() => clamp(readStoredWidths()?.left ?? 260, LEFT_MIN, LEFT_MAX))
-  const [rightWidth, setRightWidth] = useState(() => readStoredWidths()?.right ?? 360)
+  const [rightWidth, setRightWidth] = useState(() => clamp(readStoredWidths()?.right ?? 360, RIGHT_MIN, RIGHT_MAX))
   const [draggingResizer, setDraggingResizer] = useState<'left' | 'right' | null>(null)
 
   useEffect(() => {
@@ -84,14 +91,13 @@ export function YoumiLensShell({
       setLeftWidth((prevLeft) => {
         const leftBounded = clamp(prevLeft, LEFT_MIN, LEFT_MAX)
         const rightBounded = clamp(rightWidth, RIGHT_MIN, RIGHT_MAX)
-        const leftMaxByMain = Math.max(LEFT_MIN, total - rightBounded - MAIN_MIN - 2 * RESIZER_W)
+        const leftMaxByMain = Math.max(LEFT_MIN, total - rightBounded - MAIN_MIN - 2 * RESIZER_W - WORKSPACE_CHROME_W)
         return clamp(leftBounded, LEFT_MIN, leftMaxByMain)
       })
       setRightWidth((prevRight) => {
         const rightBounded = clamp(prevRight, RIGHT_MIN, RIGHT_MAX)
         const leftBounded = clamp(leftWidth, LEFT_MIN, LEFT_MAX)
-        const rightMaxByMain = Math.max(RIGHT_MIN, total - leftBounded - MAIN_MIN - 2 * RESIZER_W)
-        return clamp(rightBounded, RIGHT_MIN, rightMaxByMain)
+        return clamp(rightBounded, RIGHT_MIN, maxRightForViewport(total, leftBounded))
       })
     }
 
@@ -108,6 +114,7 @@ export function YoumiLensShell({
       }) as CSSProperties,
     [leftWidth, rightWidth],
   )
+  const showRightPanel = !workspacePage || showWorkspaceSummary
 
   const startResize = (which: 'left' | 'right', clientX: number) => {
     const startLeft = leftWidth
@@ -119,14 +126,13 @@ export function YoumiLensShell({
       if (which === 'left') {
         const nextLeftRaw = startLeft + (e.clientX - clientX)
         const rightBounded = clamp(startRight, RIGHT_MIN, RIGHT_MAX)
-        const leftMaxByMain = Math.max(LEFT_MIN, total - rightBounded - MAIN_MIN - 2 * RESIZER_W)
+        const leftMaxByMain = Math.max(LEFT_MIN, total - rightBounded - MAIN_MIN - 2 * RESIZER_W - WORKSPACE_CHROME_W)
         setLeftWidth(clamp(nextLeftRaw, LEFT_MIN, Math.min(LEFT_MAX, leftMaxByMain)))
         return
       }
       const nextRightRaw = startRight - (e.clientX - clientX)
       const leftBounded = clamp(startLeft, LEFT_MIN, LEFT_MAX)
-      const rightMaxByMain = Math.max(RIGHT_MIN, total - leftBounded - MAIN_MIN - 2 * RESIZER_W)
-      setRightWidth(clamp(nextRightRaw, RIGHT_MIN, Math.min(RIGHT_MAX, rightMaxByMain)))
+      setRightWidth(clamp(nextRightRaw, RIGHT_MIN, maxRightForViewport(total, leftBounded)))
     }
 
     const onUp = () => {
@@ -193,35 +199,50 @@ export function YoumiLensShell({
         }}
       />
 
-      <section className="record-workspace" aria-label="Record workspace">
+      <section
+        className={`record-workspace${showRightPanel ? ' record-workspace--with-summary' : ''}`}
+        aria-label="Record workspace"
+      >
         {workspacePage ? (
           <>
             <main className={`yl-main workspace-page-shell${showWorkspaceSummary ? ' workspace-page-shell--with-summary' : ''}`}>
               {workspacePage}
             </main>
             {showWorkspaceSummary ? (
-              <aside className="yl-right summary-panel" aria-label="Summary and notes">
-                <div className="yl-summary-card">
-                  <header className="yl-summary-header">
-                    <div className="yl-panel-label">Summary</div>
-                    {summaryHint ?? (
-                      <p className="yl-summary-hint">Condensed takeaways from this session (placeholder)</p>
+              <>
+                <div
+                  className="yl-col-resizer yl-col-resizer--right"
+                  role="separator"
+                  aria-label="Resize summary panel"
+                  onPointerDown={(e) => {
+                    if (e.button !== 0) return
+                    e.preventDefault()
+                    startResize('right', e.clientX)
+                  }}
+                />
+                <aside className="yl-right summary-panel" aria-label="Summary and notes">
+                  <div className="yl-summary-card">
+                    <header className="yl-summary-header">
+                      <div className="yl-panel-label">Summary</div>
+                      {summaryHint ?? (
+                        <p className="yl-summary-hint">Condensed takeaways from this session (placeholder)</p>
+                      )}
+                    </header>
+                    {rightPanel ?? (
+                      <div className="yl-summary-body">
+                        <section className="yl-summary-block" aria-label="Key points">
+                          <h3 className="yl-summary-block-title">Key points</h3>
+                          <p className="yl-summary-placeholder">Notes and highlights will appear here after processing.</p>
+                        </section>
+                        <section className="yl-summary-block" aria-label="Terms and references">
+                          <h3 className="yl-summary-block-title">Terms</h3>
+                          <p className="yl-summary-placeholder muted">Optional glossary from transcript (placeholder)</p>
+                        </section>
+                      </div>
                     )}
-                  </header>
-                  {rightPanel ?? (
-                    <div className="yl-summary-body">
-                      <section className="yl-summary-block" aria-label="Key points">
-                        <h3 className="yl-summary-block-title">Key points</h3>
-                        <p className="yl-summary-placeholder">Notes and highlights will appear here after processing.</p>
-                      </section>
-                      <section className="yl-summary-block" aria-label="Terms and references">
-                        <h3 className="yl-summary-block-title">Terms</h3>
-                        <p className="yl-summary-placeholder muted">Optional glossary from transcript (placeholder)</p>
-                      </section>
-                    </div>
-                  )}
-                </div>
-              </aside>
+                  </div>
+                </aside>
+              </>
             ) : null}
           </>
         ) : (
@@ -270,6 +291,17 @@ export function YoumiLensShell({
 
               {companionHint ? <div className="yl-companion-slot">{companionHint}</div> : null}
             </main>
+
+            <div
+              className="yl-col-resizer yl-col-resizer--right"
+              role="separator"
+              aria-label="Resize summary panel"
+              onPointerDown={(e) => {
+                if (e.button !== 0) return
+                e.preventDefault()
+                startResize('right', e.clientX)
+              }}
+            />
 
             <aside className="yl-right summary-panel" aria-label="Summary and notes">
               <div className="yl-summary-card">
