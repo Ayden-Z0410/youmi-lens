@@ -397,13 +397,6 @@ function formatLoadingNumber(value: number | null): string {
   return value == null ? '—' : Number.isInteger(value) ? String(value) : value.toFixed(1)
 }
 
-/** Returns the workspace Settings page "Monthly minutes" row content. */
-function formatMonthlyMinutesUsage(usage: SidebarPlanUsage): string {
-  if (usage.unlimited) return 'Unlimited access'
-  if (usage.source === 'fallback' || usage.minutesLimit == null) return 'Loading…'
-  return `${formatLoadingNumber(usage.minutesUsed)} / ${formatLoadingNumber(usage.minutesLimit)} min used`
-}
-
 /**
  * Sidebar Usage card — ultra-compact status summary only. Full details live
  * in Settings → Access & Usage → View details, so the sidebar shows only:
@@ -475,27 +468,9 @@ function SidebarPlanCard({
  */
 function SettingsUsageRow({ label, value }: { label: string; value: string }) {
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'baseline',
-        justifyContent: 'space-between',
-        gap: '0.85rem',
-        fontSize: '0.875rem',
-        lineHeight: 1.45,
-      }}
-    >
-      <span style={{ color: '#6b7890' }}>{label}</span>
-      <span
-        style={{
-          color: '#071a33',
-          fontWeight: 600,
-          fontVariantNumeric: 'tabular-nums',
-          textAlign: 'right',
-        }}
-      >
-        {value}
-      </span>
+    <div className="settings-usage-row">
+      <span className="settings-usage-row__label">{label}</span>
+      <span className="settings-usage-row__value">{value}</span>
     </div>
   )
 }
@@ -605,19 +580,7 @@ function AccountAvatar({ initials, size = 36 }: { initials: string; size?: numbe
  */
 function SettingsChip({ children }: { children: React.ReactNode }) {
   return (
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        padding: '0.16rem 0.55rem',
-        borderRadius: 999,
-        background: 'rgba(6, 27, 52, 0.06)',
-        color: '#071a33',
-        fontSize: '0.78rem',
-        fontWeight: 600,
-        whiteSpace: 'nowrap',
-      }}
-    >
+    <span className="settings-chip">
       {children}
     </span>
   )
@@ -628,18 +591,9 @@ function SettingsChip({ children }: { children: React.ReactNode }) {
  */
 function SettingsChipRow({ label, chips }: { label: string; chips: string[] }) {
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: '0.85rem',
-        fontSize: '0.875rem',
-        lineHeight: 1.45,
-      }}
-    >
-      <span style={{ color: '#6b7890' }}>{label}</span>
-      <span style={{ display: 'inline-flex', gap: '0.35rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+    <div className="settings-chip-row">
+      <span className="settings-chip-row__label">{label}</span>
+      <span className="settings-chip-row__chips">
         {chips.map((c) => (
           <SettingsChip key={c}>{c}</SettingsChip>
         ))}
@@ -4533,221 +4487,151 @@ useEffect(() => {
         </div>
         <div className="settings-placeholder-grid">
 
-          {/* ── 1. Account & Access (combined; spans 2 columns) ──────────────── */}
+          {/* ── 1. Account & Access ─────────────────────────────────────────── */}
           {localOnly ? (
-            <section className="workspace-placeholder-card" style={{ gridColumn: 'span 2' }}>
-              <h2 style={{ marginBottom: '0.85rem' }}>Account</h2>
-              <p style={{ margin: 0, color: '#39506f', fontSize: '0.95rem', fontWeight: 600 }}>
-                Local only
-              </p>
-              <p style={{ margin: '0.45rem 0 0', color: '#6b7890', fontSize: '0.85rem', lineHeight: 1.55 }}>
+            <section className="workspace-placeholder-card settings-card settings-card--account">
+              <h2>Account &amp; Access</h2>
+              <div className="settings-account-row">
+                <AccountAvatar initials={deriveInitials(userEmail, profileRow?.username)} />
+                <div className="settings-account-identity">
+                  <div className="settings-account-email">Local only</div>
+                  <span className="settings-access-pill">Free Access</span>
+                </div>
+              </div>
+              <div className="settings-card-divider" />
+              <p className="settings-muted-copy">
                 Sign in to share usage across iPad and Mac.
               </p>
             </section>
           ) : (
-            <section className="workspace-placeholder-card" style={{ gridColumn: 'span 2' }}>
-              <h2 style={{ marginBottom: '1rem' }}>Account &amp; Access</h2>
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
-                  gap: '1.4rem',
-                  alignItems: 'start',
-                }}
-              >
-                {/* Left: identity */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.7rem', minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem', minWidth: 0 }}>
-                    <AccountAvatar initials={deriveInitials(userEmail, profileRow?.username)} />
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', minWidth: 0 }}>
-                      {userEmail ? (
-                        <div
-                          style={{
-                            margin: 0,
-                            color: '#071a33',
-                            fontSize: '0.9rem',
-                            fontWeight: 600,
-                            wordBreak: 'break-all',
-                            lineHeight: 1.3,
-                          }}
-                        >
-                          {userEmail}
-                        </div>
-                      ) : null}
-                      <span
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          alignSelf: 'flex-start',
-                          padding: '0.18rem 0.55rem',
-                          borderRadius: 999,
-                          background: 'rgba(220, 235, 250, 0.78)',
-                          color: '#2f65b7',
-                          fontSize: '0.74rem',
-                          fontWeight: 700,
-                          letterSpacing: '0.01em',
-                        }}
-                      >
-                        {getDisplayAccessLabel(sidebarPlanUsage)}
-                        {sidebarPlanUsage.source === 'fallback' && (
-                          <span style={{ marginLeft: '0.4rem', color: '#6b7890', fontWeight: 500 }}>
-                            loading…
-                          </span>
-                        )}
-                      </span>
-                    </div>
-                  </div>
-                  {onSignOut ? (
-                    <button
-                      type="button"
-                      className="btn ghost small"
-                      onClick={onSignOut}
-                      style={{ marginTop: '0.35rem', alignSelf: 'flex-start' }}
-                    >
-                      Sign out
-                    </button>
+            <section className="workspace-placeholder-card settings-card settings-card--account">
+              <h2>Account &amp; Access</h2>
+              <div className="settings-account-row">
+                <AccountAvatar initials={deriveInitials(userEmail, profileRow?.username)} />
+                <div className="settings-account-identity">
+                  {userEmail ? (
+                    <div className="settings-account-email">{userEmail}</div>
                   ) : null}
+                  <span className="settings-access-pill">
+                    {getDisplayAccessLabel(sidebarPlanUsage)}
+                    {sidebarPlanUsage.source === 'fallback' && (
+                      <span className="settings-access-pill__status">loading…</span>
+                    )}
+                  </span>
                 </div>
-
-                {/* Right: compact usage summary */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', minWidth: 0 }}>
-                  {sidebarPlanUsage.unlimited ? (
-                    <div
-                      style={{
-                        color: '#071a33',
-                        fontSize: '0.95rem',
-                        fontWeight: 600,
-                      }}
-                    >
-                      Unlimited access
-                    </div>
-                  ) : (
-                    <>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-                        <SettingsUsageRow
-                          label="Monthly"
-                          value={formatMonthlyMinutesUsage(sidebarPlanUsage)}
-                        />
-                        <UsageBar
-                          used={sidebarPlanUsage.minutesUsed}
-                          limit={sidebarPlanUsage.minutesLimit}
-                        />
-                      </div>
-                      {sidebarPlanUsage.dailyMinutesLimit != null && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-                          <SettingsUsageRow
-                            label="Today"
-                            value={`${formatLoadingNumber(sidebarPlanUsage.dailyMinutesUsed)} / ${formatLoadingNumber(sidebarPlanUsage.dailyMinutesLimit)} min`}
-                          />
-                          <UsageBar
-                            used={sidebarPlanUsage.dailyMinutesUsed}
-                            limit={sidebarPlanUsage.dailyMinutesLimit}
-                          />
-                        </div>
-                      )}
-                      {sidebarPlanUsage.maxRecordingsPerDay != null && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-                          <SettingsUsageRow
-                            label="Recordings"
-                            value={`${sidebarPlanUsage.recordingsUsedToday ?? 0} / ${sidebarPlanUsage.maxRecordingsPerDay} today`}
-                          />
-                          <UsageBar
-                            used={sidebarPlanUsage.recordingsUsedToday}
-                            limit={sidebarPlanUsage.maxRecordingsPerDay}
-                          />
-                        </div>
-                      )}
-                    </>
-                  )}
+                {onSignOut ? (
                   <button
                     type="button"
-                    className="btn ghost small"
-                    onClick={() => setAccessUsageOpen(true)}
-                    style={{ marginTop: '0.1rem', alignSelf: 'flex-start' }}
+                    className="btn ghost small settings-outline-button"
+                    onClick={onSignOut}
                   >
-                    View details
+                    Sign out
                   </button>
-                </div>
+                ) : null}
               </div>
-              <p
-                style={{
-                  margin: '1.1rem 0 0',
-                  fontSize: '0.78rem',
-                  color: '#9ba3af',
-                  lineHeight: 1.5,
-                }}
-              >
-                Usage is shared across iPad and Mac.
+
+              <div className="settings-card-divider" />
+
+              <div className="settings-usage-stack">
+                {sidebarPlanUsage.unlimited ? (
+                  <div className="settings-unlimited-copy">
+                    <span>{getDisplayAccessLabel(sidebarPlanUsage)}</span>
+                    <strong>Unlimited access</strong>
+                  </div>
+                ) : (
+                  <>
+                    <div className="settings-usage-meter">
+                      <SettingsUsageRow
+                        label="Monthly"
+                        value={`${formatLoadingNumber(sidebarPlanUsage.minutesUsed)} / ${formatLoadingNumber(sidebarPlanUsage.minutesLimit)} min`}
+                      />
+                      <UsageBar
+                        used={sidebarPlanUsage.minutesUsed}
+                        limit={sidebarPlanUsage.minutesLimit}
+                        height={3}
+                      />
+                    </div>
+                    <div className="settings-usage-meter">
+                      <SettingsUsageRow
+                        label="Today"
+                        value={`${formatLoadingNumber(sidebarPlanUsage.dailyMinutesUsed)} / ${formatLoadingNumber(sidebarPlanUsage.dailyMinutesLimit)} min`}
+                      />
+                      <UsageBar
+                        used={sidebarPlanUsage.dailyMinutesUsed}
+                        limit={sidebarPlanUsage.dailyMinutesLimit}
+                        height={3}
+                      />
+                    </div>
+                    <div className="settings-usage-meter">
+                      <SettingsUsageRow
+                        label="Recordings"
+                        value={`${formatLoadingNumber(sidebarPlanUsage.recordingsUsedToday)} / ${formatLoadingNumber(sidebarPlanUsage.maxRecordingsPerDay)}`}
+                      />
+                      <UsageBar
+                        used={sidebarPlanUsage.recordingsUsedToday}
+                        limit={sidebarPlanUsage.maxRecordingsPerDay}
+                        height={3}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <p className="settings-card-footnote">
+                Shared across iPad and Mac
+                <span aria-hidden="true"> · </span>
+                <button type="button" onClick={() => setAccessUsageOpen(true)}>
+                  View details
+                </button>
               </p>
             </section>
           )}
 
           {/* ── 2. Lecture Defaults ─────────────────────────────────────────── */}
-          <section className="workspace-placeholder-card">
-            <h2 style={{ marginBottom: '0.85rem' }}>Lecture Defaults</h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
+          <section className="workspace-placeholder-card settings-card settings-card--defaults">
+            <h2>Lecture Defaults</h2>
+            <div className="settings-chip-list">
               <SettingsChipRow label="Spoken language" chips={['English']} />
               <SettingsChipRow label="Translation" chips={['Chinese Simplified']} />
               <SettingsChipRow label="Output" chips={['Transcript + Summary']} />
               <SettingsChipRow label="Overlay" chips={['Overlay captions']} />
             </div>
-            <p style={{ margin: '0.85rem 0 0', fontSize: '0.78rem', color: '#9ba3af' }}>
-              Configurable language and output controls coming soon.
+            <p className="settings-card-footnote">
+              Configurable language and output controls are coming soon.
             </p>
           </section>
 
           {/* ── 3. Feedback & Support (spans full row) ──────────────────────── */}
-          <section className="workspace-placeholder-card" style={{ gridColumn: '1 / -1' }}>
-            <h2 style={{ marginBottom: '0.5rem' }}>Feedback &amp; Support</h2>
-            <p style={{ margin: '0 0 0.85rem', color: '#6b7890', fontSize: '0.875rem', lineHeight: 1.55 }}>
+          <section className="workspace-placeholder-card settings-card settings-card--support">
+            <h2>Feedback &amp; Support</h2>
+            <p className="settings-support-copy">
               Youmi Lens is available as a free educational tool. Please report issues with
               recording, live captions, translation, summary generation, or overlay display.
             </p>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.75rem',
-                flexWrap: 'wrap',
-              }}
-            >
+            <div className="settings-support-row">
               <button
                 type="button"
                 onClick={() => void openExternalContact(SUPPORT_CONTACT_URL)}
                 title="Email Youmi Lens support"
-                style={{
-                  appearance: 'none',
-                  background: 'transparent',
-                  border: 'none',
-                  padding: 0,
-                  margin: 0,
-                  color: '#2f65b7',
-                  fontSize: '0.9rem',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  textDecoration: 'underline',
-                  textUnderlineOffset: '2px',
-                  fontFamily: 'inherit',
-                }}
+                className="settings-support-email"
               >
                 youmilens@gmail.com
               </button>
-              <div style={{ flex: 1 }} />
               <button
                 type="button"
-                className="btn primary small"
-                onClick={() => void openExternalContact(SUPPORT_CONTACT_URL)}
-              >
-                Email support
-              </button>
-              <button
-                type="button"
-                className="btn ghost small"
+                className="btn ghost small settings-outline-button"
                 onClick={() => {
                   void navigator.clipboard.writeText('youmilens@gmail.com').catch(() => {})
                 }}
               >
-                Copy email
+                Copy
+              </button>
+              <button
+                type="button"
+                className="btn ghost small settings-outline-button"
+                onClick={() => void openExternalContact(SUPPORT_CONTACT_URL)}
+              >
+                Email support
               </button>
             </div>
           </section>
