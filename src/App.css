@@ -1848,7 +1848,9 @@ select.input {
 
 .sidebar-plan-card {
   margin: auto 1rem 1.35rem;
-  padding: 0.9rem 1rem;
+  /* top right bottom left — extra right padding so the metric value never
+     visually crowds the card edge. */
+  padding: 0.9rem 1.25rem 0.9rem 1rem;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.62);
   border: 1px solid rgba(255, 255, 255, 0.55);
@@ -1935,7 +1937,7 @@ select.input {
 .sidebar-plan-metric__value {
   color: #071a33;
   font-size: 0.8rem;
-  font-weight: 700;
+  font-weight: 500;
   white-space: nowrap;
   flex-shrink: 0;
   text-align: right;
