@@ -66,8 +66,11 @@ export class LiveEngine {
   private lastZhInterimChunkEnBySeg = new Map<string, string>()
   private lastZhInterimChunkAtMsBySeg = new Map<string, number>()
 
-  /** Monotonic: only grows via appending de-overlapped novelText from en_final events. */
-  private committedEnFull = ''
+  /**
+   * Committed EN by ASR segment. Repeated finals for the same segment are revisions
+   * from the provider, so replacing the segment preserves saved transcript integrity.
+   */
+  private committedEnBySeg = new Map<string, string>()
 
   // Debounce interim translation: latest interim only, keep secondary line snappy without spamming API.
   private interimTranslateTimer: ReturnType<typeof setTimeout> | null = null
@@ -103,7 +106,7 @@ export class LiveEngine {
     this.latestEnInterimBySeg.clear()
     this.lastZhInterimChunkEnBySeg.clear()
     this.lastZhInterimChunkAtMsBySeg.clear()
-    this.committedEnFull = ''
+    this.committedEnBySeg.clear()
     this.translationQueue = []
     this.activeTranslations = 0
     this.sessionStartMs = Date.now()
@@ -147,7 +150,7 @@ export class LiveEngine {
         if (clean === prev) return
         this.latestEnInterimBySeg.set(ev.segmentId, clean)
 
-        const deo = deOverlapEnglish(this.committedEnFull, clean)
+        const deo = deOverlapEnglish(this.committedEnFull(), clean)
         traceDeOverlap('en_interim', ev.segmentId, clean.length, deo)
         const rawTok = clean.split(/\s+/).filter(Boolean).length
         traceInterimPipeline(ev.segmentId, ev.rev, {
@@ -188,7 +191,7 @@ export class LiveEngine {
           }
           const rawLatest = this.latestEnInterimBySeg.get(capturedId) ?? ''
           if (!rawLatest) return
-          const latestDeo = deOverlapEnglish(this.committedEnFull, rawLatest)
+          const latestDeo = deOverlapEnglish(this.committedEnFull(), rawLatest)
           if (!latestDeo.novelText.trim()) return
           void this.translateInterim(capturedId, latestDeo.novelText, gen)
         }, LiveEngine.INTERIM_TRANSLATE_DEBOUNCE_MS)
@@ -207,7 +210,8 @@ export class LiveEngine {
         if (!cleanFinal) return
         traceEnFinal(ev.segmentId, cleanFinal)
 
-        const deo = deOverlapEnglish(this.committedEnFull, cleanFinal)
+        const alreadyCommitted = this.committedEnBySeg.has(ev.segmentId)
+        const deo = deOverlapEnglish(this.committedEnFull(ev.segmentId), cleanFinal)
         traceDeOverlap('en_final', ev.segmentId, cleanFinal.length, deo)
 
         if (!deo.novelText.trim()) {
@@ -220,11 +224,12 @@ export class LiveEngine {
           return
         }
 
-        this.committedEnFull += (this.committedEnFull ? ' ' : '') + deo.novelText
+        this.committedEnBySeg.set(ev.segmentId, deo.novelText)
         log('en_final', {
           segmentId: ev.segmentId,
+          replacement: alreadyCommitted,
           novelLen: deo.novelText.length,
-          committedLen: this.committedEnFull.length,
+          committedLen: this.committedEnFull().length,
           overlapTokens: deo.overlapTokenCount,
           sessionMs: this.elapsed(),
           translationQueueDepth: this.translationQueue.length,
@@ -305,11 +310,19 @@ export class LiveEngine {
     for (const segId of this.latestEnInterimBySeg.keys()) {
       const raw = this.latestEnInterimBySeg.get(segId) ?? ''
       if (!raw.trim()) continue
-      const deo = deOverlapEnglish(this.committedEnFull, raw)
+      const deo = deOverlapEnglish(this.committedEnFull(segId), raw)
       if (!deo.novelText.trim()) continue
       const gen = this.zhInterimGenBySeg.get(segId) ?? 0
       void this.translateInterim(segId, deo.novelText, gen)
     }
+  }
+
+  private committedEnFull(exceptSegmentId?: string): string {
+    const parts: string[] = []
+    for (const [segmentId, text] of this.committedEnBySeg) {
+      if (segmentId !== exceptSegmentId && text.trim()) parts.push(text)
+    }
+    return parts.join(' ').trim()
   }
 
   stop() {
