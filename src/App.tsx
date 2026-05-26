@@ -48,7 +48,7 @@ import { buildLocalBackupZip, importLocalBackupZip } from './lib/localBackup'
 import { getSupabase, isSupabaseConfigured } from './lib/supabase'
 import { summarizeRecording, transcribeRecording, translateLiveCaption } from './lib/aiClient'
 import { getAiApiBase } from './lib/ai/apiBase'
-import { openMailto } from './lib/openMailto'
+import { openExternalContact } from './lib/openExternalContact'
 import {
   hostedRecordingAiStatusLabel,
   liveCaptionBlockedMessage,
@@ -188,8 +188,13 @@ function emitOverlayStatus(payload: {
 
 const UI_BUILD_MARKER = 'SAFE-DELETE-V1'
 
-const SUPPORT_MAILTO =
-  'mailto:youmilens@gmail.com?subject=Youmi%20Lens%20Support' +
+/**
+ * Gmail compose URL for support requests. See lib/openExternalContact.ts for
+ * why we use Gmail compose instead of `mailto:` on the Mac client.
+ */
+const SUPPORT_CONTACT_URL =
+  'https://mail.google.com/mail/?view=cm&fs=1&to=youmilens@gmail.com' +
+  '&su=Youmi%20Lens%20Support' +
   '&body=Hi%20Youmi%20Lens%20team%2C%0A%0AI%20need%20help%20with%20Youmi%20Lens.' +
   '%0A%0AIssue%3A%0A%5BPlease%20describe%20the%20issue.%5D' +
   '%0A%0ADevice%3A%0AMac%0A%0AThanks.'
@@ -4526,7 +4531,7 @@ useEffect(() => {
               <button
                 type="button"
                 className="btn primary small"
-                onClick={() => void openMailto(SUPPORT_MAILTO)}
+                onClick={() => void openExternalContact(SUPPORT_CONTACT_URL)}
               >
                 Email support
               </button>
