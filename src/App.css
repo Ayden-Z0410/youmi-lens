@@ -1504,6 +1504,12 @@ select.input {
 }
 
 .settings-placeholder-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.settings-top-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
@@ -1511,10 +1517,14 @@ select.input {
 }
 
 .settings-card {
-  height: 100%;
+  height: auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.settings-top-grid > .settings-card {
+  height: 100%;
 }
 
 .settings-card h2 {
@@ -1522,9 +1532,7 @@ select.input {
 }
 
 .settings-card--support {
-  grid-column: 1 / -1;
-  height: auto;
-  margin-top: 0.75rem;
+  width: 100%;
 }
 
 .settings-account-row {
@@ -1641,17 +1649,33 @@ select.input {
   line-height: 1.5 !important;
 }
 
-.settings-card-footnote button {
+.settings-card-footnote--with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.settings-footnote-action {
   appearance: none;
-  border: 0;
-  background: transparent;
-  padding: 0;
-  color: #2f65b7;
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0.18rem 0.56rem;
+  border: 0.5px solid rgba(6, 27, 52, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.36);
+  color: #102a44;
   font: inherit;
-  font-weight: 700;
+  font-weight: 650;
   cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  text-decoration: none;
+}
+
+.settings-footnote-action:hover {
+  background: rgba(255, 255, 255, 0.56);
+  border-color: rgba(6, 27, 52, 0.18);
 }
 
 .settings-chip-list {
@@ -1706,16 +1730,22 @@ select.input {
 .settings-support-email {
   justify-self: start;
   appearance: none;
-  background: rgba(255, 255, 255, 0.34);
-  border: 1px solid rgba(6, 27, 52, 0.08);
-  border-radius: 999px;
-  padding: 0.35rem 0.7rem;
-  color: #2f65b7;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  padding: 0.1rem 0;
+  color: #39506f;
   font: inherit;
-  font-size: 0.9rem;
-  font-weight: 700;
+  font-size: 0.88rem;
+  font-weight: 650;
   cursor: pointer;
   text-decoration: none;
+}
+
+.settings-support-email:hover {
+  color: #102a44;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .settings-outline-button {
@@ -2053,7 +2083,7 @@ select.input {
 }
 
 @media (max-width: 980px) {
-  .settings-placeholder-grid {
+  .settings-top-grid {
     grid-template-columns: 1fr;
   }
 

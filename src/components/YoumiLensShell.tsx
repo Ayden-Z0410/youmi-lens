@@ -46,7 +46,7 @@ export function YoumiLensShell({
 }: YoumiLensShellProps) {
   const SHELL_WIDTH_KEY = 'yl_shell_widths_v1'
   const RESIZER_W = 8
-  const LEFT_MIN = 220
+  const LEFT_MIN = 260
   const LEFT_MAX = 520
   const RIGHT_MIN = 260
   const RIGHT_MAX = 620
@@ -66,7 +66,7 @@ export function YoumiLensShell({
     }
   }
 
-  const [leftWidth, setLeftWidth] = useState(() => readStoredWidths()?.left ?? 240)
+  const [leftWidth, setLeftWidth] = useState(() => clamp(readStoredWidths()?.left ?? 260, LEFT_MIN, LEFT_MAX))
   const [rightWidth, setRightWidth] = useState(() => readStoredWidths()?.right ?? 360)
   const [draggingResizer, setDraggingResizer] = useState<'left' | 'right' | null>(null)
 

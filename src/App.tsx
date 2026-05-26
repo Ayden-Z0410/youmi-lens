@@ -4422,6 +4422,7 @@ useEffect(() => {
           <p>Preferences &amp; account</p>
         </div>
         <div className="settings-placeholder-grid">
+          <div className="settings-top-grid">
 
           {/* ── 1. Account & Access ─────────────────────────────────────────── */}
           {localOnly ? (
@@ -4513,10 +4514,13 @@ useEffect(() => {
                 )}
               </div>
 
-              <p className="settings-card-footnote">
-                Shared across iPad and Mac
-                <span aria-hidden="true"> · </span>
-                <button type="button" onClick={() => setAccessUsageOpen(true)}>
+              <p className="settings-card-footnote settings-card-footnote--with-action">
+                <span>Shared across iPad and Mac</span>
+                <button
+                  type="button"
+                  className="settings-footnote-action"
+                  onClick={() => setAccessUsageOpen(true)}
+                >
                   View details
                 </button>
               </p>
@@ -4536,6 +4540,7 @@ useEffect(() => {
               Configurable language and output controls are coming soon.
             </p>
           </section>
+          </div>
 
           {/* ── 3. Feedback & Support (spans full row) ──────────────────────── */}
           <section className="workspace-placeholder-card settings-card settings-card--support">
