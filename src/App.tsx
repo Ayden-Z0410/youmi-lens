@@ -404,6 +404,18 @@ function formatMonthlyMinutesUsage(usage: SidebarPlanUsage): string {
   return `${formatLoadingNumber(usage.minutesUsed)} / ${formatLoadingNumber(usage.minutesLimit)} min used`
 }
 
+/**
+ * Sidebar Usage card — ultra-compact status summary only. Full details live
+ * in Settings → Access & Usage → View details, so the sidebar shows only:
+ *   - Access label (Free Access / Core Tester / Developer)
+ *   - Monthly minutes (X / Y min)
+ *   - Recordings today (X / Y recordings)
+ *
+ * Daily minutes, max recording length, and max live session length are
+ * intentionally omitted — they belong in the detail modal. Active pill was
+ * removed because the sidebar is too narrow to fit both pill and label
+ * without truncating "Free Access".
+ */
 function SidebarPlanCard({
   usage,
 }: {
@@ -412,9 +424,7 @@ function SidebarPlanCard({
   const displayLabel = getDisplayAccessLabel(usage)
   const isLoading = usage.source === 'fallback'
   const showMonthly = !usage.unlimited && usage.minutesLimit != null
-  const showDaily = !usage.unlimited && usage.dailyMinutesLimit != null
   const showRecordings = !usage.unlimited && usage.maxRecordingsPerDay != null
-  const pillLabel = usage.unlimited ? 'Unlimited' : 'Active'
   return (
     <section className="sidebar-plan-card" aria-label="Usage">
       <div className="sidebar-plan-head">Usage</div>
@@ -422,7 +432,6 @@ function SidebarPlanCard({
         <span className="sidebar-plan-name__label">
           {isLoading ? 'Loading…' : displayLabel}
         </span>
-        {!isLoading && <span className="sidebar-plan-active-pill">{pillLabel}</span>}
       </div>
       {usage.unlimited ? (
         <p className="sidebar-plan-unlimited">Unlimited access</p>
@@ -431,7 +440,6 @@ function SidebarPlanCard({
           {showMonthly && (
             <div className="sidebar-plan-metric">
               <div className="sidebar-plan-metric__line">
-                This month ·{' '}
                 <strong>
                   {formatLoadingNumber(usage.minutesUsed)} / {formatLoadingNumber(usage.minutesLimit)} min
                 </strong>
@@ -439,24 +447,13 @@ function SidebarPlanCard({
               <UsageBar used={usage.minutesUsed} limit={usage.minutesLimit} height={3} />
             </div>
           )}
-          {showDaily && (
-            <div className="sidebar-plan-metric">
-              <div className="sidebar-plan-metric__line">
-                Today ·{' '}
-                <strong>
-                  {formatLoadingNumber(usage.dailyMinutesUsed)} / {formatLoadingNumber(usage.dailyMinutesLimit)} min
-                </strong>
-              </div>
-              <UsageBar used={usage.dailyMinutesUsed} limit={usage.dailyMinutesLimit} height={3} />
-            </div>
-          )}
           {showRecordings && (
             <div className="sidebar-plan-metric">
               <div className="sidebar-plan-metric__line">
-                Recordings today ·{' '}
                 <strong>
                   {usage.recordingsUsedToday ?? 0} / {usage.maxRecordingsPerDay}
                 </strong>
+                {' '}recordings
               </div>
               <UsageBar
                 used={usage.recordingsUsedToday}
