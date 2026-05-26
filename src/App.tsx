@@ -398,70 +398,6 @@ function formatLoadingNumber(value: number | null): string {
 }
 
 /**
- * Sidebar Usage card — ultra-compact status summary only. Full details live
- * in Settings → Access & Usage → View details, so the sidebar shows only:
- *   - Access label (Free Access / Core Tester / Developer)
- *   - Monthly minutes (X / Y min)
- *   - Recordings today (X / Y recordings)
- *
- * Daily minutes, max recording length, and max live session length are
- * intentionally omitted — they belong in the detail modal. Active pill was
- * removed because the sidebar is too narrow to fit both pill and label
- * without truncating "Free Access".
- */
-function SidebarPlanCard({
-  usage,
-}: {
-  usage: SidebarPlanUsage
-}) {
-  const displayLabel = getDisplayAccessLabel(usage)
-  const isLoading = usage.source === 'fallback'
-  const showMonthly = !usage.unlimited && usage.minutesLimit != null
-  const showRecordings = !usage.unlimited && usage.maxRecordingsPerDay != null
-  return (
-    <section className="sidebar-plan-card" aria-label="Usage">
-      <div className="sidebar-plan-head">Usage</div>
-      <div className="sidebar-plan-name">
-        <span className="sidebar-plan-name__label">
-          {isLoading ? 'Loading…' : displayLabel}
-        </span>
-      </div>
-      {usage.unlimited ? (
-        <p className="sidebar-plan-unlimited">Unlimited access</p>
-      ) : (
-        <>
-          {showMonthly && (
-            <div className="sidebar-plan-metric">
-              <div className="sidebar-plan-metric__line">
-                <strong>
-                  {formatLoadingNumber(usage.minutesUsed)} / {formatLoadingNumber(usage.minutesLimit)} min
-                </strong>
-              </div>
-              <UsageBar used={usage.minutesUsed} limit={usage.minutesLimit} height={3} />
-            </div>
-          )}
-          {showRecordings && (
-            <div className="sidebar-plan-metric">
-              <div className="sidebar-plan-metric__line">
-                <strong>
-                  {usage.recordingsUsedToday ?? 0} / {usage.maxRecordingsPerDay}
-                </strong>
-                {' '}recordings
-              </div>
-              <UsageBar
-                used={usage.recordingsUsedToday}
-                limit={usage.maxRecordingsPerDay}
-                height={3}
-              />
-            </div>
-          )}
-        </>
-      )}
-    </section>
-  )
-}
-
-/**
  * Compact label/value row used inside Settings cards. Replaces the previous
  * uppercase-overload <dl>/<dt>/<dd> pattern with a calmer single-line layout
  * that mirrors macOS Settings rows: label on the left, value on the right.
@@ -5083,7 +5019,6 @@ useEffect(() => {
               </button>
             </nav>
           </div>
-          <SidebarPlanCard usage={sidebarPlanUsage} />
           <div className="yl-sidebar-divider record-sidebar-admin-hidden" aria-hidden />
           <div
             id="yl-library"
