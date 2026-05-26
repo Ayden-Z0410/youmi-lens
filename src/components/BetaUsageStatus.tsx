@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { designTokens } from '../design-system/tokens'
 import { getAiApiBase } from '../lib/ai/apiBase'
+import { openMailto } from '../lib/openMailto'
 
 /**
  * Access & Usage card — Mac equivalent of the iPad "Access & Usage" screen.
@@ -56,35 +57,14 @@ const REQUEST_HELPER_COPY =
 const UNLIMITED_BODY_COPY = 'This account has unlimited developer access.'
 
 const REQUEST_MAILTO =
-  'mailto:youmilens@gmail.com?subject=Youmi%20Lens%20Beta%20Access%20Request'
+  'mailto:youmilens@gmail.com?subject=Youmi%20Lens%20Beta%20Access%20Request' +
+  '&body=Hi%20Youmi%20Lens%20team%2C%0A%0AI%20would%20like%20to%20request%20more%20beta%20access.' +
+  '%0A%0AMy%20use%20case%3A%0A%5BPlease%20briefly%20describe%20how%20you%20use%20Youmi%20Lens%20for%20coursework.%5D' +
+  '%0A%0AThanks.'
 
 function formatMinutes(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '—'
   return Number.isInteger(value) ? String(value) : value.toFixed(1)
-}
-
-function isTauriWebviewShell(): boolean {
-  if (typeof window === 'undefined') return false
-  return (
-    '__TAURI_INTERNALS__' in window ||
-    window.location.protocol === 'tauri:' ||
-    window.location.hostname === 'tauri.localhost'
-  )
-}
-
-async function openRequestAccess(): Promise<void> {
-  if (isTauriWebviewShell()) {
-    try {
-      const { open } = await import('@tauri-apps/plugin-shell')
-      await open(REQUEST_MAILTO)
-      return
-    } catch {
-      // fall through to web fallback
-    }
-  }
-  if (typeof window !== 'undefined') {
-    window.location.assign(REQUEST_MAILTO)
-  }
 }
 
 function MetricRow({
@@ -347,7 +327,7 @@ export function BetaUsageStatus({ open, supabase }: Props) {
             padding: `${px(t.spacing[2])} ${px(t.spacing[3])}`,
             fontSize: t.fontSize.xs,
           }}
-          onClick={() => void openRequestAccess()}
+          onClick={() => void openMailto(REQUEST_MAILTO)}
         >
           Request more access
         </button>

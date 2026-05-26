@@ -48,6 +48,7 @@ import { buildLocalBackupZip, importLocalBackupZip } from './lib/localBackup'
 import { getSupabase, isSupabaseConfigured } from './lib/supabase'
 import { summarizeRecording, transcribeRecording, translateLiveCaption } from './lib/aiClient'
 import { getAiApiBase } from './lib/ai/apiBase'
+import { openMailto } from './lib/openMailto'
 import {
   hostedRecordingAiStatusLabel,
   liveCaptionBlockedMessage,
@@ -186,6 +187,12 @@ function emitOverlayStatus(payload: {
 // ──────────────────────────────────────────────────────────────────────────────
 
 const UI_BUILD_MARKER = 'SAFE-DELETE-V1'
+
+const SUPPORT_MAILTO =
+  'mailto:youmilens@gmail.com?subject=Youmi%20Lens%20Support' +
+  '&body=Hi%20Youmi%20Lens%20team%2C%0A%0AI%20need%20help%20with%20Youmi%20Lens.' +
+  '%0A%0AIssue%3A%0A%5BPlease%20describe%20the%20issue.%5D' +
+  '%0A%0ADevice%3A%0AMac%0A%0AThanks.'
 
 type SidebarPlanUsage = {
   /** User-facing access label from the backend (e.g. 'Free Beta', 'Core Tester', 'Developer'). */
@@ -4502,20 +4509,27 @@ useEffect(() => {
           <section className="workspace-placeholder-card" style={{ gridColumn: '1 / -1' }}>
             <h2 style={{ marginBottom: '0.5rem' }}>Feedback &amp; Support</h2>
             <p style={{ margin: '0 0 0.85rem', color: '#6b7890', fontSize: '0.875rem', lineHeight: 1.55 }}>
-              Youmi Lens is currently in beta. Please report issues with recording, live captions,
-              translation, summary generation, or overlay display.
+              Need help with recording, live captions, summaries, or overlay display? Email us
+              and we&rsquo;ll take a look.
             </p>
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: '0.85rem',
+                gap: '0.6rem',
                 flexWrap: 'wrap',
               }}
             >
               <span style={{ color: '#071a33', fontSize: '0.9rem', fontWeight: 600 }}>
                 youmilens@gmail.com
               </span>
+              <button
+                type="button"
+                className="btn primary small"
+                onClick={() => void openMailto(SUPPORT_MAILTO)}
+              >
+                Email support
+              </button>
               <button
                 type="button"
                 className="btn ghost small"
