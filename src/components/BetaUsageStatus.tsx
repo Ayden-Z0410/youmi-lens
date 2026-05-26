@@ -50,6 +50,11 @@ const FOOTER_COPY =
 const CORE_TESTER_COPY =
   'Extended testing access is available for active users. Contact youmilens@gmail.com if you need more capacity for coursework.'
 
+const REQUEST_HELPER_COPY =
+  'Need more access for coursework? Email us and tell us how you are using Youmi Lens.'
+
+const UNLIMITED_BODY_COPY = 'This account has unlimited developer access.'
+
 const REQUEST_MAILTO =
   'mailto:youmilens@gmail.com?subject=Youmi%20Lens%20Beta%20Access%20Request'
 
@@ -192,34 +197,33 @@ export function BetaUsageStatus({ open, supabase }: Props) {
         </button>
       </div>
 
-      {/* Account access */}
+      {/* Account access — calmer single-line row */}
       <div
         style={{
           marginTop: px(t.spacing[4]),
           paddingTop: px(t.spacing[3]),
           borderTop: `1px solid ${t.colors.border}`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: px(t.spacing[3]),
         }}
       >
-        <div
+        <span style={{ color: t.colors.textMuted, fontSize: t.fontSize.sm }}>Account access</span>
+        <span
           style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            padding: '0.18rem 0.6rem',
+            borderRadius: 999,
+            background: 'rgba(220, 235, 250, 0.78)',
+            color: '#2f65b7',
             fontSize: t.fontSize.xs,
-            textTransform: 'uppercase',
-            letterSpacing: '0.06em',
-            color: t.colors.textMuted,
-          }}
-        >
-          Account access
-        </div>
-        <div
-          style={{
-            marginTop: px(t.spacing[1]),
-            fontSize: t.fontSize.sm,
-            fontWeight: 600,
-            color: t.colors.text,
+            fontWeight: 700,
           }}
         >
           {displayName}
-        </div>
+        </span>
       </div>
 
       {error ? (
@@ -246,7 +250,7 @@ export function BetaUsageStatus({ open, supabase }: Props) {
           >
             {unlimited ? (
               <div style={{ fontSize: t.fontSize.sm, color: t.colors.text, fontWeight: 500 }}>
-                This account has unlimited developer access.
+                {UNLIMITED_BODY_COPY}
               </div>
             ) : (
               <>
@@ -325,6 +329,16 @@ export function BetaUsageStatus({ open, supabase }: Props) {
           gap: px(t.spacing[2]),
         }}
       >
+        <p
+          style={{
+            margin: 0,
+            fontSize: t.fontSize.sm,
+            color: t.colors.text,
+            lineHeight: t.lineHeight.relaxed,
+          }}
+        >
+          {REQUEST_HELPER_COPY}
+        </p>
         <button
           type="button"
           className="ds-btn ds-btn--secondary"

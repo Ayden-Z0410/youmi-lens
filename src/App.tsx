@@ -437,6 +437,38 @@ function SidebarPlanCard({
   )
 }
 
+/**
+ * Compact label/value row used inside Settings cards. Replaces the previous
+ * uppercase-overload <dl>/<dt>/<dd> pattern with a calmer single-line layout
+ * that mirrors macOS Settings rows: label on the left, value on the right.
+ */
+function SettingsUsageRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        gap: '0.85rem',
+        fontSize: '0.875rem',
+        lineHeight: 1.45,
+      }}
+    >
+      <span style={{ color: '#6b7890' }}>{label}</span>
+      <span
+        style={{
+          color: '#071a33',
+          fontWeight: 600,
+          fontVariantNumeric: 'tabular-nums',
+          textAlign: 'right',
+        }}
+      >
+        {value}
+      </span>
+    </div>
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 function trashConfirmPrimaryLine(scope: TrashDeletionScope, count: number): string {
@@ -4322,135 +4354,168 @@ useEffect(() => {
         </div>
         <div className="settings-placeholder-grid">
 
-          {/* ── 1. Account ──────────────────────────────────────────────────── */}
-          <section className="workspace-placeholder-card">
-            <h2 style={{ marginBottom: '1rem' }}>Account</h2>
-            <dl style={{ margin: 0, display: 'grid', gap: '0.65rem' }}>
-              {!localOnly && userEmail ? (
-                <div>
-                  <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Signed in as</dt>
-                  <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500, wordBreak: 'break-all' }}>{userEmail}</dd>
-                </div>
-              ) : localOnly ? (
-                <div>
-                  <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Mode</dt>
-                  <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>Local only</dd>
-                </div>
-              ) : null}
-            </dl>
-            {!localOnly && onSignOut ? (
-              <button
-                type="button"
-                className="btn ghost small"
-                onClick={onSignOut}
-                style={{ marginTop: '1.1rem' }}
-              >
-                Sign out
-              </button>
-            ) : null}
-          </section>
-
-          {/* ── 2. Access & Usage (compact summary; View details opens modal) ── */}
-          {!localOnly ? (
-            <section className="workspace-placeholder-card">
-              <h2 style={{ marginBottom: '1rem' }}>Access &amp; Usage</h2>
-              <dl style={{ margin: 0, display: 'grid', gap: '0.65rem' }}>
-                <div>
-                  <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Account access</dt>
-                  <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
-                    {getDisplayAccessLabel(sidebarPlanUsage)}
-                    {sidebarPlanUsage.source === 'fallback' && (
-                      <span style={{ marginLeft: '0.4rem', fontSize: '0.75rem', color: '#9ba3af' }}>(loading…)</span>
-                    )}
-                  </dd>
-                </div>
-                {sidebarPlanUsage.unlimited ? (
-                  <div>
-                    <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Limits</dt>
-                    <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>Unlimited access</dd>
-                  </div>
-                ) : (
-                  <>
-                    <div>
-                      <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Monthly</dt>
-                      <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
-                        {formatMonthlyMinutesUsage(sidebarPlanUsage)}
-                      </dd>
-                    </div>
-                    {sidebarPlanUsage.dailyMinutesLimit != null && (
-                      <div>
-                        <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Today</dt>
-                        <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
-                          {formatLoadingNumber(sidebarPlanUsage.dailyMinutesUsed)} / {formatLoadingNumber(sidebarPlanUsage.dailyMinutesLimit)} min used
-                        </dd>
-                      </div>
-                    )}
-                    {sidebarPlanUsage.maxRecordingsPerDay != null && (
-                      <div>
-                        <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Recordings</dt>
-                        <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
-                          {sidebarPlanUsage.recordingsUsedToday ?? 0} / {sidebarPlanUsage.maxRecordingsPerDay} today
-                        </dd>
-                      </div>
-                    )}
-                  </>
-                )}
-              </dl>
-              <button
-                type="button"
-                className="btn ghost small"
-                onClick={() => setAccessUsageOpen(true)}
-                style={{ marginTop: '1.1rem' }}
-              >
-                View details
-              </button>
+          {/* ── 1. Account & Access (combined; spans 2 columns) ──────────────── */}
+          {localOnly ? (
+            <section className="workspace-placeholder-card" style={{ gridColumn: 'span 2' }}>
+              <h2 style={{ marginBottom: '0.85rem' }}>Account</h2>
+              <p style={{ margin: 0, color: '#39506f', fontSize: '0.95rem', fontWeight: 600 }}>
+                Local only
+              </p>
+              <p style={{ margin: '0.45rem 0 0', color: '#6b7890', fontSize: '0.85rem', lineHeight: 1.55 }}>
+                Sign in to share usage across iPad and Mac.
+              </p>
             </section>
-          ) : null}
+          ) : (
+            <section className="workspace-placeholder-card" style={{ gridColumn: 'span 2' }}>
+              <h2 style={{ marginBottom: '1rem' }}>Account &amp; Access</h2>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+                  gap: '1.4rem',
+                  alignItems: 'start',
+                }}
+              >
+                {/* Left: identity */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.7rem', minWidth: 0 }}>
+                  {userEmail ? (
+                    <div
+                      style={{
+                        margin: 0,
+                        color: '#071a33',
+                        fontSize: '0.95rem',
+                        fontWeight: 600,
+                        wordBreak: 'break-all',
+                        lineHeight: 1.35,
+                      }}
+                    >
+                      {userEmail}
+                    </div>
+                  ) : null}
+                  <div>
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '0.22rem 0.65rem',
+                        borderRadius: 999,
+                        background: 'rgba(220, 235, 250, 0.78)',
+                        color: '#2f65b7',
+                        fontSize: '0.78rem',
+                        fontWeight: 700,
+                        letterSpacing: '0.01em',
+                      }}
+                    >
+                      {getDisplayAccessLabel(sidebarPlanUsage)}
+                      {sidebarPlanUsage.source === 'fallback' && (
+                        <span style={{ marginLeft: '0.4rem', color: '#6b7890', fontWeight: 500 }}>
+                          loading…
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  {onSignOut ? (
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      onClick={onSignOut}
+                      style={{ marginTop: '0.5rem', alignSelf: 'flex-start' }}
+                    >
+                      Sign out
+                    </button>
+                  ) : null}
+                </div>
 
-          {/* ── 2. Lecture Defaults ────────────────────────────────────────── */}
+                {/* Right: compact usage summary */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', minWidth: 0 }}>
+                  {sidebarPlanUsage.unlimited ? (
+                    <div
+                      style={{
+                        color: '#071a33',
+                        fontSize: '0.95rem',
+                        fontWeight: 600,
+                      }}
+                    >
+                      Unlimited access
+                    </div>
+                  ) : (
+                    <>
+                      <SettingsUsageRow
+                        label="Monthly"
+                        value={formatMonthlyMinutesUsage(sidebarPlanUsage)}
+                      />
+                      {sidebarPlanUsage.dailyMinutesLimit != null && (
+                        <SettingsUsageRow
+                          label="Today"
+                          value={`${formatLoadingNumber(sidebarPlanUsage.dailyMinutesUsed)} / ${formatLoadingNumber(sidebarPlanUsage.dailyMinutesLimit)} min`}
+                        />
+                      )}
+                      {sidebarPlanUsage.maxRecordingsPerDay != null && (
+                        <SettingsUsageRow
+                          label="Recordings"
+                          value={`${sidebarPlanUsage.recordingsUsedToday ?? 0} / ${sidebarPlanUsage.maxRecordingsPerDay} today`}
+                        />
+                      )}
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="btn ghost small"
+                    onClick={() => setAccessUsageOpen(true)}
+                    style={{ marginTop: '0.35rem', alignSelf: 'flex-start' }}
+                  >
+                    View details
+                  </button>
+                </div>
+              </div>
+              <p
+                style={{
+                  margin: '1.1rem 0 0',
+                  fontSize: '0.78rem',
+                  color: '#9ba3af',
+                  lineHeight: 1.5,
+                }}
+              >
+                Usage is shared across iPad and Mac.
+              </p>
+            </section>
+          )}
+
+          {/* ── 2. Lecture Defaults ─────────────────────────────────────────── */}
           <section className="workspace-placeholder-card">
-            <h2 style={{ marginBottom: '1rem' }}>Lecture Defaults</h2>
-            <dl style={{ margin: 0, display: 'grid', gap: '0.65rem' }}>
-              <div>
-                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Spoken language</dt>
-                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>English</dd>
-              </div>
-              <div>
-                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Translation</dt>
-                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>Chinese Simplified</dd>
-              </div>
-              <div>
-                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Default output</dt>
-                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>Live captions + bilingual summary</dd>
-              </div>
-              <div>
-                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Overlay behavior</dt>
-                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
-                  Minimize main window on open · Visible across Spaces
-                </dd>
-              </div>
-            </dl>
-            <p style={{ margin: '1rem 0 0', fontSize: '0.78rem', color: '#9ba3af' }}>
+            <h2 style={{ marginBottom: '0.85rem' }}>Lecture Defaults</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
+              <SettingsUsageRow label="Spoken language" value="English" />
+              <SettingsUsageRow label="Translation" value="Chinese Simplified" />
+              <SettingsUsageRow label="Default output" value="Live captions + bilingual summary" />
+              <SettingsUsageRow
+                label="Overlay"
+                value="Minimize on open · Visible across Spaces"
+              />
+            </div>
+            <p style={{ margin: '0.85rem 0 0', fontSize: '0.78rem', color: '#9ba3af' }}>
               Configurable language and output controls coming soon.
             </p>
           </section>
 
-          {/* ── 3. Feedback & Support ──────────────────────────────────────── */}
-          <section className="workspace-placeholder-card">
-            <h2 style={{ marginBottom: '0.65rem' }}>Feedback &amp; Support</h2>
+          {/* ── 3. Feedback & Support (spans full row) ──────────────────────── */}
+          <section className="workspace-placeholder-card" style={{ gridColumn: '1 / -1' }}>
+            <h2 style={{ marginBottom: '0.5rem' }}>Feedback &amp; Support</h2>
             <p style={{ margin: '0 0 0.85rem', color: '#6b7890', fontSize: '0.875rem', lineHeight: 1.55 }}>
-              Youmi Lens is currently in beta. Please report issues with recording,
-              live captions, translation, summary generation, or overlay display.
+              Youmi Lens is currently in beta. Please report issues with recording, live captions,
+              translation, summary generation, or overlay display.
             </p>
-            <dl style={{ margin: '0 0 1rem', display: 'grid', gap: '0.4rem' }}>
-              <div>
-                <dt style={{ fontSize: '0.72rem', fontWeight: 700, color: '#6b7890', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.18rem' }}>Support email</dt>
-                <dd style={{ margin: 0, color: '#071a33', fontSize: '0.9rem', fontWeight: 500 }}>
-                  youmilens@gmail.com
-                </dd>
-              </div>
-            </dl>
-            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.85rem',
+                flexWrap: 'wrap',
+              }}
+            >
+              <span style={{ color: '#071a33', fontSize: '0.9rem', fontWeight: 600 }}>
+                youmilens@gmail.com
+              </span>
               <button
                 type="button"
                 className="btn ghost small"
