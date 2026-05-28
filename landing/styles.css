@@ -3317,64 +3317,11 @@ h3 {
   stroke-linejoin: round;
 }
 
-/* Download integrity block — calm, monospace, wraps cleanly on narrow widths. */
-.download-checksum {
-  margin: 22px 0 0;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px 14px;
-  align-items: baseline;
-  max-width: 560px;
-  padding: 16px 18px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.62);
-  backdrop-filter: blur(18px);
-  box-shadow: 0 8px 24px rgba(6, 27, 52, 0.06);
-}
-
-.download-checksum dt {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 780;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(7, 26, 51, 0.58);
-}
-
-.download-checksum dd {
-  margin: 0;
-  min-width: 0;
-}
-
-.download-checksum code {
-  display: inline-block;
-  max-width: 100%;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: rgba(7, 26, 51, 0.86);
-  word-break: break-all;
-  overflow-wrap: anywhere;
-}
-
 /* -------------------------------------------------------------------------
    Mobile responsive pass.
-   Adds tighter behavior for tablets and phones (≤ 768 / 430 / 390 / 375 px).
-   Desktop layouts above 768px remain untouched.
+   All rules below are scoped to media queries so the accepted desktop design
+   (≥ 1025 px) is unchanged.
    ------------------------------------------------------------------------- */
-
-html,
-body {
-  max-width: 100%;
-  overflow-x: hidden;
-}
-
-img,
-svg,
-video {
-  max-width: 100%;
-}
 
 @media (max-width: 1024px) {
   .chapter {
@@ -3383,20 +3330,9 @@ video {
 }
 
 @media (max-width: 768px) {
-  /* Global containment — keep every block within the viewport. */
-  .chapter,
-  .site-nav,
-  .site-footer,
-  .hero,
-  .hero-copy,
-  .showcase-wrap,
-  .showcase-window,
-  .feature-system,
-  .privacy-grid,
-  .download-simple,
-  .download-copy,
-  .download-visual,
-  .support-panel {
+  img,
+  svg,
+  video {
     max-width: 100%;
   }
 
@@ -3406,7 +3342,7 @@ video {
     padding: 88px 0 56px;
   }
 
-  /* Long strings (file names, URLs, hashes) must wrap. */
+  /* Long strings wrap cleanly. */
   .download-meta,
   .install-card,
   .build-details,
@@ -3518,7 +3454,6 @@ video {
     height: auto;
   }
 
-  /* Hide the multi-column inner panes on phones; keep the recording fragment. */
   .sidebar-fragment,
   .summary-fragment {
     display: none;
@@ -3624,27 +3559,6 @@ video {
     font-size: 13px;
   }
 
-  .download-checksum {
-    margin-left: auto;
-    margin-right: auto;
-    grid-template-columns: 1fr;
-    gap: 4px 0;
-    padding: 14px 16px;
-    text-align: left;
-  }
-
-  .download-checksum dt {
-    margin-top: 6px;
-  }
-
-  .download-checksum dt:first-child {
-    margin-top: 0;
-  }
-
-  .download-checksum code {
-    font-size: 11.5px;
-  }
-
   .download-visual {
     min-height: 240px;
     border-radius: 22px;
@@ -3690,7 +3604,7 @@ video {
     justify-content: flex-start;
   }
 
-  /* Footer — let pipe-separated items wrap naturally, no clipped border. */
+  /* Footer — center, no clipped right border on single-column. */
   .site-footer {
     width: min(100% - 20px, var(--max-width));
     padding: 28px 0 32px;
@@ -3714,30 +3628,46 @@ video {
   }
 }
 
-/* iPhone Pro Max ≈ 430px and below. */
-@media (max-width: 430px) {
+/* Smaller phones (≤ 520 px) — minor polish, still mobile-only. */
+@media (max-width: 520px) {
   .chapter {
     width: min(100% - 16px, var(--max-width));
     padding: 80px 0 48px;
   }
 
+  .site-nav {
+    padding: 6px 8px 6px 12px;
+  }
+
+  .brand-wordmark {
+    width: 80px;
+  }
+
+  .nav-download {
+    padding: 0 12px;
+    font-size: 11.5px;
+  }
+
   h1 {
-    font-size: clamp(36px, 12vw, 48px);
+    font-size: clamp(32px, 11.5vw, 46px);
   }
 
   h2 {
     font-size: clamp(26px, 8vw, 36px);
   }
 
-  .recording-fragment {
-    margin: 10px;
-    padding: 16px;
+  .hero-subtitle {
+    font-size: 15px;
   }
 
   .feature-panel,
   .privacy-grid article {
     padding: 20px;
     border-radius: 20px;
+  }
+
+  .download-copy h2 {
+    font-size: clamp(32px, 9vw, 44px);
   }
 
   .download-visual {
@@ -3752,58 +3682,6 @@ video {
   .download-dock span {
     width: 26px;
     height: 26px;
-  }
-}
-
-/* iPhone Pro / standard ≈ 390px. */
-@media (max-width: 390px) {
-  .chapter {
-    padding: 76px 0 44px;
-  }
-
-  .site-nav {
-    padding: 6px 8px 6px 12px;
-  }
-
-  .brand-wordmark {
-    width: 78px;
-  }
-
-  .nav-download {
-    padding: 0 12px;
-    font-size: 11.5px;
-  }
-
-  h1 {
-    font-size: clamp(32px, 11.5vw, 42px);
-  }
-
-  .hero-subtitle {
-    font-size: 15px;
-  }
-
-  .feature-panel,
-  .privacy-grid article {
-    padding: 18px;
-  }
-}
-
-/* Small iPhone (SE / mini) ≈ 375px and below. */
-@media (max-width: 375px) {
-  .chapter {
-    width: min(100% - 12px, var(--max-width));
-  }
-
-  .hero-copy {
-    margin: 12px 0 22px;
-  }
-
-  h1 {
-    font-size: clamp(30px, 11vw, 38px);
-  }
-
-  .download-copy h2 {
-    font-size: clamp(32px, 9vw, 40px);
   }
 }
 
