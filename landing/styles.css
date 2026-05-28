@@ -3316,3 +3316,503 @@ h3 {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+
+/* Download integrity block — calm, monospace, wraps cleanly on narrow widths. */
+.download-checksum {
+  margin: 22px 0 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 14px;
+  align-items: baseline;
+  max-width: 560px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 8px 24px rgba(6, 27, 52, 0.06);
+}
+
+.download-checksum dt {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(7, 26, 51, 0.58);
+}
+
+.download-checksum dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.download-checksum code {
+  display: inline-block;
+  max-width: 100%;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: rgba(7, 26, 51, 0.86);
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+/* -------------------------------------------------------------------------
+   Mobile responsive pass.
+   Adds tighter behavior for tablets and phones (≤ 768 / 430 / 390 / 375 px).
+   Desktop layouts above 768px remain untouched.
+   ------------------------------------------------------------------------- */
+
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+img,
+svg,
+video {
+  max-width: 100%;
+}
+
+@media (max-width: 1024px) {
+  .chapter {
+    width: min(100% - 28px, var(--max-width));
+  }
+}
+
+@media (max-width: 768px) {
+  /* Global containment — keep every block within the viewport. */
+  .chapter,
+  .site-nav,
+  .site-footer,
+  .hero,
+  .hero-copy,
+  .showcase-wrap,
+  .showcase-window,
+  .feature-system,
+  .privacy-grid,
+  .download-simple,
+  .download-copy,
+  .download-visual,
+  .support-panel {
+    max-width: 100%;
+  }
+
+  .chapter {
+    width: min(100% - 20px, var(--max-width));
+    min-height: auto;
+    padding: 88px 0 56px;
+  }
+
+  /* Long strings (file names, URLs, hashes) must wrap. */
+  .download-meta,
+  .install-card,
+  .build-details,
+  .site-footer,
+  .support-email,
+  .download-copy p,
+  .feature-panel p,
+  .privacy-grid article {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  /* Navigation — keep logo + CTA only. */
+  .site-nav {
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    padding: 6px 10px 6px 14px;
+  }
+
+  .nav-links {
+    display: none;
+  }
+
+  .nav-download {
+    justify-self: end;
+    min-height: 38px;
+    padding: 0 14px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .brand-wordmark {
+    width: 86px;
+  }
+
+  /* Hero — stack copy above preview, neutralize the 3D tilt. */
+  .hero {
+    width: min(100% - 16px, var(--max-width));
+    padding: 78px 0 44px;
+    perspective: none;
+  }
+
+  .hero-copy {
+    width: 100%;
+    margin: 16px 0 26px;
+    text-align: center;
+    transform: none;
+  }
+
+  .hero-copy h1,
+  .hero-copy .hero-subtitle {
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  h1 {
+    max-width: 100%;
+    font-size: clamp(40px, 11vw, 56px);
+    line-height: 1;
+  }
+
+  .hero-subtitle {
+    max-width: 460px;
+    font-size: 16px;
+    line-height: 1.4;
+  }
+
+  .hero-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .hero-actions .button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .trust-badges {
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .trust-badges span {
+    font-size: 12px;
+    padding: 0 10px;
+  }
+
+  /* App preview — static, no rotateX, fits the viewport. */
+  .showcase-wrap {
+    position: relative;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    width: 100%;
+    margin: 0 auto;
+    transform: none !important;
+    transition: none;
+  }
+
+  .showcase-window {
+    width: 100%;
+    height: auto;
+    border-radius: 22px;
+  }
+
+  .app-shell {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  /* Hide the multi-column inner panes on phones; keep the recording fragment. */
+  .sidebar-fragment,
+  .summary-fragment {
+    display: none;
+  }
+
+  .recording-fragment {
+    margin: 14px;
+    padding: 18px;
+    border-radius: 22px;
+  }
+
+  .app-topbar {
+    height: auto;
+    min-height: 56px;
+    padding: 14px 18px;
+    flex-wrap: wrap;
+  }
+
+  .app-topbar span,
+  .account-pill {
+    display: none;
+  }
+
+  /* Workspace screen stack — collapse to a single static preview. */
+  .screen-stack-stage {
+    position: relative;
+    min-height: 0;
+    perspective: none;
+    padding: 0;
+  }
+
+  .screen-stack-stage .screen-mid,
+  .screen-stack-stage .screen-back {
+    display: none;
+  }
+
+  .screen-stack-stage .product-screen.screen-front,
+  .screen-stack-stage .screen-front {
+    position: relative;
+    left: auto;
+    top: auto;
+    width: 100%;
+    margin: 0 auto;
+    transform: none !important;
+    transition: none;
+    box-shadow: 0 18px 40px rgba(6, 27, 52, 0.14);
+  }
+
+  /* Feature + privacy grids — single column. */
+  .feature-system,
+  .privacy-grid,
+  .dual-summary {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .feature-wide {
+    grid-column: auto;
+  }
+
+  .feature-panel,
+  .privacy-grid article {
+    min-height: 0;
+    padding: 22px;
+    border-radius: 22px;
+  }
+
+  /* Download section — center stack, full-width button. */
+  .download-simple {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .download-copy {
+    order: -1;
+    padding: 8px 0 0;
+    text-align: center;
+  }
+
+  .download-copy h2 {
+    font-size: clamp(36px, 9vw, 52px);
+    line-height: 1;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .download-copy > p:not(.eyebrow):not(.download-meta) {
+    margin: 18px auto 0;
+    font-size: 16px;
+  }
+
+  .download-actions {
+    justify-content: center;
+    margin-top: 22px;
+  }
+
+  .download-actions .button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .download-meta {
+    font-size: 13px;
+  }
+
+  .download-checksum {
+    margin-left: auto;
+    margin-right: auto;
+    grid-template-columns: 1fr;
+    gap: 4px 0;
+    padding: 14px 16px;
+    text-align: left;
+  }
+
+  .download-checksum dt {
+    margin-top: 6px;
+  }
+
+  .download-checksum dt:first-child {
+    margin-top: 0;
+  }
+
+  .download-checksum code {
+    font-size: 11.5px;
+  }
+
+  .download-visual {
+    min-height: 240px;
+    border-radius: 22px;
+  }
+
+  .download-dock {
+    bottom: 30px;
+    width: min(80%, 280px);
+    height: 56px;
+    gap: 9px;
+  }
+
+  .download-dock span {
+    width: 30px;
+    height: 30px;
+    border-radius: 10px;
+  }
+
+  /* Support panel — stack cleanly. */
+  .support-panel {
+    grid-template-columns: 1fr;
+    gap: 24px;
+    padding: 22px;
+    border-radius: 22px;
+  }
+
+  .support-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .support-actions .button {
+    width: 100%;
+  }
+
+  .support-email {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  .support-categories {
+    justify-content: flex-start;
+  }
+
+  /* Footer — let pipe-separated items wrap naturally, no clipped border. */
+  .site-footer {
+    width: min(100% - 20px, var(--max-width));
+    padding: 28px 0 32px;
+    text-align: center;
+  }
+
+  .site-footer div {
+    justify-content: center;
+    gap: 8px 14px;
+  }
+
+  .site-footer strong {
+    margin-right: 0;
+    padding-right: 0;
+    border-right: 0;
+    width: 100%;
+  }
+
+  .hero-scroll-cue {
+    display: none;
+  }
+}
+
+/* iPhone Pro Max ≈ 430px and below. */
+@media (max-width: 430px) {
+  .chapter {
+    width: min(100% - 16px, var(--max-width));
+    padding: 80px 0 48px;
+  }
+
+  h1 {
+    font-size: clamp(36px, 12vw, 48px);
+  }
+
+  h2 {
+    font-size: clamp(26px, 8vw, 36px);
+  }
+
+  .recording-fragment {
+    margin: 10px;
+    padding: 16px;
+  }
+
+  .feature-panel,
+  .privacy-grid article {
+    padding: 20px;
+    border-radius: 20px;
+  }
+
+  .download-visual {
+    min-height: 200px;
+  }
+
+  .download-dock {
+    width: min(86%, 240px);
+    height: 50px;
+  }
+
+  .download-dock span {
+    width: 26px;
+    height: 26px;
+  }
+}
+
+/* iPhone Pro / standard ≈ 390px. */
+@media (max-width: 390px) {
+  .chapter {
+    padding: 76px 0 44px;
+  }
+
+  .site-nav {
+    padding: 6px 8px 6px 12px;
+  }
+
+  .brand-wordmark {
+    width: 78px;
+  }
+
+  .nav-download {
+    padding: 0 12px;
+    font-size: 11.5px;
+  }
+
+  h1 {
+    font-size: clamp(32px, 11.5vw, 42px);
+  }
+
+  .hero-subtitle {
+    font-size: 15px;
+  }
+
+  .feature-panel,
+  .privacy-grid article {
+    padding: 18px;
+  }
+}
+
+/* Small iPhone (SE / mini) ≈ 375px and below. */
+@media (max-width: 375px) {
+  .chapter {
+    width: min(100% - 12px, var(--max-width));
+  }
+
+  .hero-copy {
+    margin: 12px 0 22px;
+  }
+
+  h1 {
+    font-size: clamp(30px, 11vw, 38px);
+  }
+
+  .download-copy h2 {
+    font-size: clamp(32px, 9vw, 40px);
+  }
+}
+
+/* Respect reduced motion across the new mobile preview as well. */
+@media (prefers-reduced-motion: reduce) {
+  .product-screen,
+  .showcase-wrap,
+  .hero-copy {
+    transform: none !important;
+    transition: none !important;
+  }
+}

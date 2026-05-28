@@ -4,6 +4,7 @@
   const copyButton = document.getElementById("copyEmail");
   const email = "youmilens@gmail.com";
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const mobileViewport = window.matchMedia("(max-width: 768px)");
   let ticking = false;
 
   function clamp(value, min, max) {
@@ -12,7 +13,7 @@
 
   function updateHeroProgress() {
     ticking = false;
-    if (!hero || reducedMotion.matches) {
+    if (!hero || reducedMotion.matches || mobileViewport.matches) {
       root.style.setProperty("--hero-progress", "1");
       return;
     }
@@ -60,6 +61,11 @@
     reducedMotion.addEventListener("change", requestUpdate);
   } else if (typeof reducedMotion.addListener === "function") {
     reducedMotion.addListener(requestUpdate);
+  }
+  if (typeof mobileViewport.addEventListener === "function") {
+    mobileViewport.addEventListener("change", requestUpdate);
+  } else if (typeof mobileViewport.addListener === "function") {
+    mobileViewport.addListener(requestUpdate);
   }
   updateHeroProgress();
 
