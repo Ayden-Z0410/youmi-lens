@@ -150,10 +150,11 @@ export async function fetchSignedTransactionInfo(transactionId) {
 }
 
 export async function verifyAppleTransaction(input = {}) {
-  const signedTransactionInfo =
-    input.signedTransactionInfo ||
-    input.purchaseToken ||
-    (input.transactionId ? await fetchSignedTransactionInfo(input.transactionId) : null)
+  // A bare transactionId only proves a purchase exists once the server looks it
+  // up; it does not prove the authenticated caller owns that purchase. Require
+  // StoreKit's client-supplied signed JWS and use transactionId only below as a
+  // consistency check against the verified payload.
+  const signedTransactionInfo = input.signedTransactionInfo || input.purchaseToken
 
   if (!signedTransactionInfo || typeof signedTransactionInfo !== 'string') {
     throw new Error('signedTransactionInfo or purchaseToken is required')
