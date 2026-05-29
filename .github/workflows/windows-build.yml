@@ -1,0 +1,61 @@
+name: Windows Test Build
+
+# Manual-only test build for the Windows version of Youmi Lens.
+#
+# NOT a public release:
+#   - Manual trigger only (workflow_dispatch).
+#   - No code signing.
+#   - No GitHub Release is published.
+#   - Build artifacts are uploaded to the Actions run only (for download/testing).
+#
+# This workflow does NOT touch the Mac release pipeline, the website, the
+# landing page, Supabase, the backend, or app/product logic.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-build:
+    name: Build (windows-latest)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # package-lock.json is present and uses lockfileVersion 3, so the
+      # reproducible `npm ci` path is appropriate here.
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      # Cache Cargo registry + the src-tauri target dir to speed up rebuilds.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # `tauri build` (npm run build:desktop) runs the configured
+      # beforeBuildCommand ("npm run build" = tsc -b && vite build) to produce
+      # the frontend in ../dist, then bundles the Windows app. On Windows the
+      # "targets": "all" setting in tauri.conf.json produces both the NSIS
+      # installer (.exe) and the MSI installer (.msi).
+      - name: Build Tauri Windows app
+        run: npm run build:desktop
+
+      - name: Upload Windows build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: youmi-lens-windows-test-build
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
