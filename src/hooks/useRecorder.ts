@@ -292,15 +292,50 @@ export function useRecorder(opts?: {
           processor.connect(silentGain)
           silentGain.connect(ctx.destination)
 
-          console.info('[useRecorder] PCM capture started', JSON.stringify({ sampleRate, bufferSize: 2048 }))
+          // Windows/WebView2: an AudioContext created after `await getUserMedia` (i.e. outside the
+          // synchronous user-gesture window) frequently stays in "suspended" state, so
+          // `onaudioprocess` never fires and no PCM frames reach live captions — the WebSocket
+          // connects fine but receives no audio, so no captions and no error appear. macOS
+          // WKWebView auto-runs the context. resume() is a safe no-op on an already-running
+          // context, so this does not change the Mac path.
+          const ctxStateBeforeResume = ctx.state
+          void ctx
+            .resume()
+            .then(() =>
+              console.info(
+                '[live-latency] pcm_audiocontext_resume',
+                JSON.stringify({ before: ctxStateBeforeResume, after: ctx.state }),
+              ),
+            )
+            .catch((resumeErr) =>
+              console.warn(
+                '[live-latency] pcm_audiocontext_resume_failed',
+                JSON.stringify({ before: ctxStateBeforeResume, state: ctx.state, message: String(resumeErr) }),
+              ),
+            )
+
+          console.info('[useRecorder] PCM capture started', JSON.stringify({ sampleRate, bufferSize: 2048, ctxState: ctx.state }))
           console.info(
             '[live-latency] pcm_capture_started',
             JSON.stringify({
               sampleRate,
               bufferSamples: 2048,
               approxFrameMs: Math.round((2048 / sampleRate) * 1000),
+              ctxState: ctx.state,
             }),
           )
+
+          // Watchdog: if no PCM frame is produced shortly after capture starts, the context is
+          // almost certainly still suspended/blocked (the common WebView2 symptom), which means
+          // live captions will be silent. Surface it once so packaged-build logs explain why.
+          window.setTimeout(() => {
+            if (pcmFrameDiagCountRef.current === 0 && audioContextRef.current === ctx) {
+              console.warn(
+                '[live-latency] pcm_no_frames_warning',
+                JSON.stringify({ afterMs: 1500, ctxState: ctx.state, sampleRate }),
+              )
+            }
+          }, 1500)
         } catch (pcmErr) {
           console.warn('[useRecorder] PCM capture setup failed', pcmErr)
           // Non-fatal: fall through; live captions unavailable in streaming mode
