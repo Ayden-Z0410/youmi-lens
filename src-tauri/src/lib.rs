@@ -226,8 +226,19 @@ fn show_overlay(app: tauri::AppHandle) {
 
   #[cfg(not(target_os = "macos"))]
   {
+    // Windows / Linux: there is no NSPanel equivalent, so surface the frameless,
+    // transparent, always-on-top overlay with the standard Tauri WebviewWindow
+    // APIs. `set_visible_on_all_workspaces` is unsupported on Windows (no-op,
+    // safely ignored — it stays for Linux). We re-assert always-on-top (the
+    // window config already sets it, but re-asserting guards against it being
+    // cleared), then show and bring it to the foreground so it reliably appears
+    // above the user's other windows. Unlike the macOS non-activating panel, a
+    // brief focus here is acceptable — the main window is minimized at the same
+    // time, and `alwaysOnTop` keeps the overlay above the focused app afterward.
     let _ = w.set_visible_on_all_workspaces(true);
+    let _ = w.set_always_on_top(true);
     let _ = w.show();
+    let _ = w.set_focus();
   }
 
   // Intentionally NOT calling set_focus(): the overlay is a passive caption HUD
