@@ -12,9 +12,15 @@
 ;
 ; ${PRODUCTNAME}, ${MAINBINARYNAME}, $INSTDIR and $DESKTOP are all defined/valid
 ; at these hook points in the generated installer.nsi.
+;
+; The shortcut is created with the explicit exe icon, a normal-window show state,
+; and a description, to match the target/icon behavior of Tauri's own Start Menu
+; shortcut. NSIS sets the shortcut working directory ("Start In") to $OUTDIR,
+; which the template fixes to $INSTDIR (its only SetOutPath), so this shortcut's
+; launch context already matches the Start Menu shortcut — no /NoWorkingDir.
 
 !macro NSIS_HOOK_POSTINSTALL
-  CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\${MAINBINARYNAME}.exe" 0 SW_SHOWNORMAL "" "${PRODUCTNAME}"
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

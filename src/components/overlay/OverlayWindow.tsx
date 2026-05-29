@@ -146,6 +146,11 @@ function HeaderBtn({
       type="button"
       title={title}
       onClick={onClick}
+      // Stop the press from bubbling to the header's drag handler. On Windows
+      // WebView2, starting a window drag on mousedown swallows the click, so
+      // without this the button needs multiple clicks. Drag still works from
+      // the non-interactive header background.
+      onMouseDown={(e) => e.stopPropagation()}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       style={{
@@ -191,6 +196,8 @@ function ModeBtn({
       type="button"
       title={translateActive ? 'Cycle display mode' : 'Translation not active'}
       onClick={translateActive ? onCycle : undefined}
+      // See HeaderBtn: keep the click off the header drag region (Windows fix).
+      onMouseDown={(e) => e.stopPropagation()}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       style={{
@@ -347,6 +354,8 @@ export function CompactPill({
           type="button"
           title="Expand overlay"
           onClick={onExpand}
+          // See HeaderBtn: keep the click off the pill drag region (Windows fix).
+          onMouseDown={(e) => e.stopPropagation()}
           style={{
             background: 'transparent',
             border: 'none',

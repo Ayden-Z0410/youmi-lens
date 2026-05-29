@@ -325,8 +325,15 @@ pub fn run() {
       #[cfg(target_os = "macos")]
       emit_forwarded_deep_link_urls(&app, &args);
 
+      // Close stray/auth-callback webviews on a second-instance launch, but NEVER
+      // the persistent "overlay" window. The overlay is created once from
+      // tauri.conf.json; `close()` destroys it permanently, after which
+      // get_webview_window("overlay") returns None and show_overlay silently
+      // no-ops. On Windows this is hit by relaunching (e.g. from the desktop
+      // shortcut) while an instance is already running, which broke the Lecture
+      // Overlay. macOS is unaffected in normal use (no second instance).
       for (label, w) in app.webview_windows() {
-        if label != "main" {
+        if label != "main" && label != "overlay" {
           log::info!("[single-instance] closing non-main webview: {}", label);
           let _ = w.close();
         }
