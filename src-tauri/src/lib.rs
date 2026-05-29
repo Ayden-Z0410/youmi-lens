@@ -425,11 +425,13 @@ pub fn run() {
       // the user never has to Force Quit — works whether the window is hidden, minimized, in
       // a separate Space, or already visible. `has_visible_windows` can be unreliable after a
       // fullscreen-exit-then-hide flow, so we don't gate on it.
+      //
+      // `RunEvent::Reopen` only exists on macOS (it maps to AppKit's
+      // applicationShouldHandleReopen), so the whole arm is gated to macOS —
+      // on Windows/Linux the variant isn't present and would fail to compile.
+      #[cfg(target_os = "macos")]
       tauri::RunEvent::Reopen { .. } => {
-        #[cfg(target_os = "macos")]
-        {
-          let _ = app_handle.show();
-        }
+        let _ = app_handle.show();
         if let Some(w) = app_handle.get_webview_window("main") {
           // Defensive: only force-exit fullscreen if the window is currently hidden — that
           // means a prior CloseRequested left it in an inconsistent state. Don't disturb an
