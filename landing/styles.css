@@ -2015,32 +2015,35 @@ h3 {
   justify-content: center;
 }
 
+/* Each platform = a button stacked above its own quiet caption. */
+.download-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.download-option-meta {
+  margin: 0;
+  color: rgba(7, 26, 51, 0.56);
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
 .download-meta {
   margin-top: 24px;
   color: rgba(7, 26, 51, 0.56);
   font-size: 15px;
 }
 
-/* Quiet, premium note — intentionally lighter/smaller than .download-meta. Not a callout box. */
+/* Quiet, muted note under the Windows button — intentionally lighter/smaller. Not a callout box. */
 .download-windows-note {
-  margin-top: 12px;
+  margin-top: 16px;
   max-width: 520px;
   color: rgba(7, 26, 51, 0.42);
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.55;
   letter-spacing: 0.01em;
-}
-
-.download-windows-note a {
-  color: rgba(7, 26, 51, 0.6);
-  text-decoration: none;
-  border-bottom: 1px solid rgba(7, 26, 51, 0.18);
-  transition: color 0.15s ease, border-color 0.15s ease;
-}
-
-.download-windows-note a:hover {
-  color: rgba(7, 26, 51, 0.85);
-  border-bottom-color: rgba(7, 26, 51, 0.4);
 }
 
 @media (max-width: 980px) {
@@ -2062,6 +2065,11 @@ h3 {
 
   .download-actions {
     justify-content: center;
+  }
+
+  .download-option {
+    align-items: center;
+    text-align: center;
   }
 }
 
@@ -3568,8 +3576,14 @@ h3 {
   }
 
   .download-actions {
+    flex-direction: column;
+    align-items: stretch;
     justify-content: center;
     margin-top: 22px;
+  }
+
+  .download-option {
+    width: 100%;
   }
 
   .download-actions .button {
