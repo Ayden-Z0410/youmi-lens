@@ -1995,7 +1995,7 @@ h3 {
   font-weight: 650;
 }
 
-.download-copy > p:not(.eyebrow):not(.download-meta) {
+.download-copy > p:not(.eyebrow):not(.download-meta):not(.download-windows-note) {
   max-width: 520px;
   margin: 28px 0 0;
   color: var(--muted);
@@ -2019,6 +2019,28 @@ h3 {
   margin-top: 24px;
   color: rgba(7, 26, 51, 0.56);
   font-size: 15px;
+}
+
+/* Quiet, premium note — intentionally lighter/smaller than .download-meta. Not a callout box. */
+.download-windows-note {
+  margin-top: 12px;
+  max-width: 520px;
+  color: rgba(7, 26, 51, 0.42);
+  font-size: 13.5px;
+  line-height: 1.55;
+  letter-spacing: 0.01em;
+}
+
+.download-windows-note a {
+  color: rgba(7, 26, 51, 0.6);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(7, 26, 51, 0.18);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.download-windows-note a:hover {
+  color: rgba(7, 26, 51, 0.85);
+  border-bottom-color: rgba(7, 26, 51, 0.4);
 }
 
 @media (max-width: 980px) {
@@ -3540,7 +3562,7 @@ h3 {
     margin-right: auto;
   }
 
-  .download-copy > p:not(.eyebrow):not(.download-meta) {
+  .download-copy > p:not(.eyebrow):not(.download-meta):not(.download-windows-note) {
     margin: 18px auto 0;
     font-size: 16px;
   }
