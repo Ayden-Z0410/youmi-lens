@@ -10,6 +10,7 @@ export function statusColor(status: StatusKind): string {
     case 'healthy':
     case 'normal':
     case 'operational':
+    case 'resolved':
       return 'var(--yw-success)'
     case 'warning':
     case 'watch':
@@ -17,7 +18,11 @@ export function statusColor(status: StatusKind): string {
       return 'var(--yw-warning)'
     case 'offline':
     case 'error':
+    case 'critical':
       return 'var(--yw-danger)'
+    case 'info':
+    case 'active':
+      return 'var(--yw-accent)'
     default:
       return 'var(--yw-neutral)'
   }

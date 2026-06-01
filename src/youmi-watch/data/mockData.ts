@@ -17,6 +17,11 @@ export type StatusKind =
   | 'error'
   | 'stable'
   | 'neutral'
+  // Alerts page: severity + alert lifecycle states.
+  | 'critical'
+  | 'info'
+  | 'active'
+  | 'resolved'
 
 export type TrendDirection = 'up' | 'down' | 'flat'
 
@@ -303,3 +308,143 @@ export const connectionHealth: ConnectionHealthDatum[] = [
   { id: 'supabase', name: 'Supabase', icon: 'database', latency: '162ms latency', status: 'degraded', statusLabel: 'Degraded' },
   { id: 'openai', name: 'OpenAI', icon: 'sparkles', latency: '88ms latency', status: 'operational', statusLabel: 'Operational' },
 ]
+
+// ───────────────────────────────────────────────────────────────────────────
+// Alerts page
+// ───────────────────────────────────────────────────────────────────────────
+
+export type AlertSeverity = 'critical' | 'warning' | 'info'
+export type AlertStatus = 'active' | 'resolved'
+
+export interface AlertRow {
+  id: string
+  severity: AlertSeverity
+  /** Human-readable alert summary. */
+  title: string
+  provider: string
+  /** Machine condition that fired the alert (rendered as a code chip). */
+  trigger: string
+  time: string
+  status: AlertStatus
+}
+
+export interface AlertRule {
+  id: string
+  provider: string
+  condition: string
+  threshold: string
+  channel: string
+  enabled: boolean
+}
+
+export interface AlertDetail {
+  /** Id of the alert this detail describes (links back to AlertRow). */
+  alertId: string
+  provider: string
+  trigger: string
+  relatedMetric: string
+  /** Optional 0–100 value for the inline meter; omit to hide the bar. */
+  relatedPercent?: number
+  suggestedAction: string
+}
+
+const SEVERITY_LABEL: Record<AlertSeverity, string> = {
+  critical: 'Critical',
+  warning: 'Warning',
+  info: 'Info',
+}
+const STATUS_LABEL: Record<AlertStatus, string> = {
+  active: 'Active',
+  resolved: 'Resolved',
+}
+
+export const severityLabel = (s: AlertSeverity): string => SEVERITY_LABEL[s]
+export const alertStatusLabel = (s: AlertStatus): string => STATUS_LABEL[s]
+
+export const alertMetrics: MetricDatum[] = [
+  {
+    id: 'active-alerts',
+    label: 'Active Alerts',
+    icon: 'alert',
+    value: '2',
+    description: 'Require attention',
+  },
+  {
+    id: 'resolved-today',
+    label: 'Resolved Today',
+    icon: 'check-circle',
+    value: '5',
+    description: 'Cleared automatically',
+  },
+  {
+    id: 'critical',
+    label: 'Critical',
+    icon: 'alert',
+    value: '1',
+    description: 'High severity',
+  },
+  {
+    id: 'total-week',
+    label: 'Total This Week',
+    icon: 'logs',
+    value: '8',
+    description: 'Across all providers',
+  },
+]
+
+export const alertRows: AlertRow[] = [
+  {
+    id: 'al-supabase-storage',
+    severity: 'critical',
+    title: 'Supabase storage above 75%',
+    provider: 'Supabase',
+    trigger: 'storage_used > 75%',
+    time: '9m ago',
+    status: 'active',
+  },
+  {
+    id: 'al-dashscope-cost',
+    severity: 'warning',
+    title: 'DashScope daily cost exceeds threshold',
+    provider: 'DashScope',
+    trigger: 'daily_cost > $3',
+    time: '24m ago',
+    status: 'active',
+  },
+  {
+    id: 'al-brevo-credits',
+    severity: 'warning',
+    title: 'Brevo credits below threshold',
+    provider: 'Brevo',
+    trigger: 'credits < 500',
+    time: '1h ago',
+    status: 'active',
+  },
+  {
+    id: 'al-railway-deploy',
+    severity: 'info',
+    title: 'Railway deployment healthy',
+    provider: 'Railway',
+    trigger: 'deploy_status = success',
+    time: '2h ago',
+    status: 'resolved',
+  },
+]
+
+export const alertRules: AlertRule[] = [
+  { id: 'rule-deepgram', provider: 'Deepgram', condition: 'Monthly minutes', threshold: '80%', channel: 'Email', enabled: true },
+  { id: 'rule-dashscope', provider: 'DashScope', condition: 'Daily cost', threshold: '$3', channel: 'Email', enabled: true },
+  { id: 'rule-supabase', provider: 'Supabase', condition: 'Storage used', threshold: '75%', channel: 'Email', enabled: true },
+  { id: 'rule-brevo', provider: 'Brevo', condition: 'Credits remaining', threshold: '500', channel: 'Email', enabled: true },
+  { id: 'rule-railway', provider: 'Railway', condition: 'Service health', threshold: 'Offline', channel: 'Email', enabled: true },
+]
+
+export const selectedAlertDetail: AlertDetail = {
+  alertId: 'al-supabase-storage',
+  provider: 'Supabase',
+  trigger: 'Storage used above 75%',
+  relatedMetric: '78% storage used',
+  relatedPercent: 78,
+  suggestedAction:
+    'Review storage bucket usage and remove unused lecture audio files.',
+}

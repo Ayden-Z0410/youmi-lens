@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { YoumiWatchLayout } from './components/YoumiWatchLayout'
 import { OverviewPage } from './pages/OverviewPage'
 import { ProvidersPage } from './pages/ProvidersPage'
+import { AlertsPage } from './pages/AlertsPage'
 import { ROUTE_PATHS, routeFromPath, type WatchRoute } from './routes'
 import './youmi-watch.css'
 
@@ -54,7 +55,9 @@ export function YoumiWatchApp() {
 
   // Reflect the active page in the document title.
   useEffect(() => {
-    document.title = route === 'providers' ? 'Providers · Youmi Watch' : 'Youmi Watch'
+    const label =
+      route === 'providers' ? 'Providers' : route === 'alerts' ? 'Alerts' : null
+    document.title = label ? `${label} · Youmi Watch` : 'Youmi Watch'
   }, [route])
 
   const handleRefresh = useCallback(() => {
@@ -66,6 +69,8 @@ export function YoumiWatchApp() {
       <YoumiWatchLayout active={route} onNavigate={navigate}>
         {route === 'providers' ? (
           <ProvidersPage onRefresh={handleRefresh} />
+        ) : route === 'alerts' ? (
+          <AlertsPage onRefresh={handleRefresh} />
         ) : (
           <OverviewPage onRefresh={handleRefresh} />
         )}

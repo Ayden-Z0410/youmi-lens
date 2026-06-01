@@ -376,6 +376,17 @@
   box-shadow: 0 14px 30px rgba(31, 95, 209, 0.42);
 }
 
+.yw-btn--secondary {
+  color: var(--yw-ink);
+  background: var(--yw-glass-strong);
+  border-color: var(--yw-glass-border);
+  box-shadow: var(--yw-shadow-card);
+}
+.yw-btn--secondary:hover {
+  color: var(--yw-accent);
+  transform: translateY(-1px);
+}
+
 .yw-btn--ghost {
   color: var(--yw-accent);
   background: transparent;
@@ -386,6 +397,14 @@
 }
 .yw-btn--ghost:hover {
   color: var(--yw-accent-strong);
+}
+
+/* Compact button for inline table actions. */
+.yw-btn--sm {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-size: 12.5px;
 }
 
 /* ── Glass card ─────────────────────────────────────────────────────────── */
@@ -574,6 +593,20 @@
 .yw-badge--stable {
   color: var(--yw-neutral);
   background: var(--yw-neutral-soft);
+}
+/* Alerts: severity + lifecycle. Soft tinted pills — never harsh solid blocks. */
+.yw-badge--critical {
+  color: var(--yw-danger);
+  background: var(--yw-danger-soft);
+}
+.yw-badge--resolved {
+  color: var(--yw-success);
+  background: var(--yw-success-soft);
+}
+.yw-badge--info,
+.yw-badge--active {
+  color: var(--yw-accent);
+  background: var(--yw-accent-soft);
 }
 
 /* ── Provider rows ──────────────────────────────────────────────────────── */
@@ -815,6 +848,207 @@
   white-space: nowrap;
 }
 
+/* ── Alerts page ────────────────────────────────────────────────────────── */
+/* Vertical rhythm helper for a lone card that precedes a grid row. */
+.yw-spaced {
+  margin-bottom: 22px;
+}
+
+/* Segmented tab switch (Alert Center header) */
+.yw-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(10, 25, 47, 0.05);
+  border: 1px solid var(--yw-hairline);
+}
+.yw-tab {
+  padding: 7px 16px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--yw-ink-soft);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.yw-tab:hover:not(.is-active) {
+  color: var(--yw-ink);
+}
+.yw-tab.is-active {
+  color: var(--yw-ink);
+  background: #ffffff;
+  box-shadow: var(--yw-shadow-card);
+}
+
+/* Glass tables (alerts + rules) */
+.yw-table {
+  width: 100%;
+}
+.yw-trow {
+  display: grid;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 6px;
+  border-top: 1px solid var(--yw-hairline);
+}
+.yw-trow--head {
+  padding: 0 6px 12px;
+  border-top: 0;
+}
+.yw-trow--head .yw-tcell {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--yw-ink-faint);
+}
+.yw-tcell {
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--yw-ink-soft);
+}
+.yw-tcell--strong {
+  font-weight: 600;
+  color: var(--yw-ink);
+}
+.yw-tcell--muted {
+  color: var(--yw-ink-faint);
+}
+.yw-tcell--end {
+  display: flex;
+  justify-content: flex-end;
+  text-align: right;
+}
+.yw-alerts-table .yw-trow {
+  grid-template-columns:
+    104px minmax(190px, 2fr) 110px minmax(150px, 1.4fr) 80px 100px minmax(168px, auto);
+}
+.yw-rules-table .yw-trow {
+  grid-template-columns: minmax(130px, 1fr) minmax(150px, 1.4fr) 110px 110px 92px;
+}
+
+/* Monospace condition / trigger chip */
+.yw-code {
+  display: inline-block;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 8px;
+  background: rgba(10, 25, 47, 0.05);
+  border: 1px solid var(--yw-hairline);
+  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+  font-size: 12px;
+  color: var(--yw-ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+/* Row actions */
+.yw-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.yw-empty {
+  margin: 0;
+  padding: 26px 6px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--yw-ink-faint);
+}
+
+/* Presentational on/off switch (rule Enabled column) */
+.yw-switch {
+  position: relative;
+  display: inline-block;
+  width: 38px;
+  height: 22px;
+  border-radius: var(--yw-radius-pill);
+  background: rgba(10, 25, 47, 0.16);
+  transition: background 0.18s ease;
+  vertical-align: middle;
+}
+.yw-switch.is-on {
+  background: var(--yw-accent);
+}
+.yw-switch__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(10, 25, 47, 0.28);
+  transition: transform 0.18s ease;
+}
+.yw-switch.is-on .yw-switch__knob {
+  transform: translateX(16px);
+}
+
+/* Selected Alert Details panel */
+.yw-detail {
+  display: flex;
+  flex-direction: column;
+}
+.yw-detail-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 0;
+  border-top: 1px solid var(--yw-hairline);
+}
+.yw-detail-row:first-child {
+  border-top: 0;
+}
+.yw-detail-row__label {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--yw-ink-faint);
+}
+.yw-detail-row__value {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--yw-ink);
+  text-align: right;
+}
+.yw-detail-block {
+  padding: 13px 0 2px;
+  border-top: 1px solid var(--yw-hairline);
+}
+.yw-detail-block__text {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--yw-ink-soft);
+}
+.yw-meter {
+  height: 6px;
+  margin: 10px 0 2px;
+  border-radius: var(--yw-radius-pill);
+  background: rgba(10, 25, 47, 0.08);
+  overflow: hidden;
+}
+.yw-meter__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--yw-accent), var(--yw-cyan));
+}
+.yw-detail-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+}
+
 /* ── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 1180px) {
   .yw-metrics {
@@ -822,6 +1056,14 @@
   }
   .yw-grid-2 {
     grid-template-columns: 1fr;
+  }
+  /* Keep the 7-column alert table readable: scroll horizontally rather than
+     crushing the columns. */
+  .yw-table {
+    overflow-x: auto;
+  }
+  .yw-alerts-table .yw-trow {
+    min-width: 840px;
   }
 }
 
@@ -855,5 +1097,8 @@
   }
   .yw-provider {
     grid-template-columns: 1fr 1fr;
+  }
+  .yw-detail-actions {
+    flex-direction: column;
   }
 }
