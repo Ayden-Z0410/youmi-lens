@@ -23,6 +23,8 @@ export type IconName =
   | 'rocket'
   | 'user-plus'
   | 'chevron-down'
+  | 'cost'
+  | 'trend'
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number }
 
@@ -135,6 +137,19 @@ const PATHS: Record<IconName, React.ReactNode> = {
     </>
   ),
   'chevron-down': <path d="M6 9l6 6 6-6" />,
+  cost: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M14.6 9.2c-.6-1-1.7-1.5-2.8-1.5-1.4 0-2.7.8-2.7 2.1 0 2.8 5.6 1.4 5.6 4.4 0 1.3-1.3 2.1-2.9 2.1-1.2 0-2.4-.5-3-1.5" />
+      <path d="M12 6.1v1.6M12 16.3v1.6" />
+    </>
+  ),
+  trend: (
+    <>
+      <path d="M3 16.5l5.5-5.5 3.5 3 6.5-8" />
+      <path d="M21 6v4.2h-4.2" />
+    </>
+  ),
 }
 
 export function WatchIcon({ name, size = 18, ...rest }: IconProps & { name: IconName }) {

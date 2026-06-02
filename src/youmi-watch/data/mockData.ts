@@ -95,6 +95,8 @@ const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const C_ACCENT = '#2f6bd4'
 const C_CYAN = '#4fc4e0'
 const C_VIOLET = '#8b7ff0'
+const C_GREEN = '#10b981'
+const C_AMBER = '#f59e0b'
 
 // ───────────────────────────────────────────────────────────────────────────
 // Overview page
@@ -447,4 +449,122 @@ export const selectedAlertDetail: AlertDetail = {
   relatedPercent: 78,
   suggestedAction:
     'Review storage bucket usage and remove unused lecture audio files.',
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Costs page
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface CostBreakdownRow {
+  id: string
+  provider: string
+  usage: string
+  unit: string
+  estimatedCost: string
+  change: string
+  changeDir: 'up' | 'down'
+  status: StatusKind
+  statusLabel: string
+}
+
+export interface CostDistributionSlice {
+  id: string
+  label: string
+  percent: number
+  color: string
+}
+
+export interface BudgetSummary {
+  monthlyBudget: string
+  currentSpend: string
+  remaining: string
+  usagePercent: number
+  status: StatusKind
+  statusLabel: string
+}
+
+export interface CostForecast {
+  projectedCost: string
+  budgetRemainingAfter: string
+  riskLevel: string
+  riskStatus: StatusKind
+  suggestedAction: string
+}
+
+export const costMetrics: MetricDatum[] = [
+  {
+    id: 'total-estimated',
+    label: 'Total Estimated',
+    icon: 'cost',
+    value: '$1,842.35',
+    description: 'This month',
+  },
+  {
+    id: 'today',
+    label: 'Today',
+    icon: 'cost',
+    value: '$62.40',
+    description: 'Current daily spend',
+  },
+  {
+    id: 'this-week',
+    label: 'This Week',
+    icon: 'cost',
+    value: '$418.20',
+    description: 'Rolling 7 days',
+  },
+  {
+    id: 'forecast',
+    label: 'Forecast',
+    icon: 'trend',
+    value: '$2,310',
+    description: 'Projected month-end',
+  },
+]
+
+/** Daily estimated spend per provider (USD) over the last 7 days. */
+export const costTrend: TrendChartData = {
+  labels: DAY_LABELS,
+  yMax: 24,
+  series: [
+    { name: 'Deepgram', color: C_ACCENT, points: [5.2, 6.1, 5.6, 7.0, 8.1, 6.4, 7.2] },
+    { name: 'DashScope', color: C_CYAN, points: [12.0, 14.2, 16.0, 15.1, 19.8, 18.0, 22.0] },
+    { name: 'Brevo', color: C_VIOLET, points: [1.6, 2.0, 1.8, 2.1, 1.7, 2.0, 1.9] },
+    { name: 'Railway', color: C_GREEN, points: [4.6, 5.0, 4.8, 5.1, 5.2, 5.0, 5.4] },
+    { name: 'Supabase', color: C_AMBER, points: [3.1, 3.6, 4.0, 3.9, 4.3, 4.1, 4.6] },
+  ],
+}
+
+export const budgetSummary: BudgetSummary = {
+  monthlyBudget: '$2,500',
+  currentSpend: '$1,842.35',
+  remaining: '$657.65',
+  usagePercent: 74,
+  status: 'watch',
+  statusLabel: 'Watch',
+}
+
+export const costDistribution: CostDistributionSlice[] = [
+  { id: 'deepgram', label: 'Deepgram', percent: 34, color: C_ACCENT },
+  { id: 'dashscope', label: 'DashScope', percent: 29, color: C_CYAN },
+  { id: 'brevo', label: 'Brevo', percent: 18, color: C_VIOLET },
+  { id: 'railway', label: 'Railway', percent: 11, color: C_GREEN },
+  { id: 'supabase', label: 'Supabase', percent: 8, color: C_AMBER },
+]
+
+export const costBreakdown: CostBreakdownRow[] = [
+  { id: 'deepgram', provider: 'Deepgram', usage: '428.2', unit: 'min', estimatedCost: '$42.18', change: '+8%', changeDir: 'up', status: 'normal', statusLabel: 'Normal' },
+  { id: 'dashscope', provider: 'DashScope', usage: '2.1M', unit: 'tokens', estimatedCost: '$118.40', change: '+22%', changeDir: 'up', status: 'watch', statusLabel: 'Watch' },
+  { id: 'brevo', provider: 'Brevo', usage: '1,248', unit: 'emails', estimatedCost: '$12.00', change: '-3%', changeDir: 'down', status: 'normal', statusLabel: 'Normal' },
+  { id: 'railway', provider: 'Railway', usage: '312', unit: 'hours', estimatedCost: '$34.20', change: '+4%', changeDir: 'up', status: 'healthy', statusLabel: 'Healthy' },
+  { id: 'supabase', provider: 'Supabase', usage: '78', unit: 'storage %', estimatedCost: '$28.60', change: '+12%', changeDir: 'up', status: 'warning', statusLabel: 'Warning' },
+]
+
+export const costForecast: CostForecast = {
+  projectedCost: '$2,310',
+  budgetRemainingAfter: '$190',
+  riskLevel: 'Medium',
+  riskStatus: 'watch',
+  suggestedAction:
+    'Watch DashScope daily token usage and Supabase storage growth.',
 }

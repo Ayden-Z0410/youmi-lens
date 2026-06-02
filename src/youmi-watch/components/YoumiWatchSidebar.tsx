@@ -23,6 +23,7 @@ const PRIMARY_NAV: NavItem[] = [
   { route: 'overview', label: 'Overview', icon: 'overview' },
   { route: 'providers', label: 'Providers', icon: 'providers' },
   { route: 'alerts', label: 'Alerts', icon: 'alert' },
+  { route: 'costs', label: 'Costs', icon: 'cost' },
 ]
 
 const FUTURE_NAV: FutureItem[] = [

@@ -1049,6 +1049,114 @@
   margin-top: 18px;
 }
 
+/* ── Costs page ─────────────────────────────────────────────────────────── */
+/* Cost breakdown table column template (reuses .yw-table primitives). */
+.yw-cost-table .yw-trow {
+  grid-template-columns:
+    minmax(120px, 1.3fr) 88px 92px minmax(110px, 1fr) 92px minmax(96px, auto);
+}
+
+/* Change indicator: amber up = more spend, green down = less spend. */
+.yw-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.yw-change.is-up {
+  color: var(--yw-warning);
+}
+.yw-change.is-down {
+  color: var(--yw-success);
+}
+
+/* Budget card */
+.yw-budget__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.yw-budget__usage {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.yw-budget__pct {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--yw-ink);
+  line-height: 1;
+}
+.yw-budget__of {
+  font-size: 13px;
+  color: var(--yw-ink-faint);
+}
+
+/* Donut distribution */
+.yw-donut {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+.yw-donut__svg {
+  flex-shrink: 0;
+}
+.yw-donut__value {
+  font-size: 17px;
+  font-weight: 700;
+  fill: var(--yw-ink);
+  letter-spacing: -0.02em;
+}
+.yw-donut__label {
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  fill: var(--yw-ink-faint);
+}
+.yw-donut__legend {
+  flex: 1;
+  min-width: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.yw-donut__legend-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--yw-radius-sm);
+  transition: background 0.15s ease;
+}
+.yw-donut__legend-item:hover {
+  background: rgba(255, 255, 255, 0.5);
+}
+.yw-donut__swatch {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  border-radius: 4px;
+}
+.yw-donut__legend-label {
+  flex: 1;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--yw-ink);
+}
+.yw-donut__legend-pct {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--yw-ink-soft);
+}
+
 /* ── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 1180px) {
   .yw-metrics {
@@ -1064,6 +1172,9 @@
   }
   .yw-alerts-table .yw-trow {
     min-width: 840px;
+  }
+  .yw-cost-table .yw-trow {
+    min-width: 640px;
   }
 }
 
@@ -1100,5 +1211,13 @@
   }
   .yw-detail-actions {
     flex-direction: column;
+  }
+  .yw-donut {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 18px;
+  }
+  .yw-donut__svg {
+    align-self: center;
   }
 }
