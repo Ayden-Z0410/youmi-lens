@@ -25,6 +25,7 @@ import { handleAuthCheckEmail } from './authCheckEmail.mjs'
 import { handleSendSignupCode, handleVerifySignupCodeAndCreateUser } from './authSignupCode.mjs'
 import { handleIapRestore, handleIapVerify } from './iapRoutes.mjs'
 import { handleDeleteAccount } from './accountRoutes.mjs'
+import { handleAdminWatchAccess } from './adminWatchAccess.mjs'
 
 const PORT = Number(process.env.PORT || process.env.AI_SERVER_PORT || 3847)
 
@@ -213,6 +214,16 @@ app.get('/api/quota/status', (req, res) => {
     console.error('[quota-status]', err)
     if (!res.headersSent) {
       res.status(500).json({ ok: false, error: 'quota_status_failed', message: 'Could not load plan information.' })
+    }
+  })
+})
+
+/** Internal Youmi Watch admin gate. Server-verified; fails closed on error. */
+app.get('/api/admin/watch/access', (req, res) => {
+  void handleAdminWatchAccess(req, res).catch((err) => {
+    console.error('[admin-watch-access]', err)
+    if (!res.headersSent) {
+      res.status(200).json({ ok: false, authorized: false, reason: 'error' })
     }
   })
 })

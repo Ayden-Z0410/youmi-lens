@@ -5,32 +5,48 @@
  * lightweight History-API routing between Overview and Providers (no
  * react-router; see routes.ts) and frames the active page in YoumiWatchLayout.
  *
- * SECURITY: this is an internal admin surface. For now it is gated only by the
- * separate `/admin/watch` route and renders mock data with no backend calls —
- * there is nothing sensitive here yet. Before wiring real APIs, this must be
- * placed behind a proper admin auth check (verified server-side, e.g. an
- * admin-only role on the Supabase session). See `AdminGate` below.
+ * SECURITY: this is an internal admin surface, gated by `AdminGate` below. The
+ * authorization decision is made server-side (GET /api/admin/watch/access,
+ * which validates the Supabase JWT and checks the user's plan_type). The client
+ * only relays that verdict — it never trusts email checks or localStorage. The
+ * dashboard tree does not mount until the server returns `authorized`, and the
+ * gate fails closed on any error.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { YoumiWatchLayout } from './components/YoumiWatchLayout'
+import { AdminGateScreen } from './components/AdminGateScreen'
 import { OverviewPage } from './pages/OverviewPage'
 import { ProvidersPage } from './pages/ProvidersPage'
 import { AlertsPage } from './pages/AlertsPage'
 import { CostsPage } from './pages/CostsPage'
 import { LogsPage } from './pages/LogsPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { checkAdminWatchAccess, type AdminAccessState } from './lib/adminAccess'
 import { ROUTE_PATHS, routeFromPath, type WatchRoute } from './routes'
 import './youmi-watch.css'
 
 /**
- * Placeholder admin gate. Today it always allows access (UI-only, mock data).
- * When real data lands, replace the body with a server-verified admin check and
- * render an access-denied state otherwise.
+ * Server-verified admin gate. Renders children only after the server confirms
+ * the signed-in user is an admin/developer; otherwise shows a loading, sign-in,
+ * or access-denied screen. Fails closed.
  */
 function AdminGate({ children }: { children: React.ReactNode }) {
-  const allowed = true
-  if (!allowed) return null
-  return <>{children}</>
+  const [state, setState] = useState<AdminAccessState>('checking')
+
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    void checkAdminWatchAccess(controller.signal).then((next) => {
+      if (!cancelled) setState(next)
+    })
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [])
+
+  if (state === 'authorized') return <>{children}</>
+  return <AdminGateScreen variant={state} />
 }
 
 export function YoumiWatchApp() {

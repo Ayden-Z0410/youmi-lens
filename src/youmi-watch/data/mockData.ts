@@ -747,8 +747,8 @@ export const notificationSettings: NotificationRow[] = [
 ]
 
 export const securitySettings: SecurityItem[] = [
-  { id: 'admin-only', label: 'Admin-only dashboard', value: 'Placeholder' },
-  { id: 'server-check', label: 'Server-verified admin check', value: 'Not configured' },
+  { id: 'admin-only', label: 'Admin-only dashboard', value: 'Enabled' },
+  { id: 'server-check', label: 'Server-verified admin check', value: 'Active' },
   { id: 'api-keys', label: 'API keys', value: 'Server-side only required' },
   { id: 'audit-log', label: 'Audit log', value: 'Mock mode' },
   { id: 'public-entry', label: 'Public entry point', value: 'Disabled' },
@@ -756,7 +756,7 @@ export const securitySettings: SecurityItem[] = [
 ]
 
 export const securityNote =
-  'Before real provider data is connected, AdminGate must be replaced with a server-verified admin check.'
+  'AdminGate is now server-verified. Before real provider data is connected, provider API keys must remain server-side and Watch data should only come from trusted backend endpoints.'
 
 export const appearanceSettings: AppearanceOption[] = [
   { id: 'liquid-glass', label: 'Liquid Glass theme', enabled: true },
