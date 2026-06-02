@@ -11,6 +11,7 @@ export function statusColor(status: StatusKind): string {
     case 'normal':
     case 'operational':
     case 'resolved':
+    case 'success':
       return 'var(--yw-success)'
     case 'warning':
     case 'watch':
@@ -22,6 +23,7 @@ export function statusColor(status: StatusKind): string {
       return 'var(--yw-danger)'
     case 'info':
     case 'active':
+    case 'deployed':
       return 'var(--yw-accent)'
     default:
       return 'var(--yw-neutral)'

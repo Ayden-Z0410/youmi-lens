@@ -22,6 +22,9 @@ export type StatusKind =
   | 'info'
   | 'active'
   | 'resolved'
+  // Logs page: event outcomes.
+  | 'success'
+  | 'deployed'
 
 export type TrendDirection = 'up' | 'down' | 'flat'
 
@@ -568,3 +571,95 @@ export const costForecast: CostForecast = {
   suggestedAction:
     'Watch DashScope daily token usage and Supabase storage growth.',
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Logs page
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface LogRow {
+  id: string
+  time: string
+  provider: string
+  event: string
+  status: StatusKind
+  statusLabel: string
+  severity: StatusKind
+  severityLabel: string
+  latency: string
+  cost: string
+  requestId: string
+}
+
+export interface LogDetail {
+  provider: string
+  event: string
+  status: StatusKind
+  statusLabel: string
+  requestId: string
+  relatedMetric: string
+  relatedUser: string
+  recordingId: string
+  retryCount: number
+  message: string
+  suggestedAction: string
+}
+
+export interface SystemHealthItem {
+  id: string
+  label: string
+  state: string
+  status: StatusKind
+}
+
+/** Filter control options (presentational mock — no filtering wired yet). */
+export interface LogFilterOption {
+  id: string
+  label: string
+  value: string
+}
+
+export const logMetrics: MetricDatum[] = [
+  { id: 'total-events', label: 'Total Events', icon: 'logs', value: '1,284', description: 'Last 30 days' },
+  { id: 'success-rate', label: 'Success Rate', icon: 'check-circle', value: '99.4%', description: 'Across all providers' },
+  { id: 'failed-requests', label: 'Failed Requests', icon: 'alert', value: '18', description: 'Needs review' },
+  { id: 'avg-latency', label: 'Avg Latency', icon: 'clock', value: '242ms', description: 'API response time' },
+]
+
+export const logFilters: LogFilterOption[] = [
+  { id: 'provider', label: 'Provider', value: 'All providers' },
+  { id: 'status', label: 'Status', value: 'All statuses' },
+  { id: 'severity', label: 'Severity', value: 'All severities' },
+  { id: 'range', label: 'Date range', value: 'Last 30 days' },
+]
+
+export const logRows: LogRow[] = [
+  { id: 'l1', time: '09:42', provider: 'Deepgram', event: 'Live transcription session completed', status: 'success', statusLabel: 'Success', severity: 'info', severityLabel: 'Info', latency: '218ms', cost: '$0.14', requestId: 'req_dg_8472' },
+  { id: 'l2', time: '09:17', provider: 'Brevo', event: 'Verification email sent', status: 'success', statusLabel: 'Success', severity: 'info', severityLabel: 'Info', latency: '182ms', cost: '$0.01', requestId: 'req_br_1298' },
+  { id: 'l3', time: '08:55', provider: 'DashScope', event: 'Summary request completed', status: 'success', statusLabel: 'Success', severity: 'info', severityLabel: 'Info', latency: '640ms', cost: '$0.32', requestId: 'req_ds_3371' },
+  { id: 'l4', time: '08:31', provider: 'Railway', event: 'Deployment main-v2.1 live', status: 'deployed', statusLabel: 'Deployed', severity: 'info', severityLabel: 'Info', latency: '—', cost: '$0.00', requestId: 'dep_rw_4412' },
+  { id: 'l5', time: '08:10', provider: 'Supabase', event: 'Storage usage checked', status: 'warning', statusLabel: 'Warning', severity: 'warning', severityLabel: 'Warning', latency: '162ms', cost: '$0.03', requestId: 'req_sb_7740' },
+  { id: 'l6', time: '07:48', provider: 'DashScope', event: 'Token usage spike detected', status: 'warning', statusLabel: 'Warning', severity: 'warning', severityLabel: 'Warning', latency: '712ms', cost: '$0.88', requestId: 'req_ds_8841' },
+  { id: 'l7', time: '07:25', provider: 'Deepgram', event: 'Live session retry completed', status: 'success', statusLabel: 'Success', severity: 'info', severityLabel: 'Info', latency: '241ms', cost: '$0.11', requestId: 'req_dg_5521' },
+  { id: 'l8', time: '06:58', provider: 'Brevo', event: 'Transactional email delivery delayed', status: 'error', statusLabel: 'Failed', severity: 'warning', severityLabel: 'Warning', latency: '920ms', cost: '$0.01', requestId: 'req_br_9021' },
+]
+
+export const selectedLogDetail: LogDetail = {
+  provider: 'Supabase',
+  event: 'Storage usage checked',
+  status: 'warning',
+  statusLabel: 'Warning',
+  requestId: 'req_sb_7740',
+  relatedMetric: 'storage_used = 78%',
+  relatedUser: 'system',
+  recordingId: '—',
+  retryCount: 0,
+  message: 'Storage usage is approaching the configured warning threshold.',
+  suggestedAction: 'Review lecture-audio storage and remove unused files.',
+}
+
+export const systemHealth: SystemHealthItem[] = [
+  { id: 'api-logging', label: 'API logging', state: 'Active', status: 'operational' },
+  { id: 'cost-estimation', label: 'Cost estimation', state: 'Active', status: 'operational' },
+  { id: 'alert-engine', label: 'Alert engine', state: 'Mock mode', status: 'neutral' },
+  { id: 'provider-sync', label: 'Provider sync', state: 'Mock mode', status: 'neutral' },
+]

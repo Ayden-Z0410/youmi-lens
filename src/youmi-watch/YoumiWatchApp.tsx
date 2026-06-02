@@ -17,6 +17,7 @@ import { OverviewPage } from './pages/OverviewPage'
 import { ProvidersPage } from './pages/ProvidersPage'
 import { AlertsPage } from './pages/AlertsPage'
 import { CostsPage } from './pages/CostsPage'
+import { LogsPage } from './pages/LogsPage'
 import { ROUTE_PATHS, routeFromPath, type WatchRoute } from './routes'
 import './youmi-watch.css'
 
@@ -56,14 +57,13 @@ export function YoumiWatchApp() {
 
   // Reflect the active page in the document title.
   useEffect(() => {
-    const label =
-      route === 'providers'
-        ? 'Providers'
-        : route === 'alerts'
-          ? 'Alerts'
-          : route === 'costs'
-            ? 'Costs'
-            : null
+    const TITLES: Partial<Record<WatchRoute, string>> = {
+      providers: 'Providers',
+      alerts: 'Alerts',
+      costs: 'Costs',
+      logs: 'Logs',
+    }
+    const label = TITLES[route]
     document.title = label ? `${label} · Youmi Watch` : 'Youmi Watch'
   }, [route])
 
@@ -80,6 +80,8 @@ export function YoumiWatchApp() {
           <AlertsPage onRefresh={handleRefresh} />
         ) : route === 'costs' ? (
           <CostsPage onRefresh={handleRefresh} />
+        ) : route === 'logs' ? (
+          <LogsPage onRefresh={handleRefresh} />
         ) : (
           <OverviewPage onRefresh={handleRefresh} />
         )}

@@ -594,17 +594,20 @@
   color: var(--yw-neutral);
   background: var(--yw-neutral-soft);
 }
-/* Alerts: severity + lifecycle. Soft tinted pills — never harsh solid blocks. */
+/* Alerts + Logs: severity / lifecycle / event outcomes. Soft tinted pills —
+   never harsh solid blocks. */
 .yw-badge--critical {
   color: var(--yw-danger);
   background: var(--yw-danger-soft);
 }
-.yw-badge--resolved {
+.yw-badge--resolved,
+.yw-badge--success {
   color: var(--yw-success);
   background: var(--yw-success-soft);
 }
 .yw-badge--info,
-.yw-badge--active {
+.yw-badge--active,
+.yw-badge--deployed {
   color: var(--yw-accent);
   background: var(--yw-accent-soft);
 }
@@ -1157,6 +1160,59 @@
   color: var(--yw-ink-soft);
 }
 
+/* ── Logs page ──────────────────────────────────────────────────────────── */
+/* Filter bar: search field + dropdowns */
+.yw-filters {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.yw-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 240px;
+  height: 42px;
+  padding: 0 14px;
+  border-radius: var(--yw-radius-sm);
+  border: 1px solid var(--yw-glass-border);
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--yw-ink-faint);
+  box-shadow: inset 0 1px 2px rgba(10, 25, 47, 0.06);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.yw-search:focus-within {
+  border-color: var(--yw-accent);
+  box-shadow: 0 0 0 3px rgba(47, 107, 212, 0.16);
+}
+.yw-search__input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  outline: none;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--yw-ink);
+}
+.yw-search__input::placeholder {
+  color: var(--yw-ink-faint);
+}
+.yw-filters__selects {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Event log table column template (reuses .yw-table primitives). */
+.yw-logs-table .yw-trow {
+  grid-template-columns:
+    58px 100px minmax(190px, 1.6fr) 96px 92px 78px 64px minmax(116px, auto);
+  gap: 12px;
+}
+
 /* ── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 1180px) {
   .yw-metrics {
@@ -1175,6 +1231,9 @@
   }
   .yw-cost-table .yw-trow {
     min-width: 640px;
+  }
+  .yw-logs-table .yw-trow {
+    min-width: 920px;
   }
 }
 

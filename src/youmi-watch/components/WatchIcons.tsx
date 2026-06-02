@@ -25,6 +25,8 @@ export type IconName =
   | 'chevron-down'
   | 'cost'
   | 'trend'
+  | 'clock'
+  | 'search'
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number }
 
@@ -148,6 +150,18 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <>
       <path d="M3 16.5l5.5-5.5 3.5 3 6.5-8" />
       <path d="M21 6v4.2h-4.2" />
+    </>
+  ),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7.5V12l3 1.8" />
+    </>
+  ),
+  search: (
+    <>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="M20 20l-3.8-3.8" />
     </>
   ),
 }

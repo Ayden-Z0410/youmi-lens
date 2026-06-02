@@ -9,13 +9,14 @@
 
 export const BASE_PATH = '/admin/watch'
 
-export type WatchRoute = 'overview' | 'providers' | 'alerts' | 'costs'
+export type WatchRoute = 'overview' | 'providers' | 'alerts' | 'costs' | 'logs'
 
 export const ROUTE_PATHS: Record<WatchRoute, string> = {
   overview: BASE_PATH,
   providers: `${BASE_PATH}/providers`,
   alerts: `${BASE_PATH}/alerts`,
   costs: `${BASE_PATH}/costs`,
+  logs: `${BASE_PATH}/logs`,
 }
 
 /** Map the current location pathname to a Youmi Watch route. */
@@ -24,5 +25,6 @@ export function routeFromPath(pathname: string): WatchRoute {
   if (rest === 'providers') return 'providers'
   if (rest === 'alerts') return 'alerts'
   if (rest === 'costs') return 'costs'
+  if (rest === 'logs') return 'logs'
   return 'overview'
 }
