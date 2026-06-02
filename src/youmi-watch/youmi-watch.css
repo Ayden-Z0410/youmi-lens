@@ -1213,6 +1213,120 @@
   gap: 12px;
 }
 
+/* ── Settings page ──────────────────────────────────────────────────────── */
+/* Provider connection rows (masked mock credentials) */
+.yw-conn-list {
+  display: flex;
+  flex-direction: column;
+}
+.yw-conn {
+  display: grid;
+  grid-template-columns: minmax(168px, 1.2fr) minmax(230px, 1.5fr) auto auto;
+  align-items: center;
+  gap: 20px;
+  padding: 16px 4px;
+  border-top: 1px solid var(--yw-hairline);
+}
+.yw-conn:first-child {
+  border-top: 0;
+}
+.yw-conn__id {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.yw-conn__creds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.yw-cred {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 8px;
+  background: rgba(10, 25, 47, 0.04);
+  border: 1px solid var(--yw-hairline);
+  font-size: 11.5px;
+  color: var(--yw-ink-faint);
+}
+.yw-cred strong {
+  font-weight: 600;
+  color: var(--yw-ink-soft);
+  letter-spacing: 0.04em;
+}
+.yw-conn__status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+.yw-conn__checked {
+  font-size: 11.5px;
+  color: var(--yw-ink-faint);
+}
+
+/* Generic settings rows (thresholds / notifications / appearance) */
+.yw-settings-list {
+  display: flex;
+  flex-direction: column;
+}
+.yw-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 0;
+  border-top: 1px solid var(--yw-hairline);
+}
+.yw-setting-row:first-child {
+  border-top: 0;
+}
+.yw-setting-row__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.yw-setting-row__label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--yw-ink);
+}
+.yw-setting-row__detail {
+  font-size: 12px;
+  color: var(--yw-ink-faint);
+}
+.yw-setting-row__control {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+/* Soft warning callout (security note) — tinted, never a harsh block */
+.yw-callout {
+  display: flex;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: var(--yw-radius-md);
+  background: var(--yw-warning-soft);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.yw-callout__icon {
+  flex-shrink: 0;
+  color: var(--yw-warning);
+}
+.yw-callout__text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #8a5a14;
+}
+
 /* ── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 1180px) {
   .yw-metrics {
@@ -1267,6 +1381,13 @@
   }
   .yw-provider {
     grid-template-columns: 1fr 1fr;
+  }
+  .yw-conn {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .yw-conn__status {
+    align-items: flex-start;
   }
   .yw-detail-actions {
     flex-direction: column;

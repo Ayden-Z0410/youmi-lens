@@ -663,3 +663,104 @@ export const systemHealth: SystemHealthItem[] = [
   { id: 'alert-engine', label: 'Alert engine', state: 'Mock mode', status: 'neutral' },
   { id: 'provider-sync', label: 'Provider sync', state: 'Mock mode', status: 'neutral' },
 ]
+
+// ───────────────────────────────────────────────────────────────────────────
+// Settings page
+//
+// SECURITY: UI-only. No real secrets, API keys, or provider credentials live
+// here. Credential fields are fixed masked placeholders ("••••••••") explicitly
+// labelled as mock — never sourced from, or written to, any real key store.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Fixed masked placeholder. Never a real secret — display only. */
+export const MASKED_KEY = '••••••••'
+
+export interface ProviderConnectionRow {
+  id: string
+  name: string
+  kind: string
+  icon: string
+  status: StatusKind
+  statusLabel: string
+  lastChecked: string
+  /** Masked mock credential summary — display only, no real values. */
+  keyMasked: string
+  region: string
+  mode: string
+}
+
+export interface ThresholdRow {
+  id: string
+  label: string
+  threshold: string
+  enabled: boolean
+}
+
+export interface NotificationRow {
+  id: string
+  channel: string
+  detail: string
+  /** true/false = toggle state; null = not connectable yet (shows a badge). */
+  enabled: boolean | null
+}
+
+export interface SecurityItem {
+  id: string
+  label: string
+  value: string
+}
+
+export interface AppearanceOption {
+  id: string
+  label: string
+  enabled: boolean
+}
+
+export const settingsMetrics: MetricDatum[] = [
+  { id: 'connected-providers', label: 'Connected Providers', icon: 'providers', value: '5', description: 'Mock connections' },
+  { id: 'alert-rules', label: 'Alert Rules', icon: 'alert', value: '5', description: 'Enabled thresholds' },
+  { id: 'notif-channels', label: 'Notification Channels', icon: 'bell', value: '2', description: 'Email and desktop' },
+  { id: 'security-mode', label: 'Security Mode', icon: 'shield', value: 'Mock', description: 'AdminGate placeholder' },
+]
+
+export const providerConnections: ProviderConnectionRow[] = [
+  { id: 'deepgram', name: 'Deepgram', kind: 'Speech API', icon: 'mic', status: 'success', statusLabel: 'Connected', lastChecked: 'Last checked 2 min ago', keyMasked: MASKED_KEY, region: 'Mock', mode: 'Read-only mock' },
+  { id: 'dashscope', name: 'DashScope', kind: 'LLM API', icon: 'sparkles', status: 'success', statusLabel: 'Connected', lastChecked: 'Last checked 5 min ago', keyMasked: MASKED_KEY, region: 'Mock', mode: 'Read-only mock' },
+  { id: 'brevo', name: 'Brevo', kind: 'Email API', icon: 'mail', status: 'success', statusLabel: 'Connected', lastChecked: 'Last checked 8 min ago', keyMasked: MASKED_KEY, region: 'Mock', mode: 'Read-only mock' },
+  { id: 'railway', name: 'Railway', kind: 'Hosting', icon: 'server', status: 'success', statusLabel: 'Connected', lastChecked: 'Last checked 1 min ago', keyMasked: MASKED_KEY, region: 'Mock', mode: 'Read-only mock' },
+  { id: 'supabase', name: 'Supabase', kind: 'Database & Storage', icon: 'database', status: 'warning', statusLabel: 'Warning', lastChecked: 'Last checked 3 min ago', keyMasked: MASKED_KEY, region: 'Mock', mode: 'Read-only mock' },
+]
+
+export const alertThresholds: ThresholdRow[] = [
+  { id: 'deepgram-minutes', label: 'Deepgram monthly minutes warning', threshold: '80%', enabled: true },
+  { id: 'dashscope-cost', label: 'DashScope daily cost limit', threshold: '$3', enabled: true },
+  { id: 'supabase-storage', label: 'Supabase storage warning', threshold: '75%', enabled: true },
+  { id: 'brevo-credits', label: 'Brevo credit minimum', threshold: '500', enabled: true },
+  { id: 'railway-health', label: 'Railway service health', threshold: 'Offline', enabled: true },
+]
+
+export const notificationSettings: NotificationRow[] = [
+  { id: 'email', channel: 'Email alerts', detail: 'Developer email', enabled: true },
+  { id: 'desktop', channel: 'Desktop notifications', detail: 'Local device', enabled: true },
+  { id: 'slack', channel: 'Slack', detail: 'Coming later', enabled: null },
+  { id: 'discord', channel: 'Discord', detail: 'Coming later', enabled: null },
+]
+
+export const securitySettings: SecurityItem[] = [
+  { id: 'admin-only', label: 'Admin-only dashboard', value: 'Placeholder' },
+  { id: 'server-check', label: 'Server-verified admin check', value: 'Not configured' },
+  { id: 'api-keys', label: 'API keys', value: 'Server-side only required' },
+  { id: 'audit-log', label: 'Audit log', value: 'Mock mode' },
+  { id: 'public-entry', label: 'Public entry point', value: 'Disabled' },
+  { id: 'data-mode', label: 'Data mode', value: 'Mock data only' },
+]
+
+export const securityNote =
+  'Before real provider data is connected, AdminGate must be replaced with a server-verified admin check.'
+
+export const appearanceSettings: AppearanceOption[] = [
+  { id: 'liquid-glass', label: 'Liquid Glass theme', enabled: true },
+  { id: 'dark-sidebar', label: 'Dark glass sidebar', enabled: true },
+  { id: 'compact-cards', label: 'Compact cards', enabled: false },
+  { id: 'reduce-motion', label: 'Reduce motion', enabled: false },
+]

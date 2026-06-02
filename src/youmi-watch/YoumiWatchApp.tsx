@@ -18,6 +18,7 @@ import { ProvidersPage } from './pages/ProvidersPage'
 import { AlertsPage } from './pages/AlertsPage'
 import { CostsPage } from './pages/CostsPage'
 import { LogsPage } from './pages/LogsPage'
+import { SettingsPage } from './pages/SettingsPage'
 import { ROUTE_PATHS, routeFromPath, type WatchRoute } from './routes'
 import './youmi-watch.css'
 
@@ -62,6 +63,7 @@ export function YoumiWatchApp() {
       alerts: 'Alerts',
       costs: 'Costs',
       logs: 'Logs',
+      settings: 'Settings',
     }
     const label = TITLES[route]
     document.title = label ? `${label} · Youmi Watch` : 'Youmi Watch'
@@ -82,6 +84,8 @@ export function YoumiWatchApp() {
           <CostsPage onRefresh={handleRefresh} />
         ) : route === 'logs' ? (
           <LogsPage onRefresh={handleRefresh} />
+        ) : route === 'settings' ? (
+          <SettingsPage onRefresh={handleRefresh} />
         ) : (
           <OverviewPage onRefresh={handleRefresh} />
         )}

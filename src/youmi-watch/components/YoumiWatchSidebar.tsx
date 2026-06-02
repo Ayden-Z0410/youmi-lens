@@ -25,12 +25,10 @@ const PRIMARY_NAV: NavItem[] = [
   { route: 'alerts', label: 'Alerts', icon: 'alert' },
   { route: 'costs', label: 'Costs', icon: 'cost' },
   { route: 'logs', label: 'Logs', icon: 'logs' },
+  { route: 'settings', label: 'Settings', icon: 'settings' },
 ]
 
-const FUTURE_NAV: FutureItem[] = [
-  { label: 'Users', icon: 'users', badge: '3' },
-  { label: 'Settings', icon: 'settings' },
-]
+const FUTURE_NAV: FutureItem[] = [{ label: 'Users', icon: 'users', badge: '3' }]
 
 export interface YoumiWatchSidebarProps {
   active: WatchRoute

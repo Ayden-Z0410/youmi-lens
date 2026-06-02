@@ -27,6 +27,9 @@ export type IconName =
   | 'trend'
   | 'clock'
   | 'search'
+  | 'mail'
+  | 'bell'
+  | 'shield'
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number }
 
@@ -162,6 +165,24 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <>
       <circle cx="11" cy="11" r="6.5" />
       <path d="M20 20l-3.8-3.8" />
+    </>
+  ),
+  mail: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="2.5" />
+      <path d="M4 7l8 6 8-6" />
+    </>
+  ),
+  bell: (
+    <>
+      <path d="M6 16.5l1-1.5v-3.5a5 5 0 0 1 10 0V15l1 1.5Z" />
+      <path d="M10 19.5a2 2 0 0 0 4 0" />
+    </>
+  ),
+  shield: (
+    <>
+      <path d="M12 3l7 3v5.5c0 4.3-3 7.2-7 8.5-4-1.3-7-4.2-7-8.5V6l7-3Z" />
+      <path d="M9 12l2.2 2.2L15 10" />
     </>
   ),
 }
