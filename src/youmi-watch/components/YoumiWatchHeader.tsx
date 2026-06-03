@@ -4,7 +4,10 @@
  * signed-in avatar on the right. The controls are presentational for now
  * (mock data) — `onRefresh` is wired but the range select is static.
  */
+import { useContext } from 'react'
 import { WatchIcon } from './WatchIcons'
+import { signOutWatch } from '../lib/watchAuth'
+import { WatchGateContext } from '../watchGateContext'
 
 export interface YoumiWatchHeaderProps {
   title: string
@@ -24,6 +27,11 @@ export function YoumiWatchHeader({
   avatar = 'YW',
   range = 'Last 30 days',
 }: YoumiWatchHeaderProps) {
+  const gate = useContext(WatchGateContext)
+  const handleSignOut = () => {
+    if (gate) gate.signOut()
+    else void signOutWatch()
+  }
   return (
     <header className="yw-header">
       <div>
@@ -48,6 +56,15 @@ export function YoumiWatchHeader({
         <span className="yw-avatar" aria-hidden>
           {avatar}
         </span>
+        <button
+          type="button"
+          className="yw-icon-btn"
+          onClick={handleSignOut}
+          aria-label="Sign out"
+          title="Sign out"
+        >
+          <WatchIcon name="logout" size={17} />
+        </button>
       </div>
     </header>
   )

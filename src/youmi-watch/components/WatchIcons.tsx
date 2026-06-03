@@ -30,6 +30,7 @@ export type IconName =
   | 'mail'
   | 'bell'
   | 'shield'
+  | 'logout'
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number }
 
@@ -183,6 +184,12 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <>
       <path d="M12 3l7 3v5.5c0 4.3-3 7.2-7 8.5-4-1.3-7-4.2-7-8.5V6l7-3Z" />
       <path d="M9 12l2.2 2.2L15 10" />
+    </>
+  ),
+  logout: (
+    <>
+      <path d="M14 7V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-2" />
+      <path d="M10 12h10M17 9l3 3-3 3" />
     </>
   ),
 }

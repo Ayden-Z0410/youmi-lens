@@ -12,9 +12,14 @@
  * dashboard tree does not mount until the server returns `authorized`, and the
  * gate fails closed on any error.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { YoumiWatchLayout } from './components/YoumiWatchLayout'
-import { AdminGateScreen } from './components/AdminGateScreen'
+import { WatchGateContext } from './watchGateContext'
+import {
+  AccessDeniedScreen,
+  GateLoading,
+  WatchSignIn,
+} from './components/AdminGateScreen'
 import { OverviewPage } from './pages/OverviewPage'
 import { ProvidersPage } from './pages/ProvidersPage'
 import { AlertsPage } from './pages/AlertsPage'
@@ -22,22 +27,37 @@ import { CostsPage } from './pages/CostsPage'
 import { LogsPage } from './pages/LogsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { checkAdminWatchAccess, type AdminAccessState } from './lib/adminAccess'
+import { signInWatch, signOutWatch } from './lib/watchAuth'
+import { getSupabase } from '../lib/supabase'
 import { ROUTE_PATHS, routeFromPath, type WatchRoute } from './routes'
 import './youmi-watch.css'
 
+/** Gate UI states. `signin` shows the standalone Youmi Watch login form. */
+type GateState = 'checking' | 'signin' | 'denied' | 'authorized'
+
+/** Map the server access verdict to a gate UI state. */
+function gateStateFor(access: AdminAccessState): GateState {
+  if (access === 'authorized') return 'authorized'
+  if (access === 'signed_out') return 'signin'
+  return 'denied'
+}
+
 /**
- * Server-verified admin gate. Renders children only after the server confirms
- * the signed-in user is an admin/developer; otherwise shows a loading, sign-in,
- * or access-denied screen. Fails closed.
+ * Standalone, server-verified admin gate. Youmi Watch logs the user in directly
+ * (no redirect to the main app), then verifies authorization server-side and
+ * renders the dashboard only when authorized. Fails closed.
  */
 function AdminGate({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<AdminAccessState>('checking')
+  const [state, setState] = useState<GateState>('checking')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
+  // Initial access check (covers the already-signed-in-and-authorized case).
   useEffect(() => {
     let cancelled = false
     const controller = new AbortController()
-    void checkAdminWatchAccess(controller.signal).then((next) => {
-      if (!cancelled) setState(next)
+    void checkAdminWatchAccess(controller.signal).then((access) => {
+      if (!cancelled) setState(gateStateFor(access))
     })
     return () => {
       cancelled = true
@@ -45,8 +65,72 @@ function AdminGate({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  if (state === 'authorized') return <>{children}</>
-  return <AdminGateScreen variant={state} />
+  // React to sign-out from inside the dashboard (or elsewhere): drop to the
+  // Youmi Watch sign-in form rather than redirecting anywhere.
+  useEffect(() => {
+    const supabase = getSupabase()
+    if (!supabase) return
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        setError(null)
+        setState('signin')
+      }
+    })
+    return () => data.subscription.unsubscribe()
+  }, [])
+
+  const handleSignIn = useCallback(async (email: string, password: string) => {
+    setSubmitting(true)
+    setError(null)
+    const result = await signInWatch(email, password)
+    if (result.error) {
+      setError(result.error)
+      setSubmitting(false)
+      return
+    }
+    // Authenticated — now verify authorization server-side.
+    setSubmitting(false)
+    setState('checking')
+    const access = await checkAdminWatchAccess()
+    setState(gateStateFor(access))
+  }, [])
+
+  const handleTryAnother = useCallback(async () => {
+    await signOutWatch()
+    setError(null)
+    setState('signin')
+  }, [])
+
+  const handleBackToSignIn = useCallback(() => {
+    setError(null)
+    setState('signin')
+  }, [])
+
+  // Provided to the dashboard (header sign-out): flip to the sign-in form
+  // immediately, then clear the Supabase session in the background.
+  const gateValue = useMemo(
+    () => ({
+      signOut: () => {
+        setError(null)
+        setState('signin')
+        void signOutWatch()
+      },
+    }),
+    [],
+  )
+
+  if (state === 'authorized') {
+    return <WatchGateContext.Provider value={gateValue}>{children}</WatchGateContext.Provider>
+  }
+  if (state === 'signin') {
+    return <WatchSignIn onSubmit={handleSignIn} submitting={submitting} error={error} />
+  }
+  if (state === 'denied') {
+    return (
+      <AccessDeniedScreen onTryAnother={handleTryAnother} onBackToSignIn={handleBackToSignIn} />
+    )
+  }
+  return <GateLoading />
 }
 
 export function YoumiWatchApp() {
