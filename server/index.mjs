@@ -26,6 +26,14 @@ import { handleSendSignupCode, handleVerifySignupCodeAndCreateUser } from './aut
 import { handleIapRestore, handleIapVerify } from './iapRoutes.mjs'
 import { handleDeleteAccount } from './accountRoutes.mjs'
 import { handleAdminWatchAccess } from './adminWatchAccess.mjs'
+import {
+  handleWatchAlerts,
+  handleWatchCosts,
+  handleWatchLogs,
+  handleWatchOverview,
+  handleWatchProviders,
+  handleWatchSettings,
+} from './watchRead.mjs'
 
 const PORT = Number(process.env.PORT || process.env.AI_SERVER_PORT || 3847)
 
@@ -227,6 +235,28 @@ app.get('/api/admin/watch/access', (req, res) => {
     }
   })
 })
+
+// ── Internal Youmi Watch read endpoints (Phase 3) ─────────────────────────────
+// Read-only, admin/developer-verified, aggregated data from the watch_* tables
+// with mock fallback. No provider APIs, no secrets, no writes.
+const watchReadRoutes = [
+  ['/api/admin/watch/overview', handleWatchOverview],
+  ['/api/admin/watch/providers', handleWatchProviders],
+  ['/api/admin/watch/alerts', handleWatchAlerts],
+  ['/api/admin/watch/costs', handleWatchCosts],
+  ['/api/admin/watch/logs', handleWatchLogs],
+  ['/api/admin/watch/settings', handleWatchSettings],
+]
+for (const [path, handler] of watchReadRoutes) {
+  app.get(path, (req, res) => {
+    void handler(req, res).catch((err) => {
+      console.error(`[watch-read] ${path}`, err)
+      if (!res.headersSent) {
+        res.status(500).json({ ok: false, error: 'watch_read_failed' })
+      }
+    })
+  })
+}
 
 app.post('/api/iap/verify', (req, res) => {
   void handleIapVerify(req, res).catch((err) => {
