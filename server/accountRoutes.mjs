@@ -16,6 +16,18 @@ async function deleteRows(db, table, column, value) {
   return { table, skipped: Boolean(error), error: error?.message ?? null }
 }
 
+async function markAppleTransactionsAccountDeleted(db, userId) {
+  const { error } = await db
+    .from('apple_iap_transactions')
+    .update({
+      owner_state: 'account_deleted',
+      account_deleted_at: new Date().toISOString(),
+    })
+    .eq('user_id', userId)
+  if (error && !isMissingTableError(error)) throw error
+  return { table: 'apple_iap_transactions', skipped: Boolean(error), error: error?.message ?? null }
+}
+
 async function listStoragePaths(storage, prefix) {
   const paths = []
   const stack = [prefix]
@@ -86,8 +98,8 @@ export async function handleDeleteAccount(req, res) {
   try {
     const storage = await removeStoragePrefix(db, userId)
     const deleted = []
+    deleted.push(await markAppleTransactionsAccountDeleted(db, userId))
     deleted.push(await deleteRows(db, 'beta_usage', 'user_id', userId))
-    deleted.push(await deleteRows(db, 'app_store_subscriptions', 'user_id', userId))
     deleted.push(await deleteRows(db, 'recordings', 'user_id', userId))
     deleted.push(await deleteRows(db, 'user_quota', 'user_id', userId))
     deleted.push(await deleteRows(db, 'profiles', 'id', userId))
