@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import * as youmiHosted from './ai/hosted/youmiHosted.mjs'
 import {
   verifyJwt,
-  getOrCreateUserQuota,
+  getEffectiveQuota,
   checkLiveSessionAllowed,
   recordBetaUsage,
   BETA_ERROR_CODES,
@@ -261,7 +261,7 @@ export function attachLiveRealtimeWs(server) {
           '[liveRealtimeWs] auth_ok',
           JSON.stringify({ wsSessionId, userId: liveUser.userId.slice(0, 8) }),
         )
-        const liveQuota = await getOrCreateUserQuota(liveUser.userId, liveUser.email)
+        const liveQuota = await getEffectiveQuota(liveUser.userId, liveUser.email)
         const liveGate = await checkLiveSessionAllowed(liveQuota, liveUser.userId)
         if (!liveGate.allowed) {
           safeSend(ws, {

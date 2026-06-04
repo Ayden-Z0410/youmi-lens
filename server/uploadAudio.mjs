@@ -26,7 +26,7 @@ import multer from 'multer'
 import { createClient } from '@supabase/supabase-js'
 import {
   verifyJwt,
-  getOrCreateUserQuota,
+  getEffectiveQuota,
   checkUploadAllowed,
   recordBetaUsage,
   BETA_ERROR_CODES,
@@ -117,7 +117,7 @@ export async function handleUploadAudio(req, res) {
 
   // ── Beta gate: per-recording duration check ───────────────────────────────
   if (durationSec > 0) {
-    const quota = await getOrCreateUserQuota(userId, email)
+    const quota = await getEffectiveQuota(userId, email)
     const gate = checkUploadAllowed(quota, durationSec)
     if (!gate.allowed) {
       console.warn(
