@@ -19,17 +19,14 @@
 --
 -- DEPLOY ORDERING (manual step — see report)
 -- ------------------------------------------
--- The currently-deployed backend (server/iapRoutes.mjs, server/accountRoutes.mjs)
--- still references the OLD name "app_store_subscriptions". Therefore this
--- migration must be APPLIED together with / immediately before the Phase 2
--- backend deploy that switches those modules to "apple_iap_transactions".
--- Do NOT apply this migration to production while the old backend code is live.
--- (IAP is currently dormant — EXPO_PUBLIC_USE_REAL_IAP=false, no paywall — so the
--- read/write paths are unused, but the account-deletion path in accountRoutes.mjs
--- touches this table and would error until Phase 2 ships.)
+-- Any backend that still references the OLD name "app_store_subscriptions" is
+-- incompatible with this migration. Apply this migration only as part of the
+-- coordinated Phase 2 backend deploy where all active code paths use
+-- "apple_iap_transactions"; do NOT apply it while old code is live.
 --
--- This migration is additive + idempotent (safe to re-run). It does not modify
--- any table unrelated to Student Pass billing.
+-- This migration is coordinated-deploy safe when run with the Phase 2 backend.
+-- It is written to be re-runnable after a successful first run, and includes
+-- preflight queries below for production data checks before applying.
 -- ============================================================================
 
 -- Shared updated_at trigger function (already exists; redefined idempotently).
@@ -106,7 +103,43 @@ ALTER TABLE public.apple_iap_transactions
   ADD CONSTRAINT apple_iap_transactions_status_check
   CHECK (status IN ('active', 'expired', 'revoked'));
 
--- 1f. Rename indexes (drop old-named, create new-named). The UNIQUE(transaction_id)
+-- 1f. Preserve Apple transaction audit history through account deletion.
+--     The original FK was `user_id NOT NULL REFERENCES auth.users ON DELETE CASCADE`,
+--     which would DESTROY the verified-transaction audit trail when an account is
+--     deleted. Relax to nullable + ON DELETE SET NULL so the immutable transaction
+--     record (and any later refund/revoke reconciliation keyed by transaction_id)
+--     survives, while ephemeral user_entitlements still cascade away. After this,
+--     accountRoutes.mjs must NOT explicitly delete these rows. RLS keeps the
+--     anonymized rows readable by the service role only.
+ALTER TABLE public.apple_iap_transactions
+  ALTER COLUMN user_id DROP NOT NULL;
+ALTER TABLE public.apple_iap_transactions
+  DROP CONSTRAINT IF EXISTS app_store_subscriptions_user_id_fkey;
+ALTER TABLE public.apple_iap_transactions
+  DROP CONSTRAINT IF EXISTS apple_iap_transactions_user_id_fkey;
+ALTER TABLE public.apple_iap_transactions
+  ADD CONSTRAINT apple_iap_transactions_user_id_fkey
+  FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE SET NULL;
+
+-- 1g. Deleted-account binding protection. A transaction whose Youmi account was
+--     deleted remains blocked from automatic claim by any newly-created account.
+--     accountRoutes.mjs marks owner_state='account_deleted' before deleting the
+--     auth user; the FK then sets user_id NULL while the ledger row survives.
+ALTER TABLE public.apple_iap_transactions
+  ADD COLUMN IF NOT EXISTS owner_state text NOT NULL DEFAULT 'active';
+ALTER TABLE public.apple_iap_transactions
+  ADD COLUMN IF NOT EXISTS account_deleted_at timestamptz;
+ALTER TABLE public.apple_iap_transactions
+  DROP CONSTRAINT IF EXISTS apple_iap_transactions_owner_state_check;
+ALTER TABLE public.apple_iap_transactions
+  ADD CONSTRAINT apple_iap_transactions_owner_state_check
+  CHECK (owner_state IN ('active', 'account_deleted'));
+
+UPDATE public.apple_iap_transactions
+   SET owner_state = 'active'
+ WHERE owner_state IS NULL;
+
+-- 1h. Rename indexes (drop old-named, create new-named). The UNIQUE(transaction_id)
 --     constraint that enforces replay protection is preserved by the table rename
 --     and is intentionally left intact.
 DROP INDEX IF EXISTS idx_app_store_subscriptions_user_id;
@@ -125,15 +158,17 @@ CREATE INDEX IF NOT EXISTS idx_apple_iap_transactions_status
   ON public.apple_iap_transactions (status);
 CREATE INDEX IF NOT EXISTS idx_apple_iap_transactions_purchase_date
   ON public.apple_iap_transactions (purchase_date);
+CREATE INDEX IF NOT EXISTS idx_apple_iap_transactions_owner_state
+  ON public.apple_iap_transactions (owner_state);
 
--- 1g. updated_at trigger (drop old/new names, recreate on the renamed table).
+-- 1i. updated_at trigger (drop old/new names, recreate on the renamed table).
 DROP TRIGGER IF EXISTS app_store_subscriptions_updated_at ON public.apple_iap_transactions;
 DROP TRIGGER IF EXISTS apple_iap_transactions_updated_at ON public.apple_iap_transactions;
 CREATE TRIGGER apple_iap_transactions_updated_at
   BEFORE UPDATE ON public.apple_iap_transactions
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
--- 1h. RLS: owner may read own rows; only the service role writes entitlement data.
+-- 1j. RLS: owner may read own rows; only the service role writes entitlement data.
 ALTER TABLE public.apple_iap_transactions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "app_store_subscriptions_select_own" ON public.apple_iap_transactions;
 DROP POLICY IF EXISTS "apple_iap_transactions_select_own" ON public.apple_iap_transactions;
@@ -259,7 +294,40 @@ ALTER TABLE public.billing_events ENABLE ROW LEVEL SECURITY;
 -- No policies: audit log is service-role only (append-only; not client-readable).
 
 -- ----------------------------------------------------------------------------
--- 5. Allow the student_pass plan_type on user_quota (preserves all existing
+-- 5. apple_iap_notifications — race-safe App Store Server Notification V2
+--    idempotency ledger. We store only operational metadata, never signedPayload.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.apple_iap_notifications (
+  notification_uuid text        PRIMARY KEY,
+  notification_type text,
+  subtype           text,
+  environment       text,
+  transaction_id    text,
+  processing_status text        NOT NULL DEFAULT 'processing',
+  processed_at      timestamptz,
+  safe_error        text,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+
+  CONSTRAINT apple_iap_notifications_processing_status_check
+    CHECK (processing_status IN ('processing', 'processed', 'failed'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_apple_iap_notifications_transaction_id
+  ON public.apple_iap_notifications (transaction_id);
+CREATE INDEX IF NOT EXISTS idx_apple_iap_notifications_type_created
+  ON public.apple_iap_notifications (notification_type, created_at);
+
+DROP TRIGGER IF EXISTS apple_iap_notifications_updated_at ON public.apple_iap_notifications;
+CREATE TRIGGER apple_iap_notifications_updated_at
+  BEFORE UPDATE ON public.apple_iap_notifications
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+ALTER TABLE public.apple_iap_notifications ENABLE ROW LEVEL SECURITY;
+-- No policies: Apple notification metadata is backend service-role only.
+
+-- ----------------------------------------------------------------------------
+-- 6. Allow the student_pass plan_type on user_quota (preserves all existing
 --    values; adds the new pass). Effective paid status is still resolved from
 --    user_entitlements at read time — this only widens the allowed set.
 -- ----------------------------------------------------------------------------
@@ -278,7 +346,7 @@ ALTER TABLE public.user_quota
   ));
 
 -- ----------------------------------------------------------------------------
--- 6. Seed the Student Pass product (idempotent upsert). sales_end_at enforces
+-- 7. Seed the Student Pass product (idempotent upsert). sales_end_at enforces
 --    the cutoff: Phase 2 rejects any verified purchaseDate AFTER this instant.
 --    is_purchasable hides/disables NEW purchases without blocking verify/restore
 --    of EXISTING purchases.
@@ -325,7 +393,7 @@ ON CONFLICT (product_id) DO UPDATE SET
 --
 -- -- e) RLS enabled on all four billing tables.
 -- SELECT relname, relrowsecurity FROM pg_class
---  WHERE relname IN ('apple_iap_transactions','billing_products','user_entitlements','billing_events')
+--  WHERE relname IN ('apple_iap_transactions','billing_products','user_entitlements','billing_events','apple_iap_notifications')
 --  ORDER BY relname;
 --
 -- -- f) user_quota now allows student_pass (constraint text contains it).
@@ -342,4 +410,32 @@ ON CONFLICT (product_id) DO UPDATE SET
 -- -- i) Replay guard preserved (UNIQUE on transaction_id) on the ledger.
 -- SELECT conname FROM pg_constraint
 --  WHERE conrelid='public.apple_iap_transactions'::regclass AND contype='u';
+--
+-- -- j) Deleted-account binding fields exist.
+-- SELECT column_name FROM information_schema.columns
+--  WHERE table_schema='public' AND table_name='apple_iap_transactions'
+--    AND column_name IN ('owner_state','account_deleted_at') ORDER BY column_name;
+--
+-- -- k) Notification UUID dedupe is race-safe.
+-- SELECT conname, contype FROM pg_constraint
+--  WHERE conrelid='public.apple_iap_notifications'::regclass
+--  ORDER BY conname;
+--
+-- PRODUCTION PREFLIGHT QUERIES (run BEFORE applying; investigate any rows).
+-- -- Unexpected legacy ledger plan/status values that would fail new checks.
+-- SELECT plan_type, count(*) FROM public.app_store_subscriptions
+--  GROUP BY plan_type
+--  HAVING plan_type NOT IN ('student_basic','student_plus','student_pro','student_pass');
+-- SELECT status, count(*) FROM public.app_store_subscriptions
+--  GROUP BY status
+--  HAVING status NOT IN ('active','expired','revoked');
+-- -- user_quota values that would fail the widened check.
+-- SELECT plan_type, count(*) FROM public.user_quota
+--  GROUP BY plan_type
+--  HAVING plan_type NOT IN ('public_trial','core_tester','student_basic','student_plus','student_pro','student_pass','admin');
+-- -- Orphaned legacy ledger users that would fail FK recreation.
+-- SELECT count(*) AS orphaned_ledger_users
+--   FROM public.app_store_subscriptions s
+--   LEFT JOIN auth.users u ON u.id = s.user_id
+--  WHERE s.user_id IS NOT NULL AND u.id IS NULL;
 -- ============================================================================
