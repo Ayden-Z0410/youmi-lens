@@ -54,4 +54,13 @@ describe('Phase 2 active path guarantees', () => {
     expect(source).toContain('getEffectiveQuota(user.userId, user.email)')
     expect(source).not.toContain('const quota = await getOrCreateUserQuota(user.userId, user.email)')
   })
+
+  it('/api/iap/entitlement returns safe inactive Student Pass status', () => {
+    const source = read('./iapRoutes.mjs')
+    expect(source).toContain('getLatestStudentPassEntitlement(db, user.userId)')
+    expect(source).toContain("status: 'none'")
+    expect(source).toContain('latestEntitlement: safeEntitlementSnapshot(latestEntitlement)')
+    expect(source).toContain('currentEntitlement: null')
+    expect(source).not.toContain('linked to a deleted Youmi Lens account')
+  })
 })

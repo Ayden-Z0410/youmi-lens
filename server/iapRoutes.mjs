@@ -24,6 +24,10 @@ import {
   findTransactionBinding,
   findTransactionOwner,
   getActiveEntitlement,
+  getLatestStudentPassEntitlement,
+  getLatestRevocationEventType,
+  deriveInactiveEntitlementStatus,
+  safeEntitlementSnapshot,
   recordBillingEvent,
   reserveNotification,
   markNotificationProcessed,
@@ -177,7 +181,7 @@ function safeIapError(err) {
     return { status: 409, error: 'iap_already_linked', message: 'This App Store purchase is already linked to another account.' }
   }
   if (err instanceof DeletedAccountBindingError) {
-    return { status: 409, error: 'iap_deleted_account_binding', message: 'This App Store purchase is linked to a deleted Youmi Lens account.' }
+    return { status: 409, error: 'iap_deleted_account_binding', message: 'This App Store purchase is linked to another account.' }
   }
   const message = err instanceof Error ? err.message : 'IAP verification failed'
   if (message.includes('not configured') || message.includes('root certificates') || message.includes('APPLE_')) {
@@ -333,16 +337,50 @@ export async function handleIapEntitlement(req, res) {
   await getOrCreateUserQuota(user.userId, user.email)
   const entitlement = await getActiveEntitlement(db, user.userId, new Date().toISOString())
   if (!entitlement) {
-    res.json({ ok: true, entitlement: { active: false, productId: null, expiresAt: null } })
+    const latestEntitlement = await getLatestStudentPassEntitlement(db, user.userId)
+    if (!latestEntitlement) {
+      res.json({
+        ok: true,
+        entitlement: {
+          active: false,
+          status: 'none',
+          productId: null,
+          planType: null,
+          expiresAt: null,
+          currentEntitlement: null,
+          latestEntitlement: null,
+        },
+      })
+      return
+    }
+    const latestRevocationEventType = await getLatestRevocationEventType(db, latestEntitlement)
+    const status = deriveInactiveEntitlementStatus(latestEntitlement, latestRevocationEventType)
+    res.json({
+      ok: true,
+      entitlement: {
+        active: false,
+        status,
+        productId: latestEntitlement.product_id,
+        planType: latestEntitlement.plan_type,
+        expiresAt: latestEntitlement.expires_at,
+        currentEntitlement: null,
+        latestEntitlement: safeEntitlementSnapshot(latestEntitlement),
+      },
+    })
     return
   }
+  const currentEntitlement = safeEntitlementSnapshot(entitlement)
   res.json({
     ok: true,
     entitlement: {
       active: true,
+      status: 'active',
       productId: entitlement.product_id,
       planType: entitlement.plan_type,
+      startsAt: entitlement.starts_at,
       expiresAt: entitlement.expires_at,
+      currentEntitlement,
+      latestEntitlement: currentEntitlement,
     },
   })
 }

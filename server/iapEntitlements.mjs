@@ -140,7 +140,7 @@ export function decideGrantWithBinding({ verified, product, binding, requestingU
     return {
       ok: false,
       code: 'account_deleted',
-      message: 'This App Store purchase is linked to a deleted Youmi Lens account.',
+      message: 'This App Store purchase is linked to another account.',
       event: { ...baseEvent, event_type: 'verify_reject', detail: { reason: 'deleted_account_binding' } },
     }
   }
@@ -243,6 +243,56 @@ export async function getActiveEntitlement(db, userId, nowIso) {
     .maybeSingle()
   if (error) throw error
   return data ?? null
+}
+
+export function safeEntitlementSnapshot(entitlement) {
+  if (!entitlement) return null
+  return {
+    productId: entitlement.product_id,
+    planType: entitlement.plan_type,
+    startsAt: entitlement.starts_at,
+    expiresAt: entitlement.expires_at,
+    status: entitlement.status,
+  }
+}
+
+export function deriveInactiveEntitlementStatus(entitlement, latestRevocationEventType = null, nowMs = Date.now()) {
+  if (!entitlement) return 'none'
+  if (entitlement.status === 'revoked') {
+    return latestRevocationEventType === 'refund' ? 'refunded' : 'revoked'
+  }
+  if (entitlement.revoked_at) return 'revoked'
+  const expiresMs = entitlement.expires_at ? new Date(entitlement.expires_at).getTime() : NaN
+  if (Number.isFinite(expiresMs) && expiresMs <= nowMs) return 'expired'
+  return entitlement.status || 'none'
+}
+
+export async function getLatestStudentPassEntitlement(db, userId) {
+  const { data, error } = await db
+    .from('user_entitlements')
+    .select('product_id, plan_type, starts_at, expires_at, status, revoked_at, source_transaction_id, created_at')
+    .eq('user_id', userId)
+    .eq('plan_type', 'student_pass')
+    .order('expires_at', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  return data ?? null
+}
+
+export async function getLatestRevocationEventType(db, entitlement) {
+  if (!entitlement?.source_transaction_id) return null
+  const { data, error } = await db
+    .from('billing_events')
+    .select('event_type')
+    .eq('transaction_id', entitlement.source_transaction_id)
+    .in('event_type', ['refund', 'revoke'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  return data?.event_type ?? null
 }
 
 /**

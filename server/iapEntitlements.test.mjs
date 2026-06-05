@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   computeEntitlementWindow,
+  deriveInactiveEntitlementStatus,
   decideGrantWithBinding,
   isEntitlementActive,
   reserveNotification,
   resolveEffectivePlanType,
+  safeEntitlementSnapshot,
 } from './iapEntitlements.mjs'
 
 const PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
@@ -191,6 +193,58 @@ describe('effective plan resolution', () => {
 
   it('recognizes active non-revoked entitlement windows', () => {
     expect(isEntitlementActive(activeEntitlement, Date.parse('2026-06-10T00:00:00Z'))).toBe(true)
+  })
+})
+
+describe('inactive entitlement status response helpers', () => {
+  const inactiveEntitlement = {
+    product_id: PRODUCT_ID,
+    plan_type: 'student_pass',
+    starts_at: '2026-06-01T00:00:00Z',
+    expires_at: '2026-07-01T00:00:00Z',
+    status: 'active',
+    revoked_at: null,
+    source_transaction_id: 'tx-1',
+  }
+
+  it('formats a safe entitlement snapshot without transaction IDs', () => {
+    expect(safeEntitlementSnapshot(inactiveEntitlement)).toEqual({
+      productId: PRODUCT_ID,
+      planType: 'student_pass',
+      startsAt: '2026-06-01T00:00:00Z',
+      expiresAt: '2026-07-01T00:00:00Z',
+      status: 'active',
+    })
+  })
+
+  it('reports expired for a known Student Pass outside its window', () => {
+    expect(
+      deriveInactiveEntitlementStatus(
+        inactiveEntitlement,
+        null,
+        Date.parse('2026-07-02T00:00:00Z'),
+      ),
+    ).toBe('expired')
+  })
+
+  it('reports refunded when the latest revocation event is refund', () => {
+    expect(
+      deriveInactiveEntitlementStatus(
+        { ...inactiveEntitlement, status: 'revoked', revoked_at: '2026-06-15T00:00:00Z' },
+        'refund',
+        Date.parse('2026-06-16T00:00:00Z'),
+      ),
+    ).toBe('refunded')
+  })
+
+  it('reports revoked for revoke events without exposing ownership details', () => {
+    expect(
+      deriveInactiveEntitlementStatus(
+        { ...inactiveEntitlement, status: 'revoked', revoked_at: '2026-06-15T00:00:00Z' },
+        'revoke',
+        Date.parse('2026-06-16T00:00:00Z'),
+      ),
+    ).toBe('revoked')
   })
 })
 
