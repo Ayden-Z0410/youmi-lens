@@ -28,6 +28,7 @@ import { LogsPage } from './pages/LogsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { checkAdminWatchAccess, type AdminAccessState } from './lib/adminAccess'
 import { signInWatch, signOutWatch } from './lib/watchAuth'
+import { unauthorizedGateAction } from './lib/watchPageState'
 import { getSupabase } from '../lib/supabase'
 import { ROUTE_PATHS, routeFromPath, type WatchRoute } from './routes'
 import './youmi-watch.css'
@@ -115,6 +116,15 @@ function AdminGate({ children }: { children: React.ReactNode }) {
         setState('signin')
         void signOutWatch()
       },
+      // A page endpoint returned 401/403 — return control to the gate and
+      // unmount the dashboard. 401 → sign-in (clear the invalid session);
+      // 403 → Access denied (still signed in, just not authorized).
+      reportUnauthorized: (reason: 'not_signed_in' | 'forbidden') => {
+        setError(null)
+        const screen = unauthorizedGateAction(reason)
+        setState(screen)
+        if (screen === 'signin') void signOutWatch()
+      },
     }),
     [],
   )
@@ -169,25 +179,21 @@ export function YoumiWatchApp() {
     document.title = label ? `${label} · Youmi Watch` : 'Youmi Watch'
   }, [route])
 
-  const handleRefresh = useCallback(() => {
-    // Mock data — nothing to refetch yet. Hook for the future API layer.
-  }, [])
-
   return (
     <AdminGate>
       <YoumiWatchLayout active={route} onNavigate={navigate}>
         {route === 'providers' ? (
-          <ProvidersPage onRefresh={handleRefresh} />
+          <ProvidersPage />
         ) : route === 'alerts' ? (
-          <AlertsPage onRefresh={handleRefresh} />
+          <AlertsPage />
         ) : route === 'costs' ? (
-          <CostsPage onRefresh={handleRefresh} />
+          <CostsPage />
         ) : route === 'logs' ? (
-          <LogsPage onRefresh={handleRefresh} />
+          <LogsPage />
         ) : route === 'settings' ? (
-          <SettingsPage onRefresh={handleRefresh} />
+          <SettingsPage />
         ) : (
-          <OverviewPage onRefresh={handleRefresh} />
+          <OverviewPage />
         )}
       </YoumiWatchLayout>
     </AdminGate>

@@ -1,10 +1,7 @@
 /**
  * LogsPage — provider events, API requests, system activity, and failed
- * operations. Reuses the shared Youmi Watch layout, header, metric row, and
- * glass cards/table primitives for full visual consistency. Mock data only.
- *
- * Layout: metric row → Log Filters → Event Logs (full width, 8-column table) →
- * Selected Log Details + System Health split.
+ * operations. Fetches /api/admin/watch/logs with local mock fallback. Layout
+ * unchanged.
  */
 import { YoumiWatchHeader } from '../components/YoumiWatchHeader'
 import { MetricCard } from '../components/MetricCard'
@@ -12,6 +9,8 @@ import { LogFilters } from '../components/LogFilters'
 import { EventLogs } from '../components/EventLogs'
 import { LogDetailPanel } from '../components/LogDetailPanel'
 import { SystemHealthCard } from '../components/SystemHealthCard'
+import { useWatchPageData } from '../hooks/useWatchPageData'
+import type { LogsPayload } from '../types/api'
 import {
   logMetrics,
   logFilters,
@@ -20,28 +19,44 @@ import {
   systemHealth,
 } from '../data/mockData'
 
-export function LogsPage({ onRefresh }: { onRefresh?: () => void }) {
+const FALLBACK: LogsPayload = {
+  metrics: logMetrics,
+  filters: logFilters,
+  rows: logRows,
+  selectedDetail: selectedLogDetail,
+  systemHealth,
+}
+
+export function LogsPage() {
+  const { data, source, loading, unauthorized, refresh } = useWatchPageData<LogsPayload>(
+    'logs',
+    FALLBACK,
+  )
+
   return (
     <>
       <YoumiWatchHeader
         title="Logs"
         subtitle="Search provider events, API requests, system activity, and failed operations."
-        onRefresh={onRefresh}
+        onRefresh={refresh}
+        source={source}
+        dataLoading={loading}
+        unauthorized={unauthorized}
       />
 
       <div className="yw-metrics">
-        {logMetrics.map((metric) => (
+        {data.metrics.map((metric) => (
           <MetricCard key={metric.id} metric={metric} />
         ))}
       </div>
 
-      <LogFilters filters={logFilters} />
+      <LogFilters filters={data.filters} />
 
-      <EventLogs rows={logRows} />
+      <EventLogs rows={data.rows} />
 
       <div className="yw-grid-2">
-        <LogDetailPanel detail={selectedLogDetail} />
-        <SystemHealthCard items={systemHealth} />
+        <LogDetailPanel detail={data.selectedDetail} />
+        <SystemHealthCard items={data.systemHealth} />
       </div>
     </>
   )

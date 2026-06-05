@@ -288,6 +288,67 @@
   font-weight: 400;
   color: var(--yw-ink-soft);
 }
+.yw-header__source {
+  margin-top: 10px;
+}
+
+/* ── Data-source badge (Live / Server mock / Local fallback / Access error) ── */
+.yw-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border-radius: var(--yw-radius-pill);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.yw-source__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.yw-source__dot.is-loading {
+  animation: yw-pulse 1.1s ease-in-out infinite;
+}
+.yw-source--live {
+  color: var(--yw-success);
+  background: var(--yw-success-soft);
+}
+.yw-source--mock {
+  color: var(--yw-accent);
+  background: var(--yw-accent-soft);
+}
+.yw-source--fallback {
+  color: #b45309;
+  background: var(--yw-warning-soft);
+}
+.yw-source--error {
+  color: var(--yw-danger);
+  background: var(--yw-danger-soft);
+}
+@keyframes yw-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Refresh button: spin its icon briefly while a fetch is in flight. */
+.yw-icon-btn.is-spinning svg {
+  animation: yw-spin 0.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .yw-source__dot.is-loading,
+  .yw-icon-btn.is-spinning svg {
+    animation-duration: 2.4s;
+  }
+}
 
 .yw-header__actions {
   display: flex;

@@ -1,8 +1,6 @@
 /**
- * ProvidersPage — connected services, quotas, API health and status. Built from
- * the Stitch Providers reference, reusing the Overview page's shared layout,
- * header, metric row, glass cards and chart for visual consistency. Mock data
- * only — "Add Provider" / "View Details" are presentational placeholders.
+ * ProvidersPage — connected services, quotas, API health and status. Fetches
+ * /api/admin/watch/providers with local mock fallback. Layout/styling unchanged.
  */
 import { YoumiWatchHeader } from '../components/YoumiWatchHeader'
 import { MetricCard } from '../components/MetricCard'
@@ -11,6 +9,8 @@ import { ProviderCard } from '../components/ProviderCard'
 import { TrendChart } from '../components/TrendChart'
 import { StatusBadge } from '../components/StatusBadge'
 import { WatchIcon, type IconName } from '../components/WatchIcons'
+import { useWatchPageData } from '../hooks/useWatchPageData'
+import type { ProvidersPayload } from '../types/api'
 import {
   providerMetrics,
   providers,
@@ -18,17 +18,32 @@ import {
   connectionHealth,
 } from '../data/mockData'
 
-export function ProvidersPage({ onRefresh }: { onRefresh?: () => void }) {
+const FALLBACK: ProvidersPayload = {
+  metrics: providerMetrics,
+  providers,
+  usageTrend: providerUsageTrend,
+  connectionHealth,
+}
+
+export function ProvidersPage() {
+  const { data, source, loading, unauthorized, refresh } = useWatchPageData<ProvidersPayload>(
+    'providers',
+    FALLBACK,
+  )
+
   return (
     <>
       <YoumiWatchHeader
         title="Providers"
         subtitle="Monitor connected services, quotas, API health, and provider status."
-        onRefresh={onRefresh}
+        onRefresh={refresh}
+        source={source}
+        dataLoading={loading}
+        unauthorized={unauthorized}
       />
 
       <div className="yw-metrics">
-        {providerMetrics.map((metric) => (
+        {data.metrics.map((metric) => (
           <MetricCard key={metric.id} metric={metric} />
         ))}
       </div>
@@ -44,7 +59,7 @@ export function ProvidersPage({ onRefresh }: { onRefresh?: () => void }) {
         }
       >
         <div className="yw-provider-list">
-          {providers.map((provider) => (
+          {data.providers.map((provider) => (
             <ProviderCard key={provider.id} provider={provider} />
           ))}
         </div>
@@ -52,12 +67,12 @@ export function ProvidersPage({ onRefresh }: { onRefresh?: () => void }) {
 
       <div className="yw-grid-2">
         <GlassCard title="Provider Usage Trend" subtitle="API call volume by service">
-          <TrendChart data={providerUsageTrend} />
+          <TrendChart data={data.usageTrend} />
         </GlassCard>
 
         <GlassCard title="Connection Health" subtitle="Live latency & status">
           <div className="yw-health-list">
-            {connectionHealth.map((conn) => (
+            {data.connectionHealth.map((conn) => (
               <div key={conn.id} className="yw-health">
                 <span className="yw-health__logo">
                   <WatchIcon name={conn.icon as IconName} size={16} />

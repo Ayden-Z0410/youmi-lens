@@ -1,14 +1,10 @@
 /**
  * SettingsPage — provider connections, alert thresholds, notifications,
- * dashboard security, and appearance. UI-only with mock data; reuses the shared
- * Youmi Watch layout, header, metric row, and glass cards for full visual
- * consistency.
+ * dashboard security, and appearance. Fetches /api/admin/watch/settings with
+ * local mock fallback. Layout unchanged.
  *
- * SECURITY: no real API keys, secrets, provider integrations, or backend calls.
- * Credentials are masked placeholders clearly labelled as mock.
- *
- * Layout: metric row → Provider Connections (full width) →
- * Alert Thresholds + Notifications split → Security + Appearance split.
+ * SECURITY: credentials are always masked placeholders (never real keys); the
+ * server endpoint returns masked values only.
  */
 import { YoumiWatchHeader } from '../components/YoumiWatchHeader'
 import { MetricCard } from '../components/MetricCard'
@@ -17,6 +13,8 @@ import { AlertThresholds } from '../components/AlertThresholds'
 import { NotificationSettings } from '../components/NotificationSettings'
 import { SecuritySettings } from '../components/SecuritySettings'
 import { AppearanceSettings } from '../components/AppearanceSettings'
+import { useWatchPageData } from '../hooks/useWatchPageData'
+import type { SettingsPayload } from '../types/api'
 import {
   settingsMetrics,
   providerConnections,
@@ -27,31 +25,49 @@ import {
   appearanceSettings,
 } from '../data/mockData'
 
-export function SettingsPage({ onRefresh }: { onRefresh?: () => void }) {
+const FALLBACK: SettingsPayload = {
+  metrics: settingsMetrics,
+  providerConnections,
+  alertThresholds,
+  notifications: notificationSettings,
+  security: securitySettings,
+  securityNote,
+  appearance: appearanceSettings,
+}
+
+export function SettingsPage() {
+  const { data, source, loading, unauthorized, refresh } = useWatchPageData<SettingsPayload>(
+    'settings',
+    FALLBACK,
+  )
+
   return (
     <>
       <YoumiWatchHeader
         title="Settings"
         subtitle="Manage provider connections, alert thresholds, notifications, and dashboard security."
-        onRefresh={onRefresh}
+        onRefresh={refresh}
+        source={source}
+        dataLoading={loading}
+        unauthorized={unauthorized}
       />
 
       <div className="yw-metrics">
-        {settingsMetrics.map((metric) => (
+        {data.metrics.map((metric) => (
           <MetricCard key={metric.id} metric={metric} />
         ))}
       </div>
 
-      <ProviderConnections rows={providerConnections} />
+      <ProviderConnections rows={data.providerConnections} />
 
       <div className="yw-grid-2">
-        <AlertThresholds rows={alertThresholds} />
-        <NotificationSettings rows={notificationSettings} />
+        <AlertThresholds rows={data.alertThresholds} />
+        <NotificationSettings rows={data.notifications} />
       </div>
 
       <div className="yw-grid-2">
-        <SecuritySettings items={securitySettings} note={securityNote} />
-        <AppearanceSettings options={appearanceSettings} />
+        <SecuritySettings items={data.security} note={data.securityNote} />
+        <AppearanceSettings options={data.appearance} />
       </div>
     </>
   )
