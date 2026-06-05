@@ -1,6 +1,53 @@
-# Student Pass Phase 4 Runbook And Test Prep
+# Student Pass Release Runbook And Test Prep
 
 Do not execute this runbook until App Store Connect setup, production migration approval, and deployment approval are explicitly given.
+
+## Migration-Transition Strategy
+
+Selected strategy: Option A, backend compatibility layer.
+
+Why:
+
+- The updated backend can be deployed before the table rename.
+- It resolves exactly one Apple IAP ledger before affected IAP reads/writes.
+- It falls back to `public.app_store_subscriptions` only when `public.apple_iap_transactions` is confirmed absent by a narrow missing-table error.
+- It never dual-writes.
+- It fails closed when both ledgers exist, neither ledger exists, or a permission, RLS, missing-column, constraint, duplicate-key, malformed-query, timeout, network, or general database error prevents safe resolution.
+- It centralizes ledger access in `server/iapLedger.mjs`, so fallback behavior is auditable and later removable.
+
+Rejected strategy: temporary compatibility view.
+
+- A simple view would not safely preserve all existing reads/writes/deletes.
+- Updatable views with INSTEAD OF triggers would add migration complexity exactly during the risky interval.
+- RLS and service-role behavior through a compatibility view would need separate validation.
+- It risks making two names appear write-capable at once, which is contrary to the single-ledger rule.
+
+Compatibility behavior:
+
+- If only `app_store_subscriptions` exists, the compatible backend can resolve the legacy ledger name in limited compatibility mode. New Student Pass verification and transaction writes fail safely; do not activate Student Pass sales in this mode.
+- If only `apple_iap_transactions` exists, it uses the new ledger.
+- If both exist unexpectedly, the backend treats this as split-brain and fails closed. Stop deployment immediately; do not guess which table is authoritative.
+- If neither exists, it fails closed.
+- Account deletion uses the same abstraction. On the new ledger it marks `owner_state = 'account_deleted'` before auth deletion. On the legacy ledger, deletion may proceed only when the user has no legacy billing rows; if billing rows exist, deletion is temporarily blocked with a safe user-facing message.
+- Cache behavior: there is no sticky legacy table cache. Each affected operation re-probes both table names, so a migration is detected on the next call. Process restart clears all in-memory state. Split-brain and no-ledger states always fail closed.
+
+Accepted fallback conditions:
+
+- PostgreSQL `42P01` undefined table.
+- PostgREST `PGRST205` schema-cache table-not-found error that explicitly says the table could not be found in the schema cache.
+
+Never-fallback conditions:
+
+- Missing column.
+- Permission denied.
+- RLS failure.
+- Constraint failure.
+- Duplicate key.
+- Malformed query.
+- Timeout.
+- Network error.
+- Supabase outage.
+- Any other general database error.
 
 ## Migration Preflight Expected Results
 
@@ -35,62 +82,219 @@ Abort conditions:
 
 ## Coordinated Deployment Runbook
 
-1. Take database snapshot/backups.
-   - Confirm Supabase PITR/snapshot status.
-   - Export schema and critical billing tables if available.
-   - Record current backend deployment version.
+### A. Keep Sales Disabled
 
-2. Run read-only preflight.
-   - Execute `docs/student-pass-migration-preflight.sql`.
-   - Save result output and notices.
-   - Abort on any abort condition above.
+- Confirm `billing_products.is_purchasable` is false or the table/row does not exist yet.
+- Do not create the live App Store Connect product yet.
+- Do not create a TestFlight Student Pass build yet.
+- Do not apply the Supabase migration yet.
+- Do not enable paid sales.
 
-3. Protect write paths.
-   - Dangerous interval: after the table rename, old backend code using `app_store_subscriptions` will fail or write the wrong ledger.
-   - Minimize by deploying a backend build that is compatible with the renamed ledger immediately after migration.
-   - Best option: schedule a short maintenance window or temporarily disable purchase verification endpoints at the router/load-balancer level while migration runs.
-   - Do not block Restore longer than the maintenance window; Restore must be available immediately after backend deploy.
+### B. Verify Git Branches And Commits
 
-4. Apply migration.
-   - Apply `supabase-migration-student-pass-entitlements.sql`.
-   - Do not run from an editor session with unreviewed modifications.
+Commands to run locally before touching production:
 
-5. Run post-migration validation.
-   - Confirm `app_store_subscriptions` is gone or renamed.
-   - Confirm `apple_iap_transactions`, `billing_products`, `user_entitlements`, `billing_events`, and `apple_iap_notifications` exist.
-   - Confirm RLS is enabled on public billing tables.
-   - Confirm expected constraints, policies, triggers, and indexes.
-   - Confirm Student Pass product row.
+```bash
+git -C /Users/summer/Documents/youmi-lens status --short --branch
+git -C /Users/summer/Documents/youmi-lens log --oneline --decorate -8
+git -C /Users/summer/Documents/youmi-lens-ipad status --short --branch
+git -C /Users/summer/Documents/youmi-lens-ipad log --oneline --decorate -8
+npm --prefix /Users/summer/Documents/youmi-lens test
+npm --prefix /Users/summer/Documents/youmi-lens run typecheck
+npm --prefix /Users/summer/Documents/youmi-lens run build
+npm --prefix /Users/summer/Documents/youmi-lens-ipad run test:phase3
+cd /Users/summer/Documents/youmi-lens-ipad && npx tsc --noEmit
+cd /Users/summer/Documents/youmi-lens-ipad && npx expo config --type public
+```
 
-6. Deploy Phase 2/4 backend immediately.
-   - Deploy backend containing renamed ledger references and enhanced entitlement status.
-   - Confirm Railway env vars are present.
+Expected branches:
 
-7. Backend smoke tests.
-   - `GET /api/health` or equivalent health endpoint.
-   - Authenticated `GET /api/quota/status` for a free user.
-   - Authenticated `GET /api/iap/entitlement` for no-purchase user returns `status: none`.
-   - Verification endpoint rejects bad/missing signed transaction safely.
-   - Notification endpoint rejects malformed `signedPayload` safely.
+- Backend: `feat/student-pass-phase1-schema`.
+- iPad: `main`.
 
-8. Confirm free users still work.
-   - Upload/record/process within free quota.
-   - Quota denial still works after limits.
+### C. Verify Railway Environment Without Printing Secrets
 
-9. Confirm account deletion.
-   - Delete test account.
-   - Confirm Apple transaction history is retained with nullable `user_id` and binding state.
-   - Confirm no `app_store_subscriptions` reference remains.
+Confirm presence only:
 
-10. Confirm Restore remains available.
-   - New purchases may be disabled by `is_purchasable=false`, but Restore endpoint and entitlement endpoint stay live.
-   - Verify pre-cutoff transactions can still restore after sales stop.
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `APPLE_IAP_PRIVATE_KEY`
+- `APPLE_IAP_KEY_ID`
+- `APPLE_IAP_ISSUER_ID`
+- `APPLE_APP_APPLE_ID`
+- `APPLE_BUNDLE_ID`
+- `APPLE_IAP_ROOT_CERTIFICATE_PATHS` or `APPLE_IAP_ROOT_CERTIFICATES_BASE64`
+- `APPLE_IAP_ENVIRONMENT`
+- Student Pass quota variables if overriding defaults
+- Railway/public API configuration
 
-11. Rollback plan.
-   - If migration fails before commit, roll back transaction.
-   - If migration succeeds but backend deploy fails, deploy the last known compatible Phase 2/4 backend immediately.
-   - If data corruption is found, stop purchase/restore write paths, restore from snapshot/PITR, and preserve logs for reconciliation.
-   - Never reintroduce a second active Apple transaction ledger.
+### D. Deploy Compatibility Backend Before Migration
+
+Deploy the backend containing `server/iapLedger.mjs` before migration, after approval and from the backend repo:
+
+```bash
+git -C /Users/summer/Documents/youmi-lens rev-parse HEAD
+railway variables
+railway up
+```
+
+Do not print secret values in logs, shell history, tickets, or reports.
+
+### E. Smoke-Test Compatibility Backend Against Legacy Database
+
+```bash
+curl -fsS "$API_BASE_URL/api/health"
+curl -fsS -H "Authorization: Bearer $TEST_USER_JWT" "$API_BASE_URL/api/quota/status"
+curl -fsS -H "Authorization: Bearer $TEST_USER_JWT" "$API_BASE_URL/api/iap/entitlement"
+curl -fsS -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TEST_USER_JWT" \
+  -d '{"platform":"ios","purchases":[]}' \
+  "$API_BASE_URL/api/iap/restore"
+```
+
+Expected before migration:
+
+- Free-user quota paths work.
+- Account deletion test user with no legacy billing rows still completes.
+- Account deletion with legacy billing rows is temporarily blocked before auth deletion.
+- No Student Pass sale can activate in legacy mode.
+- IAP verification fails safely if billing product/migration tables are unavailable.
+- IAP verification must not partially write Student Pass data to `app_store_subscriptions`.
+- Restore endpoint remains available and does not expose ledger internals.
+- Ledger logs may show legacy limited mode; they must not show secret values.
+
+### F. Run Read-Only Supabase Preflight
+
+Run `docs/student-pass-migration-preflight.sql` in Supabase SQL editor or with a read-only database connection:
+
+```bash
+psql "$SUPABASE_READONLY_DATABASE_URL" \
+  -v ON_ERROR_STOP=1 \
+  -f /Users/summer/Documents/youmi-lens/docs/student-pass-migration-preflight.sql
+```
+
+Abort if both tables exist, neither table exists, or production data fails any preflight check. If both ledger tables appear at any point, stop and do not continue automatically.
+
+### G. Backup / Snapshot
+
+- Confirm Supabase PITR/snapshot status.
+- Export schema and critical billing tables if available.
+- Record current Railway deployment ID/version.
+- Record legacy ledger row count for post-migration parity.
+
+### H. Apply Database Migration
+
+Apply only after compatible backend smoke tests pass:
+
+```bash
+psql "$SUPABASE_DATABASE_URL" \
+  -v ON_ERROR_STOP=1 \
+  -f /Users/summer/Documents/youmi-lens/supabase-migration-student-pass-entitlements.sql
+```
+
+### I. Run Post-Migration Validation
+
+- Confirm row-count parity from old estimated/recorded count to `apple_iap_transactions`.
+- Confirm `apple_iap_transactions`, `billing_products`, `user_entitlements`, `billing_events`, and `apple_iap_notifications`.
+- Confirm `app_store_subscriptions` no longer exists as a table.
+- Confirm constraints:
+  - `apple_iap_transactions_transaction_id_key`
+  - `apple_iap_transactions_owner_state_check`
+  - `user_entitlements_status_check`
+  - `apple_iap_notifications_processing_status_check`
+- Confirm RLS enabled on public billing tables.
+- Confirm seed product row:
+  - product ID `com.aydenz.youmilensipad.studentpass30d`
+  - `plan_type = student_pass`
+  - `entitlement_days = 30`
+  - `is_purchasable = false`
+  - `sales_end_at = 2026-07-19T00:00:00Z`
+- Confirm notification ledger uniqueness/deduplication.
+- Confirm user entitlements constraints and RLS.
+- Confirm only `apple_iap_transactions` exists as the Apple transaction ledger.
+
+### J. Restart Or Redeploy Railway To Clear Compatibility State
+
+The compatibility layer does not keep a sticky legacy cache, but restart/redeploy anyway to clear all process-local state and confirm the backend resolves only the new ledger.
+
+### K. Post-Migration Backend Smoke Tests
+
+Run:
+
+```bash
+curl -fsS "$API_BASE_URL/api/health"
+curl -fsS -H "Authorization: Bearer $TEST_USER_JWT" "$API_BASE_URL/api/quota/status"
+curl -fsS -H "Authorization: Bearer $TEST_USER_JWT" "$API_BASE_URL/api/iap/entitlement"
+curl -fsS -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TEST_USER_JWT" \
+  -d '{"platform":"ios","purchases":[]}' \
+  "$API_BASE_URL/api/iap/restore"
+curl -fsS -X POST -H "Content-Type: application/json" \
+  -d '{"signedPayload":"bad"}' \
+  "$API_BASE_URL/api/iap/apple/notifications" || true
+```
+
+Confirm:
+
+- Backend uses `apple_iap_transactions`.
+- Backend fails closed if `app_store_subscriptions` reappears.
+- No writes go to `app_store_subscriptions`.
+- Entitlement endpoint returns `status: none` for a no-purchase test user.
+- Quota status returns Student Pass purchase metadata and free quota fields.
+- Free users can still upload/process within quota.
+- Restore endpoint remains available.
+- Notification endpoint rejects malformed signed payloads safely.
+- Refund/revoke notification processing is ready for signed Apple payloads.
+- Account deletion marks ledger binding state on the new table before auth-user deletion.
+
+### L. Later Production Steps
+
+Only after all backend migration checks pass:
+
+- Create the App Store Connect product.
+- Create a TestFlight build.
+- Run StoreKit Local and Sandbox purchase/restore/cancel/refund/revoke tests.
+- Keep `is_purchasable=false` until Sandbox and TestFlight tests pass.
+- Only after explicit approval may `is_purchasable` become true.
+
+### M. Rollback
+
+Before migration:
+
+- Abort freely.
+- Keep compatible backend deployed or roll back to the previous backend if no migration is planned.
+- Since sales remain disabled, no new Student Pass purchases should exist.
+
+After migration:
+
+- Do not blindly rename tables back if any Apple transactions may have been written after migration.
+- If backend is unhealthy, redeploy the compatibility backend commit; it supports old-only and new-only states.
+- If data is wrong, stop purchase/restore write paths, preserve logs, and restore from Supabase snapshot/PITR.
+- If table rename rollback is required, first confirm no new rows were written to `apple_iap_transactions` after the migration timestamp.
+- If both ledger tables exist during rollback, stop immediately and reconcile manually from backup and row-count evidence.
+- Never create a second active Apple transaction ledger.
+
+## App Store Connect Preparation Checklist
+
+Do not create the product until production rollout approval.
+
+- Type: Non-Renewing Subscription
+- Reference Name: `Student Pass 30 Days`
+- Product ID: `com.aydenz.youmilensipad.studentpass30d`
+- Display Name: `Student Pass – 30 Days`
+- Description: `30 days of premium access. One-time payment. Does not renew automatically.`
+- US price target: `$4.99`
+- Availability regions: start with United States unless a broader launch is explicitly approved.
+- Review screenshot: iPad paywall showing Student Pass, localized price, Restore Purchases, 30-day wording, one-time payment wording, and no auto-renewing language.
+- App Review notes: explain this is a non-renewing subscription for 30 days of premium access, verified by backend, with Restore Purchases available from Plans and Settings.
+- Sandbox testers: create at least two Sandbox Apple IDs for purchase/restore/cross-account tests.
+- App Store Server Notification V2 URL:
+  - Sandbox: `https://<railway-domain>/api/iap/apple/notifications`
+  - Production: same path on production backend after env is switched to Production.
+- Notification URL strategy: use one production backend URL only after it validates both Sandbox and Production environments according to deployment stage; do not point live App Store traffic at a local or staging URL.
+- Paid Apps Agreement: must be active.
+- Banking: must be complete.
+- Tax forms: must be complete.
 
 ## End-To-End Test Matrix
 
@@ -135,6 +339,27 @@ Abort conditions:
 - Paid quota enforcement: Student Pass limits apply server-side.
 - Expiry fallback: after 30 days or controlled short entitlement duration in a non-production test product/database, access falls back to free quotas.
 
+## StoreKit Local Static Validation
+
+Allowed Phase 5A claim: StoreKit configuration JSON was statically validated.
+
+Current static expectations:
+
+- `storekit/YoumiLens.storekit` contains one non-renewing subscription.
+- Product ID is `com.aydenz.youmilensipad.studentpass30d`.
+- Display name is `Student Pass – 30 Days`.
+- Description is `30 days of premium access. One-time payment. Does not renew automatically.`
+- Local test price is `4.99`.
+- No legacy Basic / Plus / Pro product IDs remain in the StoreKit JSON.
+
+If no simulator/device StoreKit session is run, these remain untested:
+
+- Product sheet opening.
+- Purchase listener.
+- Cancellation.
+- Successful transaction flow.
+- Restore flow.
+
 ## Notification Readiness
 
 - Endpoint: `POST /api/iap/apple/notifications`.
@@ -158,23 +383,25 @@ Abort conditions:
 
 Backend/Railway:
 
-- `SUPABASE_URL`: cannot verify from repo.
-- `SUPABASE_ANON_KEY`: cannot verify from repo.
-- `SUPABASE_SERVICE_ROLE_KEY`: cannot verify from repo; must be server-only.
-- `APPLE_IAP_PRIVATE_KEY`: cannot verify from repo; must be secret.
-- `APPLE_IAP_KEY_ID`: cannot verify from repo.
-- `APPLE_IAP_ISSUER_ID`: cannot verify from repo.
-- `APPLE_BUNDLE_ID`: expected `com.aydenz.youmilensipad`; `.env.example` documents it.
-- `APPLE_APP_APPLE_ID`: required for Production; cannot verify from repo.
-- `APPLE_IAP_ENVIRONMENT`: expected `Sandbox` before production testing, `Production` for production; cannot verify deployed value.
-- `APPLE_IAP_ROOT_CERTIFICATE_PATHS` or `APPLE_IAP_ROOT_CERTIFICATES_BASE64`: cannot verify from repo.
-- `APPLE_IAP_ENABLE_ONLINE_CHECKS`: optional; `.env.example` documents `true`.
-- Student Pass quota env values: documented in `.env.example`; code has locked defaults.
-- Sales cutoff/product settings: stored in `billing_products` migration row, not an env var.
+- `SUPABASE_URL`: documented but not verifiable.
+- `SUPABASE_SERVICE_ROLE_KEY`: documented but not verifiable; must be server-only.
+- `APPLE_IAP_PRIVATE_KEY`: documented but not verifiable; manual configuration required.
+- `APPLE_IAP_KEY_ID`: documented but not verifiable; manual configuration required.
+- `APPLE_IAP_ISSUER_ID`: documented but not verifiable; manual configuration required.
+- `APPLE_APP_APPLE_ID`: documented but not verifiable; manual configuration required for Production.
+- `APPLE_BUNDLE_ID`: present locally in `.env.example` as expected `com.aydenz.youmilensipad`; deployed value not verifiable.
+- Apple root certificates: documented via `APPLE_IAP_ROOT_CERTIFICATE_PATHS` or `APPLE_IAP_ROOT_CERTIFICATES_BASE64`; manual configuration required.
+- Apple environment: documented via `APPLE_IAP_ENVIRONMENT`; manual configuration required.
+- Student Pass quota variables: present locally in `.env.example`; defaults present in code; deployed overrides not verifiable.
+- Railway/public API configuration: documented but not verifiable from repo.
+- Sales cutoff/product settings: present locally in migration; production row missing until migration is applied.
 
 iPad/EAS:
 
-- `EXPO_PUBLIC_API_BASE_URL`: required; cannot verify EAS value from repo.
-- `EXPO_PUBLIC_USE_REAL_IAP`: required `true` or `1` for real IAP builds; `.env` value is not printed here.
-- Product ID: centralized in `lib/purchases.ts`.
-- Apple secrets: none required and none should be present in client env.
+- API base URL: documented through `EXPO_PUBLIC_API_BASE_URL`; EAS value not verifiable from repo.
+- `EXPO_PUBLIC_USE_REAL_IAP`: documented; EAS value not verifiable from repo.
+- Bundle ID: present locally in `app.json` as `com.aydenz.youmilensipad`.
+- Product ID: present locally in `lib/purchases.ts` and StoreKit JSON.
+- StoreKit configuration: present locally at `storekit/YoumiLens.storekit`.
+- EAS environment configuration: documented but not verifiable from repo.
+- Apple server secrets in client: no `APPLE_IAP_PRIVATE_KEY`, `APPLE_IAP_KEY_ID`, or `APPLE_IAP_ISSUER_ID` references found in the iPad source review.
