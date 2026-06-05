@@ -19,6 +19,12 @@ import { buildQuotaStatus } from './betaUsageStatus.mjs'
 import { BETA_ERROR_CODES, getOrCreateUserQuota } from './betaGate.mjs'
 import { verifyAppleTransaction, verifyAppleNotification } from './iapApple.mjs'
 import {
+  isAppleIapLedgerUnavailableError,
+  insertAppleIapTransaction,
+  updateAppleIapTransactionByTransactionId,
+  revokeAppleIapTransaction,
+} from './iapLedger.mjs'
+import {
   decideGrantWithBinding,
   loadBillingProduct,
   findTransactionBinding,
@@ -108,9 +114,10 @@ async function persistTransaction(db, userId, verified, product, status, binding
     throw new DeletedAccountBindingError('deleted account binding')
   }
   if (binding?.userId === userId) {
-    const { error } = await db
-      .from('apple_iap_transactions')
-      .update({
+    const { error } = await updateAppleIapTransactionByTransactionId(
+      db,
+      verified.transactionId,
+      {
         status,
         purchase_date: verified.purchaseDate,
         apple_expires_date: verified.appleExpiresDate,
@@ -119,13 +126,13 @@ async function persistTransaction(db, userId, verified, product, status, binding
         last_verified_at: new Date().toISOString(),
         owner_state: 'active',
         account_deleted_at: null,
-      })
-      .eq('transaction_id', verified.transactionId)
+      },
+    )
     if (error) throw error
     return
   }
 
-  const { error } = await db.from('apple_iap_transactions').insert(transactionRow(userId, verified, product, status))
+  const { error } = await insertAppleIapTransaction(db, transactionRow(userId, verified, product, status))
   if (error) {
     if (error.code === '23505') {
       const latestBinding = await findTransactionBinding(db, verified)
@@ -167,16 +174,22 @@ async function revokeByTransaction(db, transactionId, revokedAtIso) {
     .update({ status: 'revoked', revoked_at })
     .eq('source_transaction_id', transactionId)
   if (entErr) throw entErr
-  const { error: txErr } = await db
-    .from('apple_iap_transactions')
-    .update({ status: 'revoked', revoked_at })
-    .eq('transaction_id', transactionId)
+  const { error: txErr } = await revokeAppleIapTransaction(db, transactionId, revoked_at)
   if (txErr) throw txErr
 }
 
 // ── Verify (core) ────────────────────────────────────────────────────────────
 
 function safeIapError(err) {
+  if (isAppleIapLedgerUnavailableError(err)) {
+    return { status: 503, error: 'iap_temporarily_unavailable', message: 'In-app purchase service is temporarily unavailable.' }
+  }
+  if (
+    ['42P01', 'PGRST205', '42501', '42703', '23514', 'PGRST100', '57014'].includes(String(err?.code ?? '')) ||
+    /fetch failed|timeout|timed out/i.test(String(err?.message ?? ''))
+  ) {
+    return { status: 503, error: 'iap_temporarily_unavailable', message: 'In-app purchase service is temporarily unavailable.' }
+  }
   if (err instanceof AlreadyLinkedError) {
     return { status: 409, error: 'iap_already_linked', message: 'This App Store purchase is already linked to another account.' }
   }
@@ -309,6 +322,12 @@ export async function handleIapRestore(req, res) {
       restoredCount += 1
       if (result.granted) restoredActive += 1
     } catch (err) {
+      if (isAppleIapLedgerUnavailableError(err)) {
+        logIapFailure('restore', user, purchase, err)
+        const safe = safeIapError(err)
+        res.status(safe.status).json({ ok: false, error: safe.error, message: safe.message })
+        return
+      }
       if (err instanceof AlreadyLinkedError || err instanceof DeletedAccountBindingError) alreadyLinked = true
       // Ignore individually unverifiable/expired purchases during restore.
     }

@@ -14,6 +14,7 @@
  * The pure functions below (window/decision/resolution) carry the security
  * rules and are unit-tested directly. DB helpers are thin and injectable.
  */
+import { findAppleIapTransactionBinding } from './iapLedger.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -190,37 +191,9 @@ export async function loadBillingProduct(db, productId) {
   return data ?? null
 }
 
-function bindingFromRow(row) {
-  if (!row) return null
-  if (row.owner_state === 'account_deleted') {
-    return { userId: null, ownerState: 'account_deleted' }
-  }
-  if (row.user_id) return { userId: row.user_id, ownerState: row.owner_state ?? 'active' }
-  return null
-}
-
 /** Which account binding (if any) already owns this transaction or original transaction. */
 export async function findTransactionBinding(db, { transactionId, originalTransactionId }) {
-  const { data: byTx, error: txErr } = await db
-    .from('apple_iap_transactions')
-    .select('user_id, owner_state')
-    .eq('transaction_id', transactionId)
-    .maybeSingle()
-  if (txErr) throw txErr
-  const txBinding = bindingFromRow(byTx)
-  if (txBinding) return txBinding
-
-  if (originalTransactionId) {
-    const { data: byOrig, error: origErr } = await db
-      .from('apple_iap_transactions')
-      .select('user_id, owner_state')
-      .eq('original_transaction_id', originalTransactionId)
-      .limit(1)
-    if (origErr) throw origErr
-    const origBinding = bindingFromRow(byOrig?.[0])
-    if (origBinding) return origBinding
-  }
-  return null
+  return findAppleIapTransactionBinding(db, { transactionId, originalTransactionId })
 }
 
 /** Back-compat helper for code paths that only need the current user id. */
