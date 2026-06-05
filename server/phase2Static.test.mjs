@@ -19,6 +19,12 @@ describe('Student Pass quota defaults', () => {
       max_processing_jobs_per_day: 10,
     })
   })
+
+  it('keeps new Student Pass sales disabled in the migration seed', () => {
+    const migration = read('../supabase-migration-student-pass-entitlements.sql')
+    expect(migration).toContain("'com.aydenz.youmilensipad.studentpass30d'")
+    expect(migration).toMatch(/'Student Pass – 30 Days',\s*false,\s*'2026-07-19T00:00:00Z'/)
+  })
 })
 
 describe('App Store notification behavior', () => {
@@ -37,8 +43,9 @@ describe('Phase 2 active path guarantees', () => {
 
   it('account deletion marks Apple transactions instead of deleting history', () => {
     const source = read('./accountRoutes.mjs')
-    expect(source).toContain("from('apple_iap_transactions')")
-    expect(source).toContain("owner_state: 'account_deleted'")
+    const ledger = read('./iapLedger.mjs')
+    expect(source).toContain('prepareAppleIapLedgerForAccountDeletion')
+    expect(ledger).toContain("owner_state: 'account_deleted'")
     expect(source).not.toMatch(/deleteRows\(db,\s*['"]apple_iap_transactions/)
   })
 

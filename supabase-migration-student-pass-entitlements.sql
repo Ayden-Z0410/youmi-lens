@@ -359,7 +359,7 @@ VALUES
    'non_renewing',
    30,
    'Student Pass – 30 Days',
-   true,
+   false,
    '2026-07-19T00:00:00Z')
 ON CONFLICT (product_id) DO UPDATE SET
   plan_type        = EXCLUDED.plan_type,

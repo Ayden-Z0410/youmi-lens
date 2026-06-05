@@ -1,13 +1,27 @@
 import { BETA_ERROR_CODES, getAdminClient, verifyJwt } from './betaGate.mjs'
+import {
+  isAppleIapLedgerUnavailableError,
+  isMissingAppleIapLedgerTableError,
+  prepareAppleIapLedgerForAccountDeletion,
+} from './iapLedger.mjs'
 
 const AUDIO_BUCKET = 'lecture-audio'
 const MISSING_TABLE_CODES = new Set(['42P01', 'PGRST205', 'PGRST116'])
 
 function isMissingTableError(error) {
   if (!error) return false
+  if (isMissingAppleIapLedgerTableError(error)) return true
   if (MISSING_TABLE_CODES.has(error.code)) return true
   const message = `${error.message ?? ''} ${error.details ?? ''}`.toLowerCase()
   return message.includes('does not exist') || message.includes('could not find the table')
+}
+
+function isTemporaryDatabaseStateError(error) {
+  if (isAppleIapLedgerUnavailableError(error)) return true
+  if (['42P01', 'PGRST205', '42501', '42703', '23514', 'PGRST100', '57014'].includes(String(error?.code ?? ''))) {
+    return true
+  }
+  return /fetch failed|timeout|timed out/i.test(String(error?.message ?? ''))
 }
 
 async function deleteRows(db, table, column, value) {
@@ -16,16 +30,19 @@ async function deleteRows(db, table, column, value) {
   return { table, skipped: Boolean(error), error: error?.message ?? null }
 }
 
-async function markAppleTransactionsAccountDeleted(db, userId) {
-  const { error } = await db
-    .from('apple_iap_transactions')
-    .update({
-      owner_state: 'account_deleted',
-      account_deleted_at: new Date().toISOString(),
-    })
-    .eq('user_id', userId)
-  if (error && !isMissingTableError(error)) throw error
-  return { table: 'apple_iap_transactions', skipped: Boolean(error), error: error?.message ?? null }
+async function prepareAppleTransactionsForAccountDeletion(db, userId) {
+  const result = await prepareAppleIapLedgerForAccountDeletion(db, userId)
+  if (result.blocked) {
+    const err = new Error('Account deletion is temporarily unavailable.')
+    err.name = 'AccountDeletionTemporarilyUnavailableError'
+    throw err
+  }
+  return {
+    table: result.table,
+    skipped: false,
+    reason: result.reason ?? null,
+    error: null,
+  }
 }
 
 async function listStoragePaths(storage, prefix) {
@@ -96,9 +113,9 @@ export async function handleDeleteAccount(req, res) {
   const { userId } = user
 
   try {
-    const storage = await removeStoragePrefix(db, userId)
     const deleted = []
-    deleted.push(await markAppleTransactionsAccountDeleted(db, userId))
+    deleted.push(await prepareAppleTransactionsForAccountDeletion(db, userId))
+    const storage = await removeStoragePrefix(db, userId)
     deleted.push(await deleteRows(db, 'beta_usage', 'user_id', userId))
     deleted.push(await deleteRows(db, 'recordings', 'user_id', userId))
     deleted.push(await deleteRows(db, 'user_quota', 'user_id', userId))
@@ -126,6 +143,14 @@ export async function handleDeleteAccount(req, res) {
         message: err instanceof Error ? err.message : String(err),
       }),
     )
+    if (err?.name === 'AccountDeletionTemporarilyUnavailableError' || isTemporaryDatabaseStateError(err)) {
+      res.status(503).json({
+        ok: false,
+        error: 'account_delete_temporarily_unavailable',
+        message: 'Account deletion is temporarily unavailable. Please try again later or contact support.',
+      })
+      return
+    }
     res.status(500).json({
       ok: false,
       error: 'account_delete_failed',
