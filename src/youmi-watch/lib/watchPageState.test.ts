@@ -27,6 +27,12 @@ describe('nextWatchState', () => {
     expect(s.data).toEqual({ n: 3 })
   })
 
+  it('preserves the server "partial" source for mixed live/mock data', () => {
+    const s = nextWatchState(prev, { status: 'ok', source: 'partial', data: { n: 4 } })
+    expect(s.source).toBe('partial')
+    expect(s.data).toEqual({ n: 4 })
+  })
+
   it('flags unauthorized and keeps prior data (not silently mock)', () => {
     const s = nextWatchState(
       { ...prev, source: 'mock', data: { n: 5 } },
@@ -52,6 +58,7 @@ describe('nextWatchState', () => {
 describe('dataSourceLabel', () => {
   it('labels each state', () => {
     expect(dataSourceLabel({ source: 'live' })).toBe('Live data')
+    expect(dataSourceLabel({ source: 'partial' })).toBe('Partial live')
     expect(dataSourceLabel({ source: 'mock' })).toBe('Server mock')
     expect(dataSourceLabel({ source: 'local-fallback' })).toBe('Local fallback')
     expect(dataSourceLabel({ source: 'mock', unauthorized: true })).toBe('Access error')
@@ -65,6 +72,7 @@ describe('dataSourceLabel', () => {
 describe('dataSourceTone', () => {
   it('maps tone per state', () => {
     expect(dataSourceTone({ source: 'live' })).toBe('live')
+    expect(dataSourceTone({ source: 'partial' })).toBe('partial')
     expect(dataSourceTone({ source: 'mock' })).toBe('mock')
     expect(dataSourceTone({ source: 'local-fallback' })).toBe('fallback')
     expect(dataSourceTone({ source: 'live', unauthorized: true })).toBe('error')

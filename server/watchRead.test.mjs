@@ -183,6 +183,23 @@ describe('read handlers — mock fallback', () => {
 describe('read handlers — live data', () => {
   beforeEach(authorize)
 
+  it('overview marks mixed live and mock sections as partial', async () => {
+    const now = new Date().toISOString()
+    getAdminClientMock.mockReturnValue(
+      mockClient({
+        watch_cost_events: [
+          { provider: 'deepgram', event_type: 'live_transcription', estimated_cost_usd: 0.14, occurred_at: now },
+        ],
+        watch_alerts: [],
+      }),
+    )
+    const res = fakeRes()
+    await handleWatchOverview({ headers: {} }, res)
+    expect(res.body.source).toBe('partial')
+    expect(res.body.activity).toHaveLength(1)
+    expect(res.body.alerts[0].title).toBe('Supabase storage approaching limit')
+  })
+
   it('settings returns seeded alert rules and config-derived notifications', async () => {
     getAdminClientMock.mockReturnValue(
       mockClient({
@@ -198,7 +215,7 @@ describe('read handlers — live data', () => {
     )
     const res = fakeRes()
     await handleWatchSettings({ headers: {} }, res)
-    expect(res.body.source).toBe('live')
+    expect(res.body.source).toBe('partial')
     expect(res.body.alertThresholds).toHaveLength(2)
     expect(res.body.alertThresholds[0]).toMatchObject({ label: 'Supabase storage warning', threshold: '75%', enabled: true })
     // provider connections are present and always masked (never real keys)
@@ -218,7 +235,7 @@ describe('read handlers — live data', () => {
     )
     const res = fakeRes()
     await handleWatchAlerts({ headers: {} }, res)
-    expect(res.body.source).toBe('live')
+    expect(res.body.source).toBe('partial')
     expect(res.body.rules).toHaveLength(1)
     expect(res.body.rules[0]).toMatchObject({ provider: 'Deepgram', threshold: '80%', enabled: true })
   })
@@ -233,7 +250,7 @@ describe('read handlers — live data', () => {
     )
     const res = fakeRes()
     await handleWatchLogs({ headers: {} }, res)
-    expect(res.body.source).toBe('live')
+    expect(res.body.source).toBe('partial')
     expect(res.body.rows).toHaveLength(1)
     expect(res.body.rows[0]).not.toHaveProperty('metadata')
     expect(JSON.stringify(res.body.rows)).not.toContain('sk-x')

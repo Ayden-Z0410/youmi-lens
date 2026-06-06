@@ -317,6 +317,10 @@
   color: var(--yw-success);
   background: var(--yw-success-soft);
 }
+.yw-source--partial {
+  color: #0369a1;
+  background: rgba(14, 165, 233, 0.12);
+}
 .yw-source--mock {
   color: var(--yw-accent);
   background: var(--yw-accent-soft);

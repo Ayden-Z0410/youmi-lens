@@ -199,6 +199,9 @@ export function costRowToLogEntry(row, { now = Date.now() } = {}) {
 function mockPayload(key) {
   return { ok: true, source: 'mock', ...MOCK[key] }
 }
+function partialPayload(payload) {
+  return { ok: true, source: 'partial', ...payload }
+}
 
 async function buildOverview() {
   const db = getAdminClient()
@@ -232,7 +235,7 @@ async function buildOverview() {
     text: `${capitalize(r.provider)} — ${humanizeEvent(r.event_type)}`,
     time: relTime(r.occurred_at, now),
   }))
-  return { ok: true, source: 'live', metrics, usageTrend: agg.trend, alerts: MOCK.overview.alerts, activity }
+  return partialPayload({ metrics, usageTrend: agg.trend, alerts: MOCK.overview.alerts, activity })
 }
 
 async function buildProviders() {
@@ -281,7 +284,7 @@ async function buildProviders() {
     { id: 'warnings', label: 'Warnings', icon: 'alert', value: String(warnings), description: 'Need attention', status: { kind: 'watch', label: 'Watch' } },
     { id: 'offline', label: 'Offline', icon: 'offline', value: String(offline), description: offline ? 'Provider outage' : 'No outages', status: { kind: 'stable', label: 'Stable' } },
   ]
-  return { ok: true, source: 'live', metrics, providers, usageTrend: MOCK.providers.usageTrend, connectionHealth }
+  return partialPayload({ metrics, providers, usageTrend: MOCK.providers.usageTrend, connectionHealth })
 }
 
 async function buildAlerts() {
@@ -329,14 +332,12 @@ async function buildAlerts() {
     { id: 'critical', label: 'Critical', icon: 'alert', value: String(active.filter((a) => a.severity === 'critical').length), description: 'High severity' },
     { id: 'total-week', label: 'Total This Week', icon: 'logs', value: String((alerts || []).length), description: 'Across all providers' },
   ]
-  return {
-    ok: true,
-    source: 'live',
+  return partialPayload({
     metrics: hasAlerts ? metrics : MOCK.alerts.metrics,
     rows: rows.length ? rows : MOCK.alerts.rows,
     rules: mappedRules.length ? mappedRules : MOCK.alerts.rules,
     selectedDetail: MOCK.alerts.selectedDetail,
-  }
+  })
 }
 
 async function buildCosts() {
@@ -411,15 +412,13 @@ async function buildLogs() {
 
   const now = Date.now()
   const rows = data.map((r) => costRowToLogEntry(r, { now }))
-  return {
-    ok: true,
-    source: 'live',
+  return partialPayload({
     metrics: MOCK.logs.metrics,
     filters: MOCK.logs.filters,
     rows,
     selectedDetail: MOCK.logs.selectedDetail,
     systemHealth: MOCK.logs.systemHealth,
-  }
+  })
 }
 
 async function buildSettings() {
@@ -474,9 +473,7 @@ async function buildSettings() {
     { id: 'notif-channels', label: 'Notification Channels', icon: 'bell', value: String(enabledChannels), description: 'Email and desktop' },
     { id: 'security-mode', label: 'Security Mode', icon: 'shield', value: 'Server', description: 'AdminGate verified' },
   ]
-  return {
-    ok: true,
-    source: 'live',
+  return partialPayload({
     metrics,
     providerConnections,
     alertThresholds: alertThresholds.length ? alertThresholds : MOCK.settings.alertThresholds,
@@ -484,7 +481,7 @@ async function buildSettings() {
     security: MOCK.settings.security,
     securityNote: MOCK.settings.securityNote,
     appearance: MOCK.settings.appearance,
-  }
+  })
 }
 
 // ── small mapping helpers ───────────────────────────────────────────────────

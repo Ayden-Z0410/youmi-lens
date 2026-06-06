@@ -43,6 +43,11 @@ describe('fetchWatchEndpoint', () => {
     expect(await fetchWatchEndpoint('costs')).toMatchObject({ status: 'ok', source: 'live' })
   })
 
+  it('preserves source: partial for mixed live/mock server payloads', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ ok: true, source: 'partial', x: 1 })))
+    expect(await fetchWatchEndpoint('overview')).toMatchObject({ status: 'ok', source: 'partial' })
+  })
+
   it('preserves source: mock (never upgraded to live)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ ok: true, source: 'mock', x: 1 })))
     expect(await fetchWatchEndpoint('costs')).toMatchObject({ status: 'ok', source: 'mock' })
