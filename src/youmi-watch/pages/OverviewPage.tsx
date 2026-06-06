@@ -26,10 +26,8 @@ const FALLBACK: OverviewPayload = {
 }
 
 export function OverviewPage() {
-  const { data, source, loading, unauthorized, refresh } = useWatchPageData<OverviewPayload>(
-    'overview',
-    FALLBACK,
-  )
+  const { data, source, coverage, loading, unauthorized, refresh } =
+    useWatchPageData<OverviewPayload>('overview', FALLBACK)
 
   return (
     <>
@@ -38,6 +36,7 @@ export function OverviewPage() {
         subtitle="Real-time health and usage across the Youmi Lens platform."
         onRefresh={refresh}
         source={source}
+        coverage={coverage}
         dataLoading={loading}
         unauthorized={unauthorized}
       />

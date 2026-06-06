@@ -36,10 +36,8 @@ const FALLBACK: SettingsPayload = {
 }
 
 export function SettingsPage() {
-  const { data, source, loading, unauthorized, refresh } = useWatchPageData<SettingsPayload>(
-    'settings',
-    FALLBACK,
-  )
+  const { data, source, coverage, loading, unauthorized, refresh } =
+    useWatchPageData<SettingsPayload>('settings', FALLBACK)
 
   return (
     <>
@@ -48,6 +46,7 @@ export function SettingsPage() {
         subtitle="Manage provider connections, alert thresholds, notifications, and dashboard security."
         onRefresh={refresh}
         source={source}
+        coverage={coverage}
         dataLoading={loading}
         unauthorized={unauthorized}
       />

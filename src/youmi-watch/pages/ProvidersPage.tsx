@@ -26,10 +26,8 @@ const FALLBACK: ProvidersPayload = {
 }
 
 export function ProvidersPage() {
-  const { data, source, loading, unauthorized, refresh } = useWatchPageData<ProvidersPayload>(
-    'providers',
-    FALLBACK,
-  )
+  const { data, source, coverage, loading, unauthorized, refresh } =
+    useWatchPageData<ProvidersPayload>('providers', FALLBACK)
 
   return (
     <>
@@ -38,6 +36,7 @@ export function ProvidersPage() {
         subtitle="Monitor connected services, quotas, API health, and provider status."
         onRefresh={refresh}
         source={source}
+        coverage={coverage}
         dataLoading={loading}
         unauthorized={unauthorized}
       />

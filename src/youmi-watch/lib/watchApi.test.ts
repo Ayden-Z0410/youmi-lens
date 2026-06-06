@@ -48,6 +48,43 @@ describe('fetchWatchEndpoint', () => {
     expect(await fetchWatchEndpoint('costs')).toMatchObject({ status: 'ok', source: 'mock' })
   })
 
+  it('preserves source: partial and parses its coverage block', async () => {
+    const coverage = {
+      providersWithRealData: ['brevo'],
+      providersExpected: ['deepgram', 'dashscope', 'brevo', 'railway', 'supabase'],
+      sectionsLive: ['costSummary'],
+      sectionsMock: ['providerCoverage'],
+      completenessPct: 20,
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ ok: true, source: 'partial', coverage, x: 1 })),
+    )
+    expect(await fetchWatchEndpoint('overview')).toMatchObject({
+      status: 'ok',
+      source: 'partial',
+      coverage,
+    })
+  })
+
+  it('defaults coverage to null and clamps a malformed completenessPct', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ ok: true, source: 'live', x: 1 })),
+    )
+    expect(await fetchWatchEndpoint('overview')).toMatchObject({ source: 'live', coverage: null })
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({ ok: true, source: 'partial', coverage: { completenessPct: 9999 } }),
+      ),
+    )
+    const r = await fetchWatchEndpoint('overview')
+    expect(r).toMatchObject({ status: 'ok', source: 'partial' })
+    if (r.status === 'ok') expect(r.coverage?.completenessPct).toBe(100)
+  })
+
   it('treats 401 and 403 as unauthorized, not as data', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ ok: false }, 401)))
     expect(await fetchWatchEndpoint('logs')).toEqual({ status: 'unauthorized', reason: 'not_signed_in' })

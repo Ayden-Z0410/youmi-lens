@@ -10,6 +10,7 @@ import { DataSourceBadge } from './DataSourceBadge'
 import { signOutWatch } from '../lib/watchAuth'
 import { WatchGateContext } from '../watchGateContext'
 import type { DataSource } from '../lib/watchPageState'
+import type { WatchCoverage } from '../types/api'
 
 export interface YoumiWatchHeaderProps {
   title: string
@@ -22,6 +23,8 @@ export interface YoumiWatchHeaderProps {
   range?: string
   /** Current data source for the badge; omit to hide the badge. */
   source?: DataSource
+  /** Coverage metadata — drives the "Real data for N of M providers" detail. */
+  coverage?: WatchCoverage | null
   /** Whether a data fetch is in flight (spins the refresh icon, updates badge). */
   dataLoading?: boolean
   /** Whether the last fetch was rejected as unauthorized (access error). */
@@ -35,6 +38,7 @@ export function YoumiWatchHeader({
   avatar = 'YW',
   range = 'Last 30 days',
   source,
+  coverage = null,
   dataLoading = false,
   unauthorized = false,
 }: YoumiWatchHeaderProps) {
@@ -50,7 +54,12 @@ export function YoumiWatchHeader({
         <p className="yw-header__subtitle">{subtitle}</p>
         {source && (
           <div className="yw-header__source">
-            <DataSourceBadge source={source} loading={dataLoading} unauthorized={unauthorized} />
+            <DataSourceBadge
+              source={source}
+              coverage={coverage}
+              loading={dataLoading}
+              unauthorized={unauthorized}
+            />
           </div>
         )}
       </div>

@@ -41,6 +41,9 @@ export interface MetricDatum {
   trend?: { direction: TrendDirection; value: string; note?: string }
 }
 
+/** Whether a row's values are real ('live'), mock placeholder ('mock'), or not yet known ('unknown'). */
+export type RowDataState = 'live' | 'mock' | 'unknown'
+
 export interface ProviderDatum {
   id: string
   name: string
@@ -53,6 +56,7 @@ export interface ProviderDatum {
   cost: string
   health: string
   healthNote?: string
+  dataState?: RowDataState
 }
 
 export interface ConnectionHealthDatum {
@@ -62,6 +66,7 @@ export interface ConnectionHealthDatum {
   latency: string
   status: StatusKind
   statusLabel: string
+  dataState?: RowDataState
 }
 
 export interface AlertDatum {
@@ -492,6 +497,8 @@ export interface CostForecast {
   riskLevel: string
   riskStatus: StatusKind
   suggestedAction: string
+  /** False when cost coverage is incomplete — the forecast is not reliable. */
+  reliable?: boolean
 }
 
 export const costMetrics: MetricDatum[] = [
@@ -687,6 +694,7 @@ export interface ProviderConnectionRow {
   keyMasked: string
   region: string
   mode: string
+  dataState?: RowDataState
 }
 
 export interface ThresholdRow {

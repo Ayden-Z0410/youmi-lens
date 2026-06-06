@@ -14,7 +14,7 @@ export interface ProviderCardProps {
 }
 
 export function ProviderCard({ provider, onViewDetails }: ProviderCardProps) {
-  const { id, name, kind, icon, status, statusLabel, usage, usageNote, cost, health, healthNote } =
+  const { id, name, kind, icon, status, statusLabel, usage, usageNote, cost, health, healthNote, dataState } =
     provider
   return (
     <div className="yw-provider">
@@ -25,6 +25,12 @@ export function ProviderCard({ provider, onViewDetails }: ProviderCardProps) {
         <div>
           <div className="yw-provider__name">{name}</div>
           <div className="yw-provider__kind">{kind}</div>
+          {dataState && dataState !== 'mock' && (
+            <span className={`yw-rowstate yw-rowstate--${dataState}`}>
+              <span className="yw-rowstate__dot" />
+              {dataState === 'live' ? 'Live' : 'No data'}
+            </span>
+          )}
         </div>
       </div>
 

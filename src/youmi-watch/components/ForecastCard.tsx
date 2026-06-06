@@ -32,6 +32,12 @@ export function ForecastCard({ forecast }: { forecast: CostForecast }) {
           <span className="yw-detail-row__label">Suggested action</span>
           <p className="yw-detail-block__text">{forecast.suggestedAction}</p>
         </div>
+
+        {forecast.reliable === false && (
+          <p className="yw-detail-block__text yw-detail-block__text--muted">
+            Forecast is an estimate only — cost data does not yet cover all providers.
+          </p>
+        )}
       </div>
     </GlassCard>
   )

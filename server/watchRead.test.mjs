@@ -13,7 +13,9 @@ import {
   latestSnapshotPerProvider,
   costRowToLogEntry,
   handleWatchOverview,
+  handleWatchProviders,
   handleWatchAlerts,
+  handleWatchCosts,
   handleWatchSettings,
   handleWatchLogs,
 } from './watchRead.mjs'
@@ -198,16 +200,21 @@ describe('read handlers — live data', () => {
     )
     const res = fakeRes()
     await handleWatchSettings({ headers: {} }, res)
-    expect(res.body.source).toBe('live')
+    // Config/rules are real but provider connection statuses are unknown (no
+    // snapshots) → the page is PARTIAL, never Live.
+    expect(res.body.source).toBe('partial')
+    expect(res.body.coverage.sectionsLive).toContain('alertThresholds')
+    expect(res.body.coverage.sectionsMock).toContain('providerConnections')
     expect(res.body.alertThresholds).toHaveLength(2)
     expect(res.body.alertThresholds[0]).toMatchObject({ label: 'Supabase storage warning', threshold: '75%', enabled: true })
-    // provider connections are present and always masked (never real keys)
+    // provider connections are present, marked unknown, and always masked
     for (const c of res.body.providerConnections) {
       expect(c.keyMasked).toBe('••••••••')
+      expect(c.dataState).toBe('unknown')
     }
   })
 
-  it('alerts returns seeded rules even with no fired alerts', async () => {
+  it('alerts: seeded rules + no fired alerts → partial, rows empty (never mock)', async () => {
     getAdminClientMock.mockReturnValue(
       mockClient({
         watch_alerts: [],
@@ -218,9 +225,13 @@ describe('read handlers — live data', () => {
     )
     const res = fakeRes()
     await handleWatchAlerts({ headers: {} }, res)
-    expect(res.body.source).toBe('live')
+    expect(res.body.source).toBe('partial') // rules live, alert activity empty
     expect(res.body.rules).toHaveLength(1)
     expect(res.body.rules[0]).toMatchObject({ provider: 'Deepgram', threshold: '80%', enabled: true })
+    expect(res.body.rows).toEqual([]) // honest empty, NOT mock activity
+    expect(res.body.metrics.find((m) => m.id === 'active-alerts').value).toBe('0')
+    expect(res.body.coverage.sectionsLive).toContain('alertRules')
+    expect(res.body.coverage.sectionsMock).toContain('alertActivity')
   })
 
   it('logs sanitizes cost-event rows (no metadata leaks)', async () => {
@@ -233,9 +244,80 @@ describe('read handlers — live data', () => {
     )
     const res = fakeRes()
     await handleWatchLogs({ headers: {} }, res)
+    // Real internal events make Logs live independently of other pages.
     expect(res.body.source).toBe('live')
     expect(res.body.rows).toHaveLength(1)
     expect(res.body.rows[0]).not.toHaveProperty('metadata')
     expect(JSON.stringify(res.body.rows)).not.toContain('sk-x')
+    expect(res.body.coverage.completenessPct).toBe(100)
+  })
+})
+
+// ── partial-coverage semantics ──────────────────────────────────────────────
+
+describe('partial-coverage semantics', () => {
+  beforeEach(authorize)
+  const ts = () => new Date().toISOString()
+
+  it('one provider cost event → costs PARTIAL (not live), forecast unreliable', async () => {
+    getAdminClientMock.mockReturnValue(
+      mockClient({
+        watch_cost_events: [{ provider: 'brevo', estimated_cost_usd: 0.01, occurred_at: ts() }],
+        watch_config: [{ key: 'monthly_budget_usd', value: 2500 }],
+      }),
+    )
+    const res = fakeRes()
+    await handleWatchCosts({ headers: {} }, res)
+    expect(res.body.source).toBe('partial')
+    expect(res.body.coverage.providersWithRealData).toEqual(['brevo'])
+    expect(res.body.coverage.providersExpected).toHaveLength(5)
+    expect(res.body.coverage.completenessPct).toBe(20)
+    expect(res.body.forecast.reliable).toBe(false)
+    expect(res.body.forecast.projectedCost).toBe('—')
+  })
+
+  it('one provider snapshot → providers PARTIAL with per-row data state', async () => {
+    getAdminClientMock.mockReturnValue(
+      mockClient({
+        watch_provider_snapshots: [
+          { provider: 'supabase', status: 'degraded', latency_ms: 162, health_pct: 97.2, captured_at: ts() },
+        ],
+      }),
+    )
+    const res = fakeRes()
+    await handleWatchProviders({ headers: {} }, res)
+    expect(res.body.source).toBe('partial')
+    expect(res.body.providers).toHaveLength(5) // all expected providers listed
+    const sup = res.body.providers.find((p) => p.id === 'supabase')
+    const dg = res.body.providers.find((p) => p.id === 'deepgram')
+    expect(sup.dataState).toBe('live')
+    expect(dg.dataState).toBe('unknown')
+    expect(res.body.coverage.completenessPct).toBe(20)
+  })
+
+  it('all expected provider snapshots → providers LIVE', async () => {
+    const snaps = ['deepgram', 'dashscope', 'brevo', 'railway', 'supabase'].map((provider) => ({
+      provider,
+      status: 'operational',
+      latency_ms: 20,
+      health_pct: 99.9,
+      captured_at: ts(),
+    }))
+    getAdminClientMock.mockReturnValue(mockClient({ watch_provider_snapshots: snaps }))
+    const res = fakeRes()
+    await handleWatchProviders({ headers: {} }, res)
+    expect(res.body.source).toBe('live')
+    expect(res.body.coverage.completenessPct).toBe(100)
+    expect(res.body.providers.every((p) => p.dataState === 'live')).toBe(true)
+  })
+
+  it('empty tables still return mock for every endpoint', async () => {
+    getAdminClientMock.mockReturnValue(mockClient({}))
+    for (const handler of [handleWatchOverview, handleWatchProviders, handleWatchCosts]) {
+      const res = fakeRes()
+      await handler({ headers: {} }, res)
+      expect(res.body.source).toBe('mock')
+      expect(res.body.coverage.completenessPct).toBe(0)
+    }
   })
 })

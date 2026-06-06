@@ -3,14 +3,15 @@
  * I/O — so they're trivially unit-testable. The hook glues these to fetch +
  * effects; the data-source badge uses the label/tone helpers.
  */
-import type { WatchApiResult, WatchSource } from '../types/api'
+import type { WatchApiResult, WatchCoverage, WatchSource } from '../types/api'
 
-/** Live/mock come from the server; 'local-fallback' is the client's own mock. */
+/** Server sources (live/mock/partial); 'local-fallback' is the client's own mock. */
 export type DataSource = WatchSource | 'local-fallback'
 
 export interface WatchDataState<T> {
   data: T
   source: DataSource
+  coverage: WatchCoverage | null
   /** True when the endpoint returned 401/403 — surface an access error, not mock. */
   unauthorized: boolean
   error: string | null
@@ -30,12 +31,18 @@ export function nextWatchState<T>(
   result: WatchApiResult<T>,
 ): WatchDataState<T> {
   if (result.status === 'ok') {
-    return { data: result.data, source: result.source, unauthorized: false, error: null }
+    return {
+      data: result.data,
+      source: result.source,
+      coverage: result.coverage,
+      unauthorized: false,
+      error: null,
+    }
   }
   if (result.status === 'unauthorized') {
-    return { data: prev.data, source: 'local-fallback', unauthorized: true, error: result.reason }
+    return { ...prev, source: 'local-fallback', unauthorized: true, error: result.reason }
   }
-  return { data: prev.data, source: 'local-fallback', unauthorized: false, error: result.error }
+  return { ...prev, source: 'local-fallback', unauthorized: false, error: result.error }
 }
 
 export interface BadgeInput {
@@ -44,12 +51,13 @@ export interface BadgeInput {
   loading?: boolean
 }
 
-export type BadgeTone = 'live' | 'mock' | 'fallback' | 'error'
+export type BadgeTone = 'live' | 'mock' | 'partial' | 'fallback' | 'error'
 
-/** User-facing label. Server-mock is never labelled "Live". */
+/** User-facing label. Server-mock and partial data are never labelled "Live". */
 export function dataSourceLabel({ source, unauthorized }: BadgeInput): string {
   if (unauthorized) return 'Access error'
   if (source === 'live') return 'Live data'
+  if (source === 'partial') return 'Partial data'
   if (source === 'mock') return 'Server mock'
   return 'Local fallback'
 }
@@ -57,8 +65,38 @@ export function dataSourceLabel({ source, unauthorized }: BadgeInput): string {
 export function dataSourceTone({ source, unauthorized }: BadgeInput): BadgeTone {
   if (unauthorized) return 'error'
   if (source === 'live') return 'live'
+  if (source === 'partial') return 'partial'
   if (source === 'mock') return 'mock'
   return 'fallback'
+}
+
+/**
+ * Short human explanation of partial coverage, e.g.
+ * "Real data for 1 of 5 providers." Returns '' when there's nothing useful to
+ * say (no coverage, or not a partial state).
+ */
+export function coverageText(
+  source: DataSource,
+  coverage: WatchCoverage | null,
+): string {
+  if (source !== 'partial' || !coverage) return ''
+  const expected = coverage.providersExpected.length
+  const real = coverage.providersWithRealData.length
+  // Provider-oriented wording only when there IS some real provider data to
+  // report (e.g. Overview/Providers/Costs). Pages whose partialness is
+  // section-based (e.g. Alerts: rules but no fired alerts) have no real
+  // providers — fall through to honest section wording rather than "0 of 5".
+  if (expected > 0 && real > 0 && real < expected) {
+    return `Real data for ${real} of ${expected} providers.`
+  }
+  const sections = coverage.sectionsLive.length + coverage.sectionsMock.length
+  if (sections > 0 && coverage.sectionsLive.length < sections) {
+    return `${coverage.sectionsLive.length} of ${sections} sections live.`
+  }
+  if (coverage.completenessPct > 0 && coverage.completenessPct < 100) {
+    return `${coverage.completenessPct}% real-data coverage.`
+  }
+  return ''
 }
 
 // ── Unauthorized escalation ─────────────────────────────────────────────────

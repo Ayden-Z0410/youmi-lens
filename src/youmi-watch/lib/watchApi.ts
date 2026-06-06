@@ -13,7 +13,7 @@
  */
 import { getSupabase } from '../../lib/supabase'
 import { getAiApiBase } from '../../lib/ai/apiBase'
-import type { WatchApiResult, WatchEndpoint } from '../types/api'
+import type { WatchApiResult, WatchCoverage, WatchEndpoint, WatchSource } from '../types/api'
 
 export async function fetchWatchEndpoint<T>(
   endpoint: WatchEndpoint,
@@ -57,9 +57,27 @@ export async function fetchWatchEndpoint<T>(
 
   // Defensive top-level validation — don't blindly trust the server JSON.
   if (!json || typeof json !== 'object') return { status: 'error', error: 'bad_shape' }
-  const env = json as { ok?: unknown; source?: unknown }
+  const env = json as { ok?: unknown; source?: unknown; coverage?: unknown }
   if (env.ok !== true) return { status: 'error', error: 'not_ok' }
 
-  const source = env.source === 'live' ? 'live' : 'mock'
-  return { status: 'ok', source, data: json as T }
+  const source: WatchSource =
+    env.source === 'live' ? 'live' : env.source === 'partial' ? 'partial' : 'mock'
+  const coverage = parseCoverage(env.coverage)
+  return { status: 'ok', source, coverage, data: json as T }
+}
+
+/** Validate the optional coverage block defensively; null when absent/malformed. */
+function parseCoverage(value: unknown): WatchCoverage | null {
+  if (!value || typeof value !== 'object') return null
+  const c = value as Record<string, unknown>
+  const strArr = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  const num = typeof c.completenessPct === 'number' ? c.completenessPct : 0
+  return {
+    providersWithRealData: strArr(c.providersWithRealData),
+    providersExpected: strArr(c.providersExpected),
+    sectionsLive: strArr(c.sectionsLive),
+    sectionsMock: strArr(c.sectionsMock),
+    completenessPct: Math.max(0, Math.min(100, Math.round(num))),
+  }
 }

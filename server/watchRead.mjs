@@ -19,6 +19,13 @@
 import { getAdminClient } from './betaGate.mjs'
 import { requireWatchAdmin } from './adminWatchAccess.mjs'
 import { MOCK } from './watchMockData.mjs'
+import {
+  EXPECTED_PROVIDERS,
+  realExpectedProviders,
+  decideSource,
+  makeCoverage,
+  pct,
+} from './watchCoverage.mjs'
 
 const DAY_MS = 86400000
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -197,7 +204,19 @@ export function costRowToLogEntry(row, { now = Date.now() } = {}) {
 // ── builders (DB → payload, with mock fallback) ─────────────────────────────
 
 function mockPayload(key) {
-  return { ok: true, source: 'mock', ...MOCK[key] }
+  return {
+    ok: true,
+    source: 'mock',
+    coverage: makeCoverage({ completenessPct: 0 }),
+    ...MOCK[key],
+  }
+}
+
+/** Map a watch_alerts severity (critical|warning|info) → AlertDatum severity. */
+function overviewAlertSeverity(sev) {
+  if (sev === 'critical') return 'error'
+  if (sev === 'warning') return 'warning'
+  return 'info'
 }
 
 async function buildOverview() {
@@ -213,26 +232,48 @@ async function buildOverview() {
   if (error) throw new Error(error.message)
   if (!costRows || costRows.length === 0) return mockPayload('overview')
 
+  // Active alerts (real) for the overview alerts panel — empty (not mock) when
+  // none have fired.
   const { data: activeAlerts } = await db
     .from('watch_alerts')
-    .select('id')
+    .select('id,provider,severity,title,trigger_expr,last_seen_at')
     .eq('status', 'active')
+    .order('last_seen_at', { ascending: false })
+    .limit(8)
 
   const now = Date.now()
   const agg = aggregateCostRows(costRows, { now })
+  const realProviders = realExpectedProviders(costRows.map((r) => r.provider))
+  // Overview is only "live" once cost data covers every expected provider.
+  const complete = realProviders.length === EXPECTED_PROVIDERS.length
+  const source = decideSource({ hasAnyReal: costRows.length > 0, complete })
+
   const metrics = [
     { id: 'total-estimated', label: 'Total Estimated', icon: 'cost', value: usd(agg.month), description: 'This month' },
     { id: 'today', label: 'Today', icon: 'cost', value: usd(agg.today), description: 'Estimated spend' },
     { id: 'this-week', label: 'This Week', icon: 'cost', value: usd(agg.week), description: 'Rolling 7 days' },
     { id: 'active-alerts', label: 'Active Alerts', icon: 'alert', value: String((activeAlerts || []).length), description: 'Require attention' },
   ]
+  const alerts = (activeAlerts || []).slice(0, 5).map((a) => ({
+    id: a.id,
+    severity: overviewAlertSeverity(a.severity),
+    title: a.title,
+    detail: a.trigger_expr || `${capitalize(a.provider || 'system')} alert`,
+    time: relTime(a.last_seen_at, now),
+  }))
   const activity = costRows.slice(0, 6).map((r, i) => ({
     id: `ev-${i}`,
     icon: PROVIDER_ICON[r.provider] || 'logs',
     text: `${capitalize(r.provider)} — ${humanizeEvent(r.event_type)}`,
     time: relTime(r.occurred_at, now),
   }))
-  return { ok: true, source: 'live', metrics, usageTrend: agg.trend, alerts: MOCK.overview.alerts, activity }
+  const coverage = makeCoverage({
+    providersWithRealData: realProviders,
+    sectionsLive: ['costSummary', 'recentEvents'],
+    sectionsMock: complete ? [] : ['providerCoverage'],
+    completenessPct: pct(realProviders.length, EXPECTED_PROVIDERS.length),
+  })
+  return { ok: true, source, coverage, metrics, usageTrend: agg.trend, alerts, activity }
 }
 
 async function buildProviders() {
@@ -250,38 +291,87 @@ async function buildProviders() {
 
   const latest = latestSnapshotPerProvider(snaps)
   const now = Date.now()
-  const providers = latest.map((s) => ({
-    id: s.provider,
-    name: capitalize(s.provider),
-    kind: PROVIDER_KIND[s.provider] || 'Provider',
-    icon: PROVIDER_ICON[s.provider] || 'server',
-    status: providerRowStatus(s.status),
-    statusLabel: capitalize(providerRowStatus(s.status)),
-    usage: s.usage_value != null ? `${s.usage_value}${s.usage_unit ? ` ${s.usage_unit}` : ''}` : '—',
-    usageNote: 'latest',
-    cost: s.estimated_cost_usd != null ? usd(s.estimated_cost_usd) : '—',
-    health: s.health_pct != null ? `${s.health_pct}%` : '—',
-    healthNote: relTime(s.captured_at, now),
-  }))
-  const connectionHealth = latest.map((s) => ({
-    id: s.provider,
-    name: capitalize(s.provider),
-    icon: PROVIDER_ICON[s.provider] || 'server',
-    latency: s.latency_ms != null ? `${s.latency_ms}ms latency` : '—',
-    status: healthStatus(s.status),
-    statusLabel: capitalize(s.status || 'unknown'),
-  }))
-  const connected = latest.length
+  const byProvider = Object.fromEntries(latest.map((s) => [s.provider, s]))
+  const realProviders = realExpectedProviders(latest.map((s) => s.provider))
+
+  // List EVERY expected provider; real ones from their snapshot, the rest as an
+  // honest "no data yet" row (dataState: 'unknown') so missing coverage is never
+  // hidden.
+  const providers = EXPECTED_PROVIDERS.map((p) => {
+    const s = byProvider[p]
+    if (!s) {
+      return {
+        id: p,
+        name: capitalize(p),
+        kind: PROVIDER_KIND[p] || 'Provider',
+        icon: PROVIDER_ICON[p] || 'server',
+        status: 'neutral',
+        statusLabel: 'No data',
+        usage: '—',
+        usageNote: 'no snapshot yet',
+        cost: '—',
+        health: '—',
+        healthNote: '—',
+        dataState: 'unknown',
+      }
+    }
+    return {
+      id: p,
+      name: capitalize(p),
+      kind: PROVIDER_KIND[p] || 'Provider',
+      icon: PROVIDER_ICON[p] || 'server',
+      status: providerRowStatus(s.status),
+      statusLabel: capitalize(providerRowStatus(s.status)),
+      usage: s.usage_value != null ? `${s.usage_value}${s.usage_unit ? ` ${s.usage_unit}` : ''}` : '—',
+      usageNote: 'latest',
+      cost: s.estimated_cost_usd != null ? usd(s.estimated_cost_usd) : '—',
+      health: s.health_pct != null ? `${s.health_pct}%` : '—',
+      healthNote: relTime(s.captured_at, now),
+      dataState: 'live',
+    }
+  })
+  const connectionHealth = EXPECTED_PROVIDERS.map((p) => {
+    const s = byProvider[p]
+    if (!s) {
+      return {
+        id: p,
+        name: capitalize(p),
+        icon: PROVIDER_ICON[p] || 'server',
+        latency: '—',
+        status: 'neutral',
+        statusLabel: 'Unknown',
+        dataState: 'unknown',
+      }
+    }
+    return {
+      id: p,
+      name: capitalize(p),
+      icon: PROVIDER_ICON[p] || 'server',
+      latency: s.latency_ms != null ? `${s.latency_ms}ms latency` : '—',
+      status: healthStatus(s.status),
+      statusLabel: capitalize(s.status || 'unknown'),
+      dataState: 'live',
+    }
+  })
   const healthy = latest.filter((s) => s.status === 'operational').length
   const warnings = latest.filter((s) => s.status === 'degraded' || s.status === 'warning').length
   const offline = latest.filter((s) => s.status === 'offline').length
   const metrics = [
-    { id: 'connected', label: 'Connected', icon: 'link', value: String(connected), description: 'Active connections', status: { kind: 'operational', label: 'Active' } },
+    { id: 'connected', label: 'Connected', icon: 'link', value: `${realProviders.length}/${EXPECTED_PROVIDERS.length}`, description: 'Providers with real data', status: { kind: 'operational', label: 'Active' } },
     { id: 'healthy', label: 'Healthy', icon: 'check-circle', value: String(healthy), description: 'Operating normally', status: { kind: 'normal', label: 'Normal' } },
     { id: 'warnings', label: 'Warnings', icon: 'alert', value: String(warnings), description: 'Need attention', status: { kind: 'watch', label: 'Watch' } },
     { id: 'offline', label: 'Offline', icon: 'offline', value: String(offline), description: offline ? 'Provider outage' : 'No outages', status: { kind: 'stable', label: 'Stable' } },
   ]
-  return { ok: true, source: 'live', metrics, providers, usageTrend: MOCK.providers.usageTrend, connectionHealth }
+  // Live only when every expected provider has a real snapshot.
+  const complete = realProviders.length === EXPECTED_PROVIDERS.length
+  const source = decideSource({ hasAnyReal: realProviders.length > 0, complete })
+  const coverage = makeCoverage({
+    providersWithRealData: realProviders,
+    sectionsLive: realProviders.length ? ['providerSnapshots'] : [],
+    sectionsMock: ['usageTrend', ...(complete ? [] : ['providerSnapshots'])],
+    completenessPct: pct(realProviders.length, EXPECTED_PROVIDERS.length),
+  })
+  return { ok: true, source, coverage, metrics, providers, usageTrend: MOCK.providers.usageTrend, connectionHealth }
 }
 
 async function buildAlerts() {
@@ -305,6 +395,8 @@ async function buildAlerts() {
   if (!hasAlerts && !hasRules) return mockPayload('alerts')
 
   const now = Date.now()
+  // Real fired alerts only — NEVER fall back to mock activity. An empty list is
+  // the honest "no alerts" state (the UI shows its empty state).
   const rows = (alerts || []).map((a) => ({
     id: a.id,
     severity: a.severity,
@@ -314,7 +406,7 @@ async function buildAlerts() {
     time: relTime(a.last_seen_at, now),
     status: a.status === 'resolved' ? 'resolved' : 'active',
   }))
-  const mappedRules = (rules || []).map((r) => ({
+  const rules2 = (rules || []).map((r) => ({
     id: r.id,
     provider: capitalize(r.provider),
     condition: capitalize(r.condition),
@@ -323,20 +415,39 @@ async function buildAlerts() {
     enabled: !!r.enabled,
   }))
   const active = (alerts || []).filter((a) => a.status === 'active')
+  // Metrics derived from real alerts (zeros when no alerts have fired) — never mock.
   const metrics = [
     { id: 'active-alerts', label: 'Active Alerts', icon: 'alert', value: String(active.length), description: 'Require attention' },
     { id: 'resolved-today', label: 'Resolved Today', icon: 'check-circle', value: String((alerts || []).filter((a) => a.status === 'resolved').length), description: 'Cleared' },
     { id: 'critical', label: 'Critical', icon: 'alert', value: String(active.filter((a) => a.severity === 'critical').length), description: 'High severity' },
     { id: 'total-week', label: 'Total This Week', icon: 'logs', value: String((alerts || []).length), description: 'Across all providers' },
   ]
-  return {
-    ok: true,
-    source: 'live',
-    metrics: hasAlerts ? metrics : MOCK.alerts.metrics,
-    rows: rows.length ? rows : MOCK.alerts.rows,
-    rules: mappedRules.length ? mappedRules : MOCK.alerts.rules,
-    selectedDetail: MOCK.alerts.selectedDetail,
-  }
+  const first = rows[0]
+  const selectedDetail = first
+    ? {
+        alertId: first.id,
+        provider: first.provider,
+        trigger: first.trigger || '—',
+        relatedMetric: '—',
+        suggestedAction: 'Review the alert and acknowledge once handled.',
+      }
+    : {
+        alertId: '',
+        provider: '—',
+        trigger: '—',
+        relatedMetric: '—',
+        suggestedAction: 'No active alerts. Configured rules are listed below.',
+      }
+
+  // Rules can be live while alert ACTIVITY is empty → that page is "partial".
+  const sectionsLive = []
+  const sectionsMock = []
+  if (hasRules) sectionsLive.push('alertRules')
+  if (hasAlerts) sectionsLive.push('alertActivity')
+  else sectionsMock.push('alertActivity')
+  const source = decideSource({ hasAnyReal: hasRules || hasAlerts, complete: hasRules && hasAlerts })
+  const coverage = makeCoverage({ sectionsLive, sectionsMock })
+  return { ok: true, source, coverage, metrics, rows, rules: rules2, selectedDetail }
 }
 
 async function buildCosts() {
@@ -354,6 +465,10 @@ async function buildCosts() {
 
   const now = Date.now()
   const agg = aggregateCostRows(data, { now })
+  const realProviders = realExpectedProviders(data.map((r) => r.provider))
+  // One provider's cost event must NOT present the whole report as complete.
+  const complete = realProviders.length === EXPECTED_PROVIDERS.length
+  const source = decideSource({ hasAnyReal: data.length > 0, complete })
 
   const { data: config } = await db.from('watch_config').select('key,value')
   const cfg = Object.fromEntries((config || []).map((c) => [c.key, c.value]))
@@ -366,14 +481,21 @@ async function buildCosts() {
   const breakdown = buildBreakdown(agg.byProvider)
   const projected = projectMonthEnd(spend, now)
   const metrics = [
-    { id: 'total-estimated', label: 'Total Estimated', icon: 'cost', value: usd(spend), description: 'This month' },
+    { id: 'total-estimated', label: 'Total Estimated', icon: 'cost', value: usd(spend), description: complete ? 'This month' : `This month (${realProviders.length}/${EXPECTED_PROVIDERS.length} providers)` },
     { id: 'today', label: 'Today', icon: 'cost', value: usd(agg.today), description: 'Current daily spend' },
     { id: 'this-week', label: 'This Week', icon: 'cost', value: usd(agg.week), description: 'Rolling 7 days' },
-    { id: 'forecast', label: 'Forecast', icon: 'trend', value: usd(projected), description: 'Projected month-end' },
+    { id: 'forecast', label: 'Forecast', icon: 'trend', value: complete ? usd(projected) : '—', description: complete ? 'Projected month-end' : 'Awaiting full coverage' },
   ]
+  const coverage = makeCoverage({
+    providersWithRealData: realProviders,
+    sectionsLive: ['costEvents'],
+    sectionsMock: complete ? [] : ['providerCoverage', 'costForecast'],
+    completenessPct: pct(realProviders.length, EXPECTED_PROVIDERS.length),
+  })
   return {
     ok: true,
-    source: 'live',
+    source,
+    coverage,
     metrics,
     trend: agg.trend,
     distribution,
@@ -387,11 +509,15 @@ async function buildCosts() {
     },
     breakdown,
     forecast: {
-      projectedCost: usd(projected),
-      budgetRemainingAfter: usd(budgetUsd - projected),
-      riskLevel: projected > budgetUsd ? 'High' : usagePercent >= 75 ? 'Medium' : 'Low',
-      riskStatus: projected > budgetUsd ? 'error' : usagePercent >= 75 ? 'watch' : 'normal',
-      suggestedAction: 'Review the highest-cost providers and tighten alert thresholds as needed.',
+      // Forecast is only presented as reliable when coverage is complete.
+      reliable: complete,
+      projectedCost: complete ? usd(projected) : '—',
+      budgetRemainingAfter: complete ? usd(budgetUsd - projected) : '—',
+      riskLevel: !complete ? 'Unknown' : projected > budgetUsd ? 'High' : usagePercent >= 75 ? 'Medium' : 'Low',
+      riskStatus: !complete ? 'neutral' : projected > budgetUsd ? 'error' : usagePercent >= 75 ? 'watch' : 'normal',
+      suggestedAction: complete
+        ? 'Review the highest-cost providers and tighten alert thresholds as needed.'
+        : `Forecast pending: ${realProviders.length} of ${EXPECTED_PROVIDERS.length} providers reporting cost data.`,
     },
   }
 }
@@ -411,13 +537,48 @@ async function buildLogs() {
 
   const now = Date.now()
   const rows = data.map((r) => costRowToLogEntry(r, { now }))
+  // Logs is "live" on its own real internal event feed, independent of other
+  // pages — the feed is the page's core content and is fully real. Metrics are
+  // derived from those real events (never the mock counters).
+  const realProviders = realExpectedProviders(data.map((r) => r.provider))
+  const totalCost = data.reduce((s, r) => s + num(r.estimated_cost_usd), 0)
+  const distinctProviders = new Set(data.map((r) => String(r.provider))).size
+  const metrics = [
+    { id: 'total-events', label: 'Total Events', icon: 'logs', value: String(data.length), description: 'Recent internal events' },
+    { id: 'providers-active', label: 'Active Providers', icon: 'providers', value: String(distinctProviders), description: 'With recorded events' },
+    { id: 'est-cost', label: 'Estimated Cost', icon: 'cost', value: usd(totalCost), description: 'Across shown events' },
+    { id: 'latest', label: 'Latest Event', icon: 'clock', value: rows[0]?.time ?? '—', description: 'Most recent' },
+  ]
+  const top = data[0]
+  const selectedDetail = top
+    ? {
+        provider: capitalize(top.provider),
+        event: humanizeEvent(top.event_type),
+        status: 'Recorded',
+        statusLabel: 'Recorded',
+        requestId: rows[0].requestId,
+        relatedMetric: '—',
+        relatedUser: 'system',
+        recordingId: '—',
+        retryCount: 0,
+        message: 'Internal cost/usage event recorded by Youmi Watch.',
+        suggestedAction: 'No action required.',
+      }
+    : MOCK.logs.selectedDetail
+  const coverage = makeCoverage({
+    providersWithRealData: realProviders,
+    sectionsLive: ['events'],
+    sectionsMock: [],
+    completenessPct: 100,
+  })
   return {
     ok: true,
     source: 'live',
-    metrics: MOCK.logs.metrics,
+    coverage,
+    metrics,
     filters: MOCK.logs.filters,
     rows,
-    selectedDetail: MOCK.logs.selectedDetail,
+    selectedDetail,
     systemHealth: MOCK.logs.systemHealth,
   }
 }
@@ -453,30 +614,49 @@ async function buildSettings() {
   const notifications = notificationsFromConfig(cfg.notification_channels) || MOCK.settings.notifications
 
   // Connection STATUS may come from snapshots; credentials are ALWAYS masked.
+  // Providers without a snapshot are marked dataState 'unknown' (mock), not Live.
   const latest = latestSnapshotPerProvider(snaps || [])
   const statusByProvider = Object.fromEntries(latest.map((s) => [s.provider, s.status]))
   const providerConnections = MOCK.settings.providerConnections.map((c) => {
     const snapStatus = statusByProvider[c.id]
-    if (!snapStatus) return c
+    if (!snapStatus) return { ...c, status: 'neutral', statusLabel: 'Unknown', dataState: 'unknown' }
     return {
       ...c,
       status: snapStatus === 'operational' ? 'success' : snapStatus === 'offline' ? 'error' : 'warning',
       statusLabel: snapStatus === 'operational' ? 'Connected' : capitalize(snapStatus),
+      dataState: 'live',
       // keyMasked / region / mode stay masked — never real keys.
     }
   })
+  const snapProviders = realExpectedProviders(latest.map((s) => s.provider))
+  const connectionsComplete = snapProviders.length === EXPECTED_PROVIDERS.length
 
   const enabledRules = (rules || []).filter((r) => r.enabled).length
   const enabledChannels = notifications.filter((n) => n.enabled === true).length
   const metrics = [
-    { id: 'connected-providers', label: 'Connected Providers', icon: 'providers', value: String(providerConnections.length), description: 'Mock connections' },
+    { id: 'connected-providers', label: 'Connected Providers', icon: 'providers', value: `${snapProviders.length}/${EXPECTED_PROVIDERS.length}`, description: 'With live status' },
     { id: 'alert-rules', label: 'Alert Rules', icon: 'alert', value: String(hasRules ? enabledRules : MOCK.settings.alertThresholds.length), description: 'Enabled thresholds' },
     { id: 'notif-channels', label: 'Notification Channels', icon: 'bell', value: String(enabledChannels), description: 'Email and desktop' },
     { id: 'security-mode', label: 'Security Mode', icon: 'shield', value: 'Server', description: 'AdminGate verified' },
   ]
+
+  // Config / rules / security posture are real; provider connection statuses are
+  // mock/unknown until snapshots exist → page is "partial" until all are present.
+  const sectionsLive = ['security']
+  const sectionsMock = []
+  if (hasRules) sectionsLive.push('alertThresholds')
+  if (hasConfig) sectionsLive.push('notifications')
+  if (connectionsComplete) sectionsLive.push('providerConnections')
+  else sectionsMock.push('providerConnections')
+  const source = decideSource({
+    hasAnyReal: hasRules || hasConfig,
+    complete: sectionsMock.length === 0,
+  })
+  const coverage = makeCoverage({ providersWithRealData: snapProviders, sectionsLive, sectionsMock })
   return {
     ok: true,
-    source: 'live',
+    source,
+    coverage,
     metrics,
     providerConnections,
     alertThresholds: alertThresholds.length ? alertThresholds : MOCK.settings.alertThresholds,

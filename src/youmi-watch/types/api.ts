@@ -30,8 +30,12 @@ import type {
   AppearanceOption,
 } from '../data/mockData'
 
-/** Source as reported by the server. The client adds a third 'local-fallback'. */
-export type WatchSource = 'live' | 'mock'
+/**
+ * Source as reported by the server. 'partial' means some real data exists but
+ * coverage is incomplete. The client adds a fourth state, 'local-fallback',
+ * when it cannot reach the API.
+ */
+export type WatchSource = 'live' | 'mock' | 'partial'
 
 export type WatchEndpoint =
   | 'overview'
@@ -40,6 +44,15 @@ export type WatchEndpoint =
   | 'costs'
   | 'logs'
   | 'settings'
+
+/** Coverage metadata accompanying every endpoint response. */
+export interface WatchCoverage {
+  providersWithRealData: string[]
+  providersExpected: string[]
+  sectionsLive: string[]
+  sectionsMock: string[]
+  completenessPct: number
+}
 
 export interface OverviewPayload {
   metrics: MetricDatum[]
@@ -91,6 +104,6 @@ export interface SettingsPayload {
 
 /** Discriminated result returned by the API client. */
 export type WatchApiResult<T> =
-  | { status: 'ok'; source: WatchSource; data: T }
+  | { status: 'ok'; source: WatchSource; coverage: WatchCoverage | null; data: T }
   | { status: 'unauthorized'; reason: 'not_signed_in' | 'forbidden' }
   | { status: 'error'; error: string }

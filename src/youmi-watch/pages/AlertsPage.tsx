@@ -19,10 +19,8 @@ const FALLBACK: AlertsPayload = {
 }
 
 export function AlertsPage() {
-  const { data, source, loading, unauthorized, refresh } = useWatchPageData<AlertsPayload>(
-    'alerts',
-    FALLBACK,
-  )
+  const { data, source, coverage, loading, unauthorized, refresh } =
+    useWatchPageData<AlertsPayload>('alerts', FALLBACK)
 
   return (
     <>
@@ -31,6 +29,7 @@ export function AlertsPage() {
         subtitle="Track provider warnings, cost spikes, and infrastructure incidents."
         onRefresh={refresh}
         source={source}
+        coverage={coverage}
         dataLoading={loading}
         unauthorized={unauthorized}
       />

@@ -31,10 +31,8 @@ const FALLBACK: CostsPayload = {
 }
 
 export function CostsPage() {
-  const { data, source, loading, unauthorized, refresh } = useWatchPageData<CostsPayload>(
-    'costs',
-    FALLBACK,
-  )
+  const { data, source, coverage, loading, unauthorized, refresh } =
+    useWatchPageData<CostsPayload>('costs', FALLBACK)
 
   return (
     <>
@@ -43,6 +41,7 @@ export function CostsPage() {
         subtitle="Track estimated spending across AI models, email, hosting, and storage."
         onRefresh={refresh}
         source={source}
+        coverage={coverage}
         dataLoading={loading}
         unauthorized={unauthorized}
       />

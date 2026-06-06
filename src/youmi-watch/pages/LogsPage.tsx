@@ -28,10 +28,8 @@ const FALLBACK: LogsPayload = {
 }
 
 export function LogsPage() {
-  const { data, source, loading, unauthorized, refresh } = useWatchPageData<LogsPayload>(
-    'logs',
-    FALLBACK,
-  )
+  const { data, source, coverage, loading, unauthorized, refresh } =
+    useWatchPageData<LogsPayload>('logs', FALLBACK)
 
   return (
     <>
@@ -40,6 +38,7 @@ export function LogsPage() {
         subtitle="Search provider events, API requests, system activity, and failed operations."
         onRefresh={refresh}
         source={source}
+        coverage={coverage}
         dataLoading={loading}
         unauthorized={unauthorized}
       />

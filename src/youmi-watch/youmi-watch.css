@@ -321,13 +321,52 @@
   color: var(--yw-accent);
   background: var(--yw-accent-soft);
 }
-.yw-source--fallback {
+.yw-source--partial {
   color: #b45309;
   background: var(--yw-warning-soft);
+}
+.yw-source--fallback {
+  color: #7388a6;
+  background: rgba(115, 136, 166, 0.14);
 }
 .yw-source--error {
   color: var(--yw-danger);
   background: var(--yw-danger-soft);
+}
+.yw-source-wrap {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.yw-source__detail {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--yw-ink-faint);
+}
+
+/* Per-row data-state marker (provider rows) */
+.yw-rowstate {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.yw-rowstate__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.yw-rowstate--live {
+  color: var(--yw-success);
+}
+.yw-rowstate--unknown,
+.yw-rowstate--mock {
+  color: var(--yw-ink-faint);
 }
 @keyframes yw-pulse {
   0%,
@@ -1094,6 +1133,11 @@
   font-size: 13px;
   line-height: 1.5;
   color: var(--yw-ink-soft);
+}
+.yw-detail-block__text--muted {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--yw-ink-faint);
 }
 .yw-meter {
   height: 6px;

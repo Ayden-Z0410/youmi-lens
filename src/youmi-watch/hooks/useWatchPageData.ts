@@ -15,11 +15,12 @@ import { useContext, useCallback, useEffect, useRef, useState } from 'react'
 import { fetchWatchEndpoint } from '../lib/watchApi'
 import { handleWatchResult, type DataSource, type WatchDataState } from '../lib/watchPageState'
 import { WatchGateContext } from '../watchGateContext'
-import type { WatchEndpoint } from '../types/api'
+import type { WatchCoverage, WatchEndpoint } from '../types/api'
 
 export interface WatchPageData<T> {
   data: T
   source: DataSource
+  coverage: WatchCoverage | null
   loading: boolean
   unauthorized: boolean
   error: string | null
@@ -38,6 +39,7 @@ export function useWatchPageData<T>(endpoint: WatchEndpoint, fallback: T): Watch
   const [state, setState] = useState<WatchDataState<T>>({
     data: fallback,
     source: 'local-fallback',
+    coverage: null,
     unauthorized: false,
     error: null,
   })
@@ -73,6 +75,7 @@ export function useWatchPageData<T>(endpoint: WatchEndpoint, fallback: T): Watch
   return {
     data: state.data,
     source: state.source,
+    coverage: state.coverage,
     loading,
     unauthorized: state.unauthorized,
     error: state.error,
