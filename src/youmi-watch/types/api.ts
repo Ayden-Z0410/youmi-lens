@@ -30,8 +30,8 @@ import type {
   AppearanceOption,
 } from '../data/mockData'
 
-/** Source as reported by the server. The client adds a third 'local-fallback'. */
-export type WatchSource = 'live' | 'mock'
+/** Source as reported by the server. The client adds 'local-fallback'. */
+export type WatchSource = 'live' | 'partial' | 'mock'
 
 export type WatchEndpoint =
   | 'overview'

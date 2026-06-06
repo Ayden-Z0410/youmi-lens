@@ -5,7 +5,7 @@
  */
 import type { WatchApiResult, WatchSource } from '../types/api'
 
-/** Live/mock come from the server; 'local-fallback' is the client's own mock. */
+/** Live/partial/mock come from the server; 'local-fallback' is the client's own mock. */
 export type DataSource = WatchSource | 'local-fallback'
 
 export interface WatchDataState<T> {
@@ -18,7 +18,7 @@ export interface WatchDataState<T> {
 
 /**
  * Reduce an API result into the next state. Pure.
- *   • ok            → adopt server data + its source ('live' | 'mock').
+ *   • ok            → adopt server data + its source ('live' | 'partial' | 'mock').
  *   • unauthorized  → keep current data but flag unauthorized (NOT treated as
  *                     normal mock data); source shown as local-fallback.
  *   • error         → keep current data, mark source 'local-fallback' (the page
@@ -44,12 +44,13 @@ export interface BadgeInput {
   loading?: boolean
 }
 
-export type BadgeTone = 'live' | 'mock' | 'fallback' | 'error'
+export type BadgeTone = 'live' | 'partial' | 'mock' | 'fallback' | 'error'
 
 /** User-facing label. Server-mock is never labelled "Live". */
 export function dataSourceLabel({ source, unauthorized }: BadgeInput): string {
   if (unauthorized) return 'Access error'
   if (source === 'live') return 'Live data'
+  if (source === 'partial') return 'Partial live'
   if (source === 'mock') return 'Server mock'
   return 'Local fallback'
 }
@@ -57,6 +58,7 @@ export function dataSourceLabel({ source, unauthorized }: BadgeInput): string {
 export function dataSourceTone({ source, unauthorized }: BadgeInput): BadgeTone {
   if (unauthorized) return 'error'
   if (source === 'live') return 'live'
+  if (source === 'partial') return 'partial'
   if (source === 'mock') return 'mock'
   return 'fallback'
 }

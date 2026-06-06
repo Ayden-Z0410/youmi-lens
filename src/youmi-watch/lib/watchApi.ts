@@ -60,6 +60,6 @@ export async function fetchWatchEndpoint<T>(
   const env = json as { ok?: unknown; source?: unknown }
   if (env.ok !== true) return { status: 'error', error: 'not_ok' }
 
-  const source = env.source === 'live' ? 'live' : 'mock'
+  const source = env.source === 'live' || env.source === 'partial' ? env.source : 'mock'
   return { status: 'ok', source, data: json as T }
 }

@@ -1,7 +1,8 @@
 /**
  * DataSourceBadge — soft, non-alarming pill that tells the user whether the
- * current page is showing Live data, Server mock, Local fallback, or an Access
- * error. Styled to fit the Liquid Glass design (see .yw-source in CSS).
+ * current page is showing Live data, Partial live, Server mock, Local fallback,
+ * or an Access error. Styled to fit the Liquid Glass design (see .yw-source in
+ * CSS).
  */
 import { dataSourceLabel, dataSourceTone, type DataSource } from '../lib/watchPageState'
 
