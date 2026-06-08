@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   AppleIapLegacyLedgerWriteError,
   AppleIapLedgerUnavailableError,
+  checkAppleIapLedgerAccountDeletionAllowed,
   insertAppleIapTransaction,
   isMissingAppleIapLedgerTableError,
   prepareAppleIapLedgerForAccountDeletion,
@@ -257,6 +258,19 @@ describe('Apple IAP ledger transition compatibility', () => {
 describe('Apple IAP ledger account deletion transition behavior', () => {
   beforeEach(() => {
     resetAppleIapLedgerTableCache()
+  })
+
+  it('preflights new-ledger account deletion without mutating ownership', async () => {
+    const calls = []
+    const db = fakeDb(tables({ newExists: true }), calls)
+
+    await expect(checkAppleIapLedgerAccountDeletionAllowed(db, 'user-1')).resolves.toMatchObject({
+      table: NEW,
+      mode: 'new',
+      allowed: true,
+      reason: 'new_ledger_available',
+    })
+    expect(calls.some((call) => call.method === 'update')).toBe(false)
   })
 
   it('allows legacy-mode account deletion when no billing rows exist', async () => {

@@ -17,6 +17,7 @@
 import { findAppleIapTransactionBinding } from './iapLedger.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+const LEGACY_PAID_PLAN_TYPES = new Set(['student_basic', 'student_plus', 'student_pro'])
 
 /** Pure: compute the 30-day (configurable) entitlement window from purchaseDate. */
 export function computeEntitlementWindow(purchaseDateMs, entitlementDays) {
@@ -156,13 +157,15 @@ export function decideGrantWithBinding({ verified, product, binding, requestingU
 
 /**
  * Pure: resolve the effective plan_type at request time.
- * Precedence: admin → core_tester → active entitlement → public_trial.
- * An expired/absent entitlement yields public_trial WITHOUT any cron.
+ * Precedence: admin → core_tester → active entitlement → legacy paid plan →
+ * public_trial. Student Pass still expires via entitlement windows, but legacy
+ * paid IAP rows must keep their stored quota tier until explicitly changed.
  */
 export function resolveEffectivePlanType({ storedPlanType, entitlement, nowMs }) {
   if (storedPlanType === 'admin') return 'admin'
   if (storedPlanType === 'core_tester') return 'core_tester'
   if (isEntitlementActive(entitlement, nowMs)) return entitlement.plan_type
+  if (LEGACY_PAID_PLAN_TYPES.has(storedPlanType)) return storedPlanType
   return 'public_trial'
 }
 

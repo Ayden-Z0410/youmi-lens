@@ -205,6 +205,8 @@ describe('read handlers — live data', () => {
     expect(res.body.source).toBe('partial')
     expect(res.body.coverage.sectionsLive).toContain('alertThresholds')
     expect(res.body.coverage.sectionsMock).toContain('providerConnections')
+    expect(res.body.coverage.sectionsMock).toContain('security')
+    expect(res.body.coverage.sectionsMock).toContain('appearance')
     expect(res.body.alertThresholds).toHaveLength(2)
     expect(res.body.alertThresholds[0]).toMatchObject({ label: 'Supabase storage warning', threshold: '75%', enabled: true })
     // provider connections are present, marked unknown, and always masked
@@ -295,7 +297,7 @@ describe('partial-coverage semantics', () => {
     expect(res.body.coverage.completenessPct).toBe(20)
   })
 
-  it('all expected provider snapshots → providers LIVE', async () => {
+  it('all expected provider snapshots still stay PARTIAL while usage trend is mock', async () => {
     const snaps = ['deepgram', 'dashscope', 'brevo', 'railway', 'supabase'].map((provider) => ({
       provider,
       status: 'operational',
@@ -306,8 +308,10 @@ describe('partial-coverage semantics', () => {
     getAdminClientMock.mockReturnValue(mockClient({ watch_provider_snapshots: snaps }))
     const res = fakeRes()
     await handleWatchProviders({ headers: {} }, res)
-    expect(res.body.source).toBe('live')
+    expect(res.body.source).toBe('partial')
     expect(res.body.coverage.completenessPct).toBe(100)
+    expect(res.body.coverage.sectionsLive).toContain('providerSnapshots')
+    expect(res.body.coverage.sectionsMock).toContain('usageTrend')
     expect(res.body.providers.every((p) => p.dataState === 'live')).toBe(true)
   })
 
