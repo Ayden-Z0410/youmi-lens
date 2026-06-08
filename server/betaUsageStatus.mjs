@@ -6,7 +6,7 @@
 
 import {
   verifyJwt,
-  getOrCreateUserQuota,
+  getEffectiveQuota,
   getUsedMinutes,
   getDailyCount,
   getDailyMinutesUsed,
@@ -14,7 +14,10 @@ import {
   PAID_PLAN_LIMITS,
   PLAN_LIMITS,
   MONTHLY_PLANS,
+  getAdminClient,
 } from './betaGate.mjs'
+
+const STUDENT_PASS_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
 
 const DISPLAY_NAMES = {
   public_trial: 'Free Beta',
@@ -22,6 +25,7 @@ const DISPLAY_NAMES = {
   student_basic: 'Youmi Lens Basic',
   student_plus: 'Youmi Lens Plus',
   student_pro: 'Youmi Lens Pro',
+  student_pass: 'Student Pass',
   admin: 'Developer Mode',
 }
 
@@ -31,6 +35,27 @@ function roundMinutes(value) {
 
 function planLimit(quota, key) {
   return PLAN_LIMITS[quota?.plan_type]?.[key] ?? quota?.[key]
+}
+
+async function loadStudentPassPurchaseAvailability() {
+  const db = getAdminClient()
+  if (!db) return { productId: STUDENT_PASS_PRODUCT_ID, isPurchasable: false, salesEndAt: null }
+  try {
+    const { data, error } = await db
+      .from('billing_products')
+      .select('product_id, is_purchasable, sales_end_at')
+      .eq('product_id', STUDENT_PASS_PRODUCT_ID)
+      .maybeSingle()
+    if (error) throw error
+    return {
+      productId: STUDENT_PASS_PRODUCT_ID,
+      isPurchasable: Boolean(data?.is_purchasable),
+      salesEndAt: data?.sales_end_at ?? null,
+    }
+  } catch (err) {
+    console.warn('[quota-status] billing product availability failed', err instanceof Error ? err.message : String(err))
+    return { productId: STUDENT_PASS_PRODUCT_ID, isPurchasable: false, salesEndAt: null }
+  }
 }
 
 export async function handleBetaUsageStatus(req, res) {
@@ -47,7 +72,7 @@ export async function handleBetaUsageStatus(req, res) {
     return
   }
 
-  const quota = await getOrCreateUserQuota(user.userId, user.email)
+  const quota = await getEffectiveQuota(user.userId, user.email)
   if (!quota) {
     res.status(503).json({ error: BETA_ERROR_CODES.QUOTA_REQUIRED, message: 'Beta quota temporarily unavailable.' })
     return
@@ -104,6 +129,10 @@ export async function handleBetaUsageStatus(req, res) {
       remaining_minutes_this_month: roundMinutes(remainingMinutes),
       recordings_today: recordingsToday,
       daily_recording_limit: planLimit(quota, 'max_recordings_per_day') ?? 4,
+      daily_processing_job_limit:
+        planLimit(quota, 'max_processing_jobs_per_day') ??
+        planLimit(quota, 'max_recordings_per_day') ??
+        4,
       max_recording_minutes: planLimit(quota, 'max_recording_minutes') ?? 60,
       max_live_session_minutes: planLimit(quota, 'max_live_session_minutes') ?? 60,
       daily_minutes_used: roundMinutes(dailyMinutesUsed),
@@ -128,6 +157,10 @@ export async function handleBetaUsageStatus(req, res) {
       remaining_minutes_this_month: roundMinutes(remainingMinutes),
       recordings_today: recordingsToday,
       daily_recording_limit: planLimit(quota, 'max_recordings_per_day') ?? 10,
+      daily_processing_job_limit:
+        planLimit(quota, 'max_processing_jobs_per_day') ??
+        planLimit(quota, 'max_recordings_per_day') ??
+        10,
       max_recording_minutes: planLimit(quota, 'max_recording_minutes') ?? 120,
       max_live_session_minutes: planLimit(quota, 'max_live_session_minutes') ?? 120,
       daily_minutes_used: roundMinutes(dailyMinutesUsed),
@@ -158,6 +191,9 @@ export async function handleBetaUsageStatus(req, res) {
     remaining_minutes_this_month: roundMinutes(remainingMinutes),
     recordings_today: recordingsToday,
     daily_recording_limit: PLAN_LIMITS.public_trial.max_recordings_per_day,
+    daily_processing_job_limit:
+      PLAN_LIMITS.public_trial.max_processing_jobs_per_day ??
+      PLAN_LIMITS.public_trial.max_recordings_per_day,
     max_recording_minutes: PLAN_LIMITS.public_trial.max_recording_minutes,
     max_live_session_minutes: PLAN_LIMITS.public_trial.max_live_session_minutes,
     daily_minutes_used: roundMinutes(dailyMinutesUsed),
@@ -178,6 +214,7 @@ const QUOTA_PLAN_DISPLAY_NAMES = {
   student_basic: 'Youmi Lens Basic',
   student_plus: 'Youmi Lens Plus',
   student_pro: 'Youmi Lens Pro',
+  student_pass: 'Student Pass',
   public_trial: 'Free Beta',
 }
 
@@ -191,21 +228,35 @@ const UNLIMITED_PLAN_TYPES = new Set(['admin', 'developer'])
  * user_quota row is auto-created as public_trial by getOrCreateUserQuota.
  */
 export async function buildQuotaStatus(userId, email) {
-  const quota = await getOrCreateUserQuota(userId, email)
+  // Effective plan (admin/core_tester override > active Student Pass entitlement
+  // > public_trial). An expired pass resolves back to public_trial with no cron.
+  const quota = await getEffectiveQuota(userId, email)
   if (!quota) return null
 
   const planType = quota.plan_type || 'public_trial'
   const displayName = QUOTA_PLAN_DISPLAY_NAMES[planType] ?? QUOTA_PLAN_DISPLAY_NAMES.public_trial
   const status = quota.status === 'suspended' ? 'suspended' : 'active'
 
+  // Entitlement summary for the paywall / account screen. Secret-free.
+  const ent = quota._entitlement ?? null
+  const entitlement = ent
+    ? { active: true, productId: ent.product_id, expiresAt: ent.expires_at }
+    : { active: false, productId: null, expiresAt: null }
+  const studentPass = await loadStudentPassPurchaseAvailability()
+
   // Developer / admin: unlimited — no usage counters to report.
   if (UNLIMITED_PLAN_TYPES.has(planType)) {
-    return { planType, displayName, status, unlimited: true }
+    return { planType, displayName, status, unlimited: true, entitlement, studentPass }
   }
 
   // Limited tiers: report live daily + minute usage from the existing helpers.
   const recordingsUsedToday = await getDailyCount(userId)
   const maxRecordingsPerDay = Number(planLimit(quota, 'max_recordings_per_day') ?? 0)
+  const maxProcessingJobsPerDay = Number(
+    planLimit(quota, 'max_processing_jobs_per_day') ??
+      planLimit(quota, 'max_recordings_per_day') ??
+      0,
+  )
   const maxRecordingMinutes = Number(planLimit(quota, 'max_recording_minutes') ?? 0)
   const maxLiveSessionMinutes = Number(planLimit(quota, 'max_live_session_minutes') ?? 0)
   const extraMinutesBalance = Number(quota.extra_minutes_balance ?? 0)
@@ -236,7 +287,10 @@ export async function buildQuotaStatus(userId, email) {
     displayName,
     status,
     unlimited: false,
+    entitlement,
+    studentPass,
     maxRecordingsPerDay,
+    maxProcessingJobsPerDay,
     recordingsUsedToday,
     recordingsRemainingToday: Math.max(0, maxRecordingsPerDay - recordingsUsedToday),
     maxRecordingMinutes,

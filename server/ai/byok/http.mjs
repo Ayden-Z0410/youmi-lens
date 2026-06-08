@@ -1,5 +1,8 @@
 /**
  * BYOK HTTP proxy — keys only in request body, never stored server-side.
+ * BYOK routes intentionally stay outside hosted Youmi quota gates because the
+ * user supplies their own provider key; hosted-cost endpoints are gated in
+ * hostedHttp.mjs, liveRealtimeWs.mjs, and liveTranscribeFromUrl.mjs.
  */
 
 import { hostedUpload } from '../hostedHttp.mjs'

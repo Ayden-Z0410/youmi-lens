@@ -7,7 +7,7 @@ import * as youmiHosted from './hosted/youmiHosted.mjs'
 import { CLIENT_SAFE_UNAVAILABLE } from './errors.mjs'
 import {
   verifyJwt,
-  getOrCreateUserQuota,
+  getEffectiveQuota,
   checkHostedActionAllowed,
   recordBetaUsage,
   BETA_ERROR_CODES,
@@ -65,7 +65,7 @@ export async function handleHostedTranscribe(req, res) {
   }
 
   // Beta gate: direct hosted endpoint must be server-side protected.
-  const quota = await getOrCreateUserQuota(user.userId, user.email)
+  const quota = await getEffectiveQuota(user.userId, user.email)
   const gate = await checkHostedActionAllowed(quota, user.userId)
   if (!gate.allowed) {
     res.status(gate.status).json(gate.body)
@@ -115,7 +115,7 @@ export async function handleHostedSummarize(req, res) {
   }
 
   // Beta gate: direct hosted endpoint must be server-side protected.
-  const quota = await getOrCreateUserQuota(user.userId, user.email)
+  const quota = await getEffectiveQuota(user.userId, user.email)
   const gate = await checkHostedActionAllowed(quota, user.userId)
   if (!gate.allowed) {
     res.status(gate.status).json(gate.body)
@@ -152,7 +152,7 @@ export async function handleHostedTranslateCaption(req, res) {
   }
 
   // Only block suspended users; active quota check not enforced here (live caption translation)
-  const quota = await getOrCreateUserQuota(user.userId, user.email)
+  const quota = await getEffectiveQuota(user.userId, user.email)
   if (quota?.status === 'suspended') {
     res.status(403).json({ error: BETA_ERROR_CODES.SUSPENDED, message: BETA_LIMIT_MESSAGE })
     return

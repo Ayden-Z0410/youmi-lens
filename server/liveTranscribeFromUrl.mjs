@@ -3,9 +3,16 @@
  * Separate from POST /api/transcribe (buffer/Whisper) and from POST /api/process-recording (full lecture).
  */
 
-import { createClient } from '@supabase/supabase-js'
 import * as youmiHosted from './ai/hosted/youmiHosted.mjs'
 import { CLIENT_SAFE_UNAVAILABLE } from './ai/errors.mjs'
+import {
+  BETA_ERROR_CODES,
+  BETA_LIMIT_MESSAGE,
+  checkLiveSessionAllowed,
+  getEffectiveQuota,
+  recordBetaUsage,
+  verifyJwt,
+} from './betaGate.mjs'
 
 export async function handleLiveTranscribeFromUrl(req, res) {
   const rid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`
@@ -24,22 +31,18 @@ export async function handleLiveTranscribeFromUrl(req, res) {
   }
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
-  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
   const jwt = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null
-  if (!supabaseUrl || !anonKey || !jwt) {
+  if (!supabaseUrl || !jwt) {
     res.status(401).json({ error: 'Sign in again to continue.' })
     return
   }
 
-  const supabase = createClient(supabaseUrl, anonKey, {
-    global: { headers: { Authorization: `Bearer ${jwt}` } },
-  })
-  const { data: userData } = await supabase.auth.getUser()
-  const userId = userData.user?.id
-  if (!userId) {
+  const user = await verifyJwt(jwt)
+  if (!user?.userId) {
     res.status(401).json({ error: 'Sign in again to continue.' })
     return
   }
+  const userId = user.userId
 
   let hostname
   try {
@@ -59,6 +62,21 @@ export async function handleLiveTranscribeFromUrl(req, res) {
     return
   }
 
+  const quota = await getEffectiveQuota(userId, user.email)
+  const gate = await checkLiveSessionAllowed(quota, userId)
+  if (!gate.allowed) {
+    console.info(
+      '[YoumiLive][srv] live-transcribe-url quota blocked',
+      JSON.stringify({ rid, userId: userId.slice(0, 8), code: gate.body.error }),
+    )
+    res.status(gate.status).json({
+      error: gate.body.error || BETA_ERROR_CODES.BETA_LIMIT_REACHED,
+      message: gate.body.message || BETA_LIMIT_MESSAGE,
+      details: gate.body.details ?? {},
+    })
+    return
+  }
+
   let pathSafe = ''
   try {
     pathSafe = new URL(url).pathname
@@ -73,6 +91,7 @@ export async function handleLiveTranscribeFromUrl(req, res) {
   try {
     const text = await youmiHosted.transcribeAudioFromUrl(url)
     const t = text ?? ''
+    void recordBetaUsage(userId, user.email, null, 'live_caption_session', 0)
     console.info(
       '[YoumiLive][srv] paraformer/url-asr ok',
       JSON.stringify({ rid, textLen: t.length, preview: t.slice(0, 120) }),
@@ -95,6 +114,7 @@ export async function handleLiveTranscribeFromUrl(req, res) {
         const ext = mime.includes('mp4') ? 'm4a' : mime.includes('wav') ? 'wav' : 'webm'
         const text = await youmiHosted.transcribeAudio(ab, mime, `live.${ext}`)
         const tw = text ?? ''
+        void recordBetaUsage(userId, user.email, null, 'live_caption_session', 0)
         console.info(
           '[YoumiLive][srv] whisper fallback ok',
           JSON.stringify({ rid, textLen: tw.length, preview: tw.slice(0, 120) }),

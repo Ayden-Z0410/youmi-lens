@@ -31,6 +31,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js'
+import { getActiveEntitlement, resolveEffectivePlanType } from './iapEntitlements.mjs'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,15 @@ const DEFAULT_MAX_RECORDING_MINUTES = Number(process.env.BETA_MAX_RECORDING_MINU
 const DEFAULT_MAX_RECORDINGS_PER_DAY = Number(process.env.BETA_MAX_RECORDINGS_PER_DAY || 4)
 const DEFAULT_MAX_LIVE_SESSION_MINUTES = Number(process.env.BETA_MAX_LIVE_SESSION_MINUTES || 60)
 
+// Paid Student Pass limits. Every value is env-overridable so quotas can
+// change server-side without shipping a new app version. NOT unlimited.
+const STUDENT_PASS_MONTHLY_MINUTES = Number(process.env.BETA_STUDENT_PASS_MONTHLY_MINUTES || 600)
+const STUDENT_PASS_DAILY_MINUTES = Number(process.env.BETA_STUDENT_PASS_DAILY_MINUTES || 120)
+const STUDENT_PASS_MAX_RECORDING_MINUTES = Number(process.env.BETA_STUDENT_PASS_MAX_RECORDING_MINUTES || 90)
+const STUDENT_PASS_MAX_RECORDINGS_PER_DAY = Number(process.env.BETA_STUDENT_PASS_MAX_RECORDINGS_PER_DAY || 6)
+const STUDENT_PASS_MAX_PROCESSING_JOBS_PER_DAY = Number(process.env.BETA_STUDENT_PASS_MAX_PROCESSING_JOBS_PER_DAY || 10)
+const STUDENT_PASS_MAX_LIVE_SESSION_MINUTES = Number(process.env.BETA_STUDENT_PASS_MAX_LIVE_SESSION_MINUTES || 90)
+
 /**
  * Single source of truth for per-plan limits. Server constants win over any
  * stale value on the user_quota row — `planLimit()` checks PLAN_LIMITS first.
@@ -90,6 +100,7 @@ export const PLAN_LIMITS = {
     daily_minutes_limit: PUBLIC_TRIAL_DAILY_MINUTES,
     max_recording_minutes: DEFAULT_MAX_RECORDING_MINUTES,
     max_recordings_per_day: DEFAULT_MAX_RECORDINGS_PER_DAY,
+    max_processing_jobs_per_day: DEFAULT_MAX_RECORDINGS_PER_DAY,
     max_live_session_minutes: DEFAULT_MAX_LIVE_SESSION_MINUTES,
   },
   core_tester: {
@@ -97,6 +108,7 @@ export const PLAN_LIMITS = {
     daily_minutes_limit: CORE_TESTER_DAILY_MINUTES,
     max_recording_minutes: 120,
     max_recordings_per_day: 10,
+    max_processing_jobs_per_day: 10,
     max_live_session_minutes: 120,
   },
   student_basic: {
@@ -104,6 +116,7 @@ export const PLAN_LIMITS = {
     daily_minutes_limit: 120,
     max_recording_minutes: 60,
     max_recordings_per_day: 10,
+    max_processing_jobs_per_day: 10,
     max_live_session_minutes: 60,
   },
   student_plus: {
@@ -111,6 +124,7 @@ export const PLAN_LIMITS = {
     daily_minutes_limit: 240,
     max_recording_minutes: 120,
     max_recordings_per_day: 20,
+    max_processing_jobs_per_day: 20,
     max_live_session_minutes: 120,
   },
   student_pro: {
@@ -118,7 +132,18 @@ export const PLAN_LIMITS = {
     daily_minutes_limit: 360,
     max_recording_minutes: 180,
     max_recordings_per_day: 50,
+    max_processing_jobs_per_day: 50,
     max_live_session_minutes: 180,
+  },
+  // Active product. Granted via a time-boxed user_entitlement (never written
+  // permanently onto user_quota.plan_type); resolved at request time.
+  student_pass: {
+    monthly_minutes_limit: STUDENT_PASS_MONTHLY_MINUTES,
+    daily_minutes_limit: STUDENT_PASS_DAILY_MINUTES,
+    max_recording_minutes: STUDENT_PASS_MAX_RECORDING_MINUTES,
+    max_recordings_per_day: STUDENT_PASS_MAX_RECORDINGS_PER_DAY,
+    max_processing_jobs_per_day: STUDENT_PASS_MAX_PROCESSING_JOBS_PER_DAY,
+    max_live_session_minutes: STUDENT_PASS_MAX_LIVE_SESSION_MINUTES,
   },
 }
 
@@ -140,6 +165,7 @@ export const MONTHLY_PLANS = new Set([
   'student_basic',
   'student_plus',
   'student_pro',
+  'student_pass',
 ])
 /**
  * Lifetime-quota plans. Empty after the student-beta tightening — kept as a
@@ -239,6 +265,48 @@ export async function getOrCreateUserQuota(userId, email) {
     return retry || null
   }
   return created
+}
+
+/**
+ * Resolve the user's EFFECTIVE quota at request time.
+ *
+ * user_quota.plan_type is never permanently set to student_pass — paid access
+ * lives in a time-boxed user_entitlement. This returns the stored quota row with
+ * its plan_type replaced by the effective plan:
+ *   admin / core_tester (stored override) > active student_pass entitlement > public_trial.
+ *
+ * PLAN_LIMITS keys off plan_type, so the returned object drives every existing
+ * gate with the correct limits. An expired/absent entitlement yields
+ * public_trial automatically — no cron required. `_entitlement` (if active) is
+ * attached for status surfaces; it is not a DB column.
+ */
+export async function getEffectiveQuota(userId, email) {
+  const quota = await getOrCreateUserQuota(userId, email)
+  if (!quota) return null
+
+  // Stored overrides win outright and need no entitlement lookup.
+  if (quota.plan_type === 'admin' || quota.plan_type === 'core_tester') return quota
+
+  const db = getAdminClient()
+  if (!db) return quota // fail safe: behave as stored plan if DB unavailable
+
+  const nowMs = Date.now()
+  let entitlement = null
+  try {
+    entitlement = await getActiveEntitlement(db, userId, new Date(nowMs).toISOString())
+  } catch (err) {
+    console.warn('[betaGate] getActiveEntitlement failed', err instanceof Error ? err.message : String(err))
+    // On lookup failure, fall back to the stored plan rather than over-granting.
+    return quota
+  }
+
+  const effectivePlan = resolveEffectivePlanType({
+    storedPlanType: quota.plan_type,
+    entitlement,
+    nowMs,
+  })
+  if (effectivePlan === quota.plan_type) return quota
+  return { ...quota, plan_type: effectivePlan, _entitlement: entitlement }
 }
 
 export function quotaPatchForPlan(planType) {
@@ -426,15 +494,19 @@ export async function checkProcessingAllowed(quota, userId, durationSec) {
 
   // Daily count check
   const todayCount = await getDailyRecordingCount(userId)
-  const maxRecordingsPerDay = Number(planLimit(quota, 'max_recordings_per_day') ?? DEFAULT_MAX_RECORDINGS_PER_DAY)
-  if (todayCount >= maxRecordingsPerDay) {
+  const maxProcessingJobsPerDay = Number(
+    planLimit(quota, 'max_processing_jobs_per_day') ??
+      planLimit(quota, 'max_recordings_per_day') ??
+      DEFAULT_MAX_RECORDINGS_PER_DAY,
+  )
+  if (todayCount >= maxProcessingJobsPerDay) {
     return {
       allowed: false,
       status: 429,
       body: betaError(
         BETA_ERROR_CODES.DAILY_LIMIT_REACHED,
-        `Daily limit reached. You can process up to ${maxRecordingsPerDay} lectures per day on this plan.`,
-        { used_today: todayCount, limit_today: maxRecordingsPerDay },
+        `Daily limit reached. You can process up to ${maxProcessingJobsPerDay} lectures per day on this plan.`,
+        { used_today: todayCount, limit_today: maxProcessingJobsPerDay },
       ),
     }
   }
@@ -600,15 +672,19 @@ export async function checkHostedActionAllowed(quota, userId) {
   if (quota.plan_type === 'admin') return { allowed: true }
 
   const todayCount = await getDailyRecordingCount(userId)
-  const maxRecordingsPerDay = Number(planLimit(quota, 'max_recordings_per_day') ?? DEFAULT_MAX_RECORDINGS_PER_DAY)
-  if (todayCount >= maxRecordingsPerDay) {
+  const maxProcessingJobsPerDay = Number(
+    planLimit(quota, 'max_processing_jobs_per_day') ??
+      planLimit(quota, 'max_recordings_per_day') ??
+      DEFAULT_MAX_RECORDINGS_PER_DAY,
+  )
+  if (todayCount >= maxProcessingJobsPerDay) {
     return {
       allowed: false,
       status: 429,
       body: betaError(
         BETA_ERROR_CODES.DAILY_LIMIT_REACHED,
-        `Daily limit reached. You can process up to ${maxRecordingsPerDay} lectures per day on this plan.`,
-        { used_today: todayCount, limit_today: maxRecordingsPerDay },
+        `Daily limit reached. You can process up to ${maxProcessingJobsPerDay} lectures per day on this plan.`,
+        { used_today: todayCount, limit_today: maxProcessingJobsPerDay },
       ),
     }
   }
