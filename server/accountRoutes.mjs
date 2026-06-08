@@ -1,8 +1,10 @@
 import { BETA_ERROR_CODES, getAdminClient, verifyJwt } from './betaGate.mjs'
 import {
+  checkAppleIapLedgerAccountDeletionAllowed,
   isAppleIapLedgerUnavailableError,
   isMissingAppleIapLedgerTableError,
   prepareAppleIapLedgerForAccountDeletion,
+  restoreAppleIapLedgerAfterAccountDeletionFailure,
 } from './iapLedger.mjs'
 
 const AUDIO_BUCKET = 'lecture-audio'
@@ -30,8 +32,18 @@ async function deleteRows(db, table, column, value) {
   return { table, skipped: Boolean(error), error: error?.message ?? null }
 }
 
-async function prepareAppleTransactionsForAccountDeletion(db, userId) {
-  const result = await prepareAppleIapLedgerForAccountDeletion(db, userId)
+async function assertAppleTransactionsCanBeDeleted(db, userId) {
+  const result = await checkAppleIapLedgerAccountDeletionAllowed(db, userId)
+  if (result.blocked) {
+    const err = new Error('Account deletion is temporarily unavailable.')
+    err.name = 'AccountDeletionTemporarilyUnavailableError'
+    throw err
+  }
+  return result
+}
+
+async function prepareAppleTransactionsForAccountDeletion(db, userId, deletedAt) {
+  const result = await prepareAppleIapLedgerForAccountDeletion(db, userId, deletedAt)
   if (result.blocked) {
     const err = new Error('Account deletion is temporarily unavailable.')
     err.name = 'AccountDeletionTemporarilyUnavailableError'
@@ -112,19 +124,26 @@ export async function handleDeleteAccount(req, res) {
 
   const { userId } = user
 
+  let appleLedgerPrepared = false
+  let authDeleteCompleted = false
+  const appleLedgerDeletedAt = new Date().toISOString()
+
   try {
     const deleted = []
-    deleted.push(await prepareAppleTransactionsForAccountDeletion(db, userId))
+    await assertAppleTransactionsCanBeDeleted(db, userId)
     const storage = await removeStoragePrefix(db, userId)
     deleted.push(await deleteRows(db, 'beta_usage', 'user_id', userId))
     deleted.push(await deleteRows(db, 'recordings', 'user_id', userId))
     deleted.push(await deleteRows(db, 'user_quota', 'user_id', userId))
     deleted.push(await deleteRows(db, 'profiles', 'id', userId))
+    deleted.push(await prepareAppleTransactionsForAccountDeletion(db, userId, appleLedgerDeletedAt))
+    appleLedgerPrepared = true
 
     const { error: authError } = await db.auth.admin.deleteUser(userId)
     if (authError && !/not found|does not exist/i.test(authError.message ?? '')) {
       throw authError
     }
+    authDeleteCompleted = true
 
     console.warn(
       '[account-delete] ok',
@@ -143,6 +162,19 @@ export async function handleDeleteAccount(req, res) {
         message: err instanceof Error ? err.message : String(err),
       }),
     )
+    if (appleLedgerPrepared && !authDeleteCompleted) {
+      try {
+        await restoreAppleIapLedgerAfterAccountDeletionFailure(db, userId, appleLedgerDeletedAt)
+      } catch (restoreErr) {
+        console.error(
+          '[account-delete] failed to restore apple ledger after delete failure',
+          JSON.stringify({
+            userIdPrefix: userId.slice(0, 8),
+            message: restoreErr instanceof Error ? restoreErr.message : String(restoreErr),
+          }),
+        )
+      }
+    }
     if (err?.name === 'AccountDeletionTemporarilyUnavailableError' || isTemporaryDatabaseStateError(err)) {
       res.status(503).json({
         ok: false,

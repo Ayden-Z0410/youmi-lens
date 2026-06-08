@@ -171,6 +171,28 @@ describe('effective plan resolution', () => {
     ).toBe('public_trial')
   })
 
+  it('keeps legacy paid IAP quota tiers when no entitlement row exists', () => {
+    for (const planType of ['student_basic', 'student_plus', 'student_pro']) {
+      expect(
+        resolveEffectivePlanType({
+          storedPlanType: planType,
+          entitlement: null,
+          nowMs: Date.parse('2026-06-10T00:00:00Z'),
+        }),
+      ).toBe(planType)
+    }
+  })
+
+  it('does not keep stored student_pass after its entitlement window expires', () => {
+    expect(
+      resolveEffectivePlanType({
+        storedPlanType: 'student_pass',
+        entitlement: activeEntitlement,
+        nowMs: Date.parse('2026-07-01T00:00:00Z'),
+      }),
+    ).toBe('public_trial')
+  })
+
   it('keeps admin override above entitlement', () => {
     expect(
       resolveEffectivePlanType({

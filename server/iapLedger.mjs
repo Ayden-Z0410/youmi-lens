@@ -179,31 +179,51 @@ export async function revokeAppleIapTransaction(db, transactionId, revokedAt) {
   })
 }
 
+async function checkLegacyLedgerAccountDeletion(db, userId, resolution) {
+  const { count, error } = await db
+    .from(LEGACY_LEDGER_TABLE)
+    .select('transaction_id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+  if (error) throw error
+  if ((count ?? 0) > 0) {
+    return {
+      ...resolution,
+      allowed: false,
+      blocked: true,
+      reason: 'legacy_ledger_has_billing_rows',
+      affectedRows: count ?? 0,
+    }
+  }
+  return {
+    ...resolution,
+    allowed: true,
+    blocked: false,
+    reason: 'legacy_ledger_no_billing_rows',
+    affectedRows: 0,
+  }
+}
+
+export async function checkAppleIapLedgerAccountDeletionAllowed(db, userId) {
+  const resolution = await resolveAppleIapLedgerTable(db, 'prepare_account_deletion')
+
+  if (resolution.mode === 'legacy') {
+    return checkLegacyLedgerAccountDeletion(db, userId, resolution)
+  }
+
+  return {
+    ...resolution,
+    allowed: true,
+    blocked: false,
+    reason: 'new_ledger_available',
+    affectedRows: 0,
+  }
+}
+
 export async function prepareAppleIapLedgerForAccountDeletion(db, userId, deletedAt = new Date().toISOString()) {
   const resolution = await resolveAppleIapLedgerTable(db, 'prepare_account_deletion')
 
   if (resolution.mode === 'legacy') {
-    const { count, error } = await db
-      .from(LEGACY_LEDGER_TABLE)
-      .select('transaction_id', { count: 'exact', head: true })
-      .eq('user_id', userId)
-    if (error) throw error
-    if ((count ?? 0) > 0) {
-      return {
-        ...resolution,
-        allowed: false,
-        blocked: true,
-        reason: 'legacy_ledger_has_billing_rows',
-        affectedRows: count ?? 0,
-      }
-    }
-    return {
-      ...resolution,
-      allowed: true,
-      blocked: false,
-      reason: 'legacy_ledger_no_billing_rows',
-      affectedRows: 0,
-    }
+    return checkLegacyLedgerAccountDeletion(db, userId, resolution)
   }
 
   const { error } = await db
@@ -219,6 +239,38 @@ export async function prepareAppleIapLedgerForAccountDeletion(db, userId, delete
     allowed: true,
     blocked: false,
     reason: 'new_ledger_marked_account_deleted',
+  }
+}
+
+export async function restoreAppleIapLedgerAfterAccountDeletionFailure(db, userId, deletedAt = null) {
+  const resolution = await resolveAppleIapLedgerTable(db, 'restore_account_deletion')
+
+  if (resolution.mode === 'legacy') {
+    return {
+      ...resolution,
+      allowed: true,
+      blocked: false,
+      reason: 'legacy_ledger_restore_noop',
+    }
+  }
+
+  let query = db
+    .from(PREFERRED_LEDGER_TABLE)
+    .update({
+      owner_state: 'active',
+      account_deleted_at: null,
+    })
+    .eq('user_id', userId)
+    .eq('owner_state', 'account_deleted')
+  if (deletedAt) query = query.eq('account_deleted_at', deletedAt)
+
+  const { error } = await query
+  if (error) throw error
+  return {
+    ...resolution,
+    allowed: true,
+    blocked: false,
+    reason: 'new_ledger_restored_after_delete_failure',
   }
 }
 

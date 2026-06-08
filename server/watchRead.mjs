@@ -362,14 +362,18 @@ async function buildProviders() {
     { id: 'warnings', label: 'Warnings', icon: 'alert', value: String(warnings), description: 'Need attention', status: { kind: 'watch', label: 'Watch' } },
     { id: 'offline', label: 'Offline', icon: 'offline', value: String(offline), description: offline ? 'Provider outage' : 'No outages', status: { kind: 'stable', label: 'Stable' } },
   ]
-  // Live only when every expected provider has a real snapshot.
+  // Provider snapshots can be complete while the trend chart is still mocked, so
+  // source must be based on section coverage rather than provider count alone.
   const complete = realProviders.length === EXPECTED_PROVIDERS.length
-  const source = decideSource({ hasAnyReal: realProviders.length > 0, complete })
   const coverage = makeCoverage({
     providersWithRealData: realProviders,
     sectionsLive: realProviders.length ? ['providerSnapshots'] : [],
     sectionsMock: ['usageTrend', ...(complete ? [] : ['providerSnapshots'])],
     completenessPct: pct(realProviders.length, EXPECTED_PROVIDERS.length),
+  })
+  const source = decideSource({
+    hasAnyReal: realProviders.length > 0,
+    complete: coverage.sectionsMock.length === 0,
   })
   return { ok: true, source, coverage, metrics, providers, usageTrend: MOCK.providers.usageTrend, connectionHealth }
 }
@@ -611,7 +615,8 @@ async function buildSettings() {
   }))
 
   const cfg = Object.fromEntries((config || []).map((c) => [c.key, c.value]))
-  const notifications = notificationsFromConfig(cfg.notification_channels) || MOCK.settings.notifications
+  const liveNotifications = notificationsFromConfig(cfg.notification_channels)
+  const notifications = liveNotifications || MOCK.settings.notifications
 
   // Connection STATUS may come from snapshots; credentials are ALWAYS masked.
   // Providers without a snapshot are marked dataState 'unknown' (mock), not Live.
@@ -640,12 +645,15 @@ async function buildSettings() {
     { id: 'security-mode', label: 'Security Mode', icon: 'shield', value: 'Server', description: 'AdminGate verified' },
   ]
 
-  // Config / rules / security posture are real; provider connection statuses are
-  // mock/unknown until snapshots exist → page is "partial" until all are present.
-  const sectionsLive = ['security']
-  const sectionsMock = []
+  // Only config/rules/snapshot-derived sections are live. Static UI preferences
+  // and masked security settings still come from mock data, so this page remains
+  // partial until those sections have real backing data too.
+  const sectionsLive = []
+  const sectionsMock = ['security', 'appearance']
   if (hasRules) sectionsLive.push('alertThresholds')
-  if (hasConfig) sectionsLive.push('notifications')
+  else sectionsMock.push('alertThresholds')
+  if (liveNotifications) sectionsLive.push('notifications')
+  else sectionsMock.push('notifications')
   if (connectionsComplete) sectionsLive.push('providerConnections')
   else sectionsMock.push('providerConnections')
   const source = decideSource({
