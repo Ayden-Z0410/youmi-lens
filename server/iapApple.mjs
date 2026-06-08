@@ -1,21 +1,30 @@
+/**
+ * Apple App Store server-side verification for Youmi Lens.
+ *
+ * Single product: the Student Pass (a NON-RENEWING subscription). We use the
+ * modern, Apple-supported JWS path (@apple/app-store-server-library):
+ *   - SignedDataVerifier.verifyAndDecodeTransaction  — signed StoreKit 2 txns
+ *   - SignedDataVerifier.verifyAndDecodeNotification — App Store Server Notif. V2
+ *   - AppStoreServerAPIClient.getTransactionInfo     — fetch a signed txn by id
+ *
+ * The DECODED Apple transaction is authoritative. We never trust client-supplied
+ * productId / transactionId / purchaseDate / expiry / plan type / status; any
+ * client value passed in must MATCH the decoded value or we reject.
+ *
+ * IMPORTANT: this module performs NO entitlement decision. For a non-renewing
+ * subscription Apple supplies no meaningful expiry, so the 30-day window is
+ * computed by the backend from the verified purchaseDate (see iapEntitlements
+ * + iapRoutes). Apple's `expiresDate` is surfaced only as informational metadata.
+ *
+ * Secrets (private key, JWS, JWT) are never logged here or by callers.
+ */
 import { readFileSync } from 'node:fs'
 import {
   AppStoreServerAPIClient,
   Environment,
   SignedDataVerifier,
+  Type,
 } from '@apple/app-store-server-library'
-
-export const PRODUCT_PLAN_MAP = {
-  'com.aydenz.youmilensipad.basic.monthly': 'student_basic',
-  'com.aydenz.youmilensipad.plus.monthly': 'student_plus',
-  'com.aydenz.youmilensipad.pro.monthly': 'student_pro',
-}
-
-export const PLAN_PRIORITY = {
-  student_basic: 1,
-  student_plus: 2,
-  student_pro: 3,
-}
 
 const VALID_ENVIRONMENTS = new Set([
   Environment.SANDBOX,
@@ -37,7 +46,8 @@ function normalizeApplePrivateKey(value) {
   return value.replace(/\\n/g, '\n')
 }
 
-function appleEnvironment() {
+/** The Apple environment this server is configured to accept (Sandbox vs Production). */
+export function appleEnvironment() {
   const raw = process.env.APPLE_IAP_ENVIRONMENT?.trim() || Environment.SANDBOX
   const match = Object.values(Environment).find((value) => value.toLowerCase() === raw.toLowerCase())
   if (!match || !VALID_ENVIRONMENTS.has(match)) {
@@ -101,43 +111,56 @@ function isoFromAppleMs(ms) {
   return typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString() : null
 }
 
-function activeStatus(decoded) {
-  if (decoded.revocationDate) return 'revoked'
-  if (decoded.expiresDate && decoded.expiresDate <= Date.now()) return 'expired'
-  return 'active'
-}
-
-function normalizeDecodedTransaction(decoded) {
-  const productId = decoded.productId
-  const planType = PRODUCT_PLAN_MAP[productId]
-  if (!planType) throw new Error('Transaction product is not a Youmi Lens plan')
-
-  const expectedBundleId = requiredEnv('APPLE_BUNDLE_ID')
+/**
+ * Normalize a verified, decoded Apple transaction into our internal shape.
+ *
+ * Pure (no I/O) so it is directly unit-testable: callers pass a decoded payload
+ * plus the expected bundle id / environment. Validates signature-independent
+ * invariants: bundle id, environment, and the presence of transactionId /
+ * productId / purchaseDate. Does NOT map a plan or decide active/expired — that
+ * is the backend's job from billing_products + the computed window.
+ *
+ * @param {object} decoded  JWSTransactionDecodedPayload (already signature-verified)
+ * @param {{ expectedBundleId: string, expectedEnvironment: string }} config
+ */
+export function normalizeDecodedTransaction(decoded, { expectedBundleId, expectedEnvironment }) {
+  if (!decoded || typeof decoded !== 'object') {
+    throw new Error('Decoded transaction is missing')
+  }
   if (decoded.bundleId !== expectedBundleId) {
     throw new Error('Transaction bundle identifier does not match this app')
   }
-
-  const expectedEnvironment = appleEnvironment()
   if (decoded.environment !== expectedEnvironment) {
+    // Rejects e.g. a Sandbox transaction when the server is configured Production.
     throw new Error('Transaction environment does not match server configuration')
   }
-
   if (!decoded.transactionId) throw new Error('Verified transaction is missing transactionId')
+  if (!decoded.productId) throw new Error('Verified transaction is missing productId')
+  if (typeof decoded.purchaseDate !== 'number' || !Number.isFinite(decoded.purchaseDate)) {
+    throw new Error('Verified transaction is missing purchaseDate')
+  }
+  if (decoded.type !== Type.NON_RENEWING_SUBSCRIPTION) {
+    throw new Error('Verified transaction is not a non-renewing subscription')
+  }
 
-  const status = activeStatus(decoded)
   return {
-    productId,
-    planType,
+    productId: decoded.productId,
     transactionId: decoded.transactionId,
     originalTransactionId: decoded.originalTransactionId ?? decoded.transactionId,
     environment: decoded.environment,
-    expiresAt: isoFromAppleMs(decoded.expiresDate),
+    productType: decoded.type ?? null,
+    purchaseDateMs: decoded.purchaseDate,
+    purchaseDate: isoFromAppleMs(decoded.purchaseDate),
+    // Apple `expiresDate` is informational only for a non-renewing subscription
+    // (often absent). Stored as apple_expires_date; never used for entitlement.
+    appleExpiresDate: isoFromAppleMs(decoded.expiresDate),
     revokedAt: isoFromAppleMs(decoded.revocationDate),
-    status,
+    revoked: Boolean(decoded.revocationDate),
     rawTransaction: decoded,
   }
 }
 
+/** Fetch a signed transaction by id from the App Store Server API (used by restore). */
 export async function fetchSignedTransactionInfo(transactionId) {
   if (!transactionId || typeof transactionId !== 'string') {
     throw new Error('transactionId is required')
@@ -149,6 +172,12 @@ export async function fetchSignedTransactionInfo(transactionId) {
   return response.signedTransactionInfo
 }
 
+/**
+ * Verify + decode a StoreKit 2 signed transaction (the authoritative path).
+ * Accepts either the JWS directly (signedTransactionInfo / purchaseToken) or a
+ * transactionId we can look up via the App Store Server API. Any client-supplied
+ * productId / transactionId / originalTransactionId must match the decoded values.
+ */
 export async function verifyAppleTransaction(input = {}) {
   const signedTransactionInfo =
     input.signedTransactionInfo ||
@@ -160,7 +189,10 @@ export async function verifyAppleTransaction(input = {}) {
   }
 
   const decoded = await getVerifier().verifyAndDecodeTransaction(signedTransactionInfo)
-  const normalized = normalizeDecodedTransaction(decoded)
+  const normalized = normalizeDecodedTransaction(decoded, {
+    expectedBundleId: requiredEnv('APPLE_BUNDLE_ID'),
+    expectedEnvironment: appleEnvironment(),
+  })
 
   if (input.productId && input.productId !== normalized.productId) {
     throw new Error('Client productId does not match verified transaction')
@@ -178,10 +210,37 @@ export async function verifyAppleTransaction(input = {}) {
   return normalized
 }
 
-export function highestActivePlan(plans) {
-  return plans.reduce((best, candidate) => {
-    if (!candidate || candidate.status !== 'active') return best
-    if (!best) return candidate
-    return PLAN_PRIORITY[candidate.planType] > PLAN_PRIORITY[best.planType] ? candidate : best
-  }, null)
+/**
+ * Verify + decode an App Store Server Notification V2 `signedPayload` and, when
+ * present, the embedded signed transaction. Returns a compact, audit-safe shape.
+ * Environment on the notification must match the server configuration.
+ */
+export async function verifyAppleNotification(signedPayload) {
+  if (!signedPayload || typeof signedPayload !== 'string') {
+    throw new Error('signedPayload is required')
+  }
+  const decoded = await getVerifier().verifyAndDecodeNotification(signedPayload)
+  const expectedEnvironment = appleEnvironment()
+  const env = decoded?.data?.environment
+  if (env && env !== expectedEnvironment) {
+    throw new Error('Notification environment does not match server configuration')
+  }
+
+  let transaction = null
+  const signedTransactionInfo = decoded?.data?.signedTransactionInfo
+  if (signedTransactionInfo) {
+    const decodedTx = await getVerifier().verifyAndDecodeTransaction(signedTransactionInfo)
+    transaction = normalizeDecodedTransaction(decodedTx, {
+      expectedBundleId: requiredEnv('APPLE_BUNDLE_ID'),
+      expectedEnvironment,
+    })
+  }
+
+  return {
+    notificationType: decoded?.notificationType ?? null,
+    subtype: decoded?.subtype ?? null,
+    notificationUUID: decoded?.notificationUUID ?? null,
+    environment: env ?? expectedEnvironment,
+    transaction,
+  }
 }

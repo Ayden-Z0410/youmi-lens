@@ -23,7 +23,12 @@ import { audioUploadMiddleware, handleUploadAudio } from './uploadAudio.mjs'
 import { handleBetaUsageStatus, handleQuotaStatus } from './betaUsageStatus.mjs'
 import { handleAuthCheckEmail } from './authCheckEmail.mjs'
 import { handleSendSignupCode, handleVerifySignupCodeAndCreateUser } from './authSignupCode.mjs'
-import { handleIapRestore, handleIapVerify } from './iapRoutes.mjs'
+import {
+  handleAppleNotifications,
+  handleIapEntitlement,
+  handleIapRestore,
+  handleIapVerify,
+} from './iapRoutes.mjs'
 import { handleDeleteAccount } from './accountRoutes.mjs'
 import { handleAdminWatchAccess } from './adminWatchAccess.mjs'
 import {
@@ -258,6 +263,17 @@ for (const [path, handler] of watchReadRoutes) {
   })
 }
 
+// Primary Student Pass verification endpoint.
+app.post('/api/iap/apple/verify', (req, res) => {
+  void handleIapVerify(req, res).catch((err) => {
+    console.error('[iap-verify]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'iap_verify_failed', message: 'Could not verify purchase.' })
+    }
+  })
+})
+
+// Legacy alias (kept temporarily for older client builds). Same handler.
 app.post('/api/iap/verify', (req, res) => {
   void handleIapVerify(req, res).catch((err) => {
     console.error('[iap-verify]', err)
@@ -267,11 +283,30 @@ app.post('/api/iap/verify', (req, res) => {
   })
 })
 
+app.get('/api/iap/entitlement', (req, res) => {
+  void handleIapEntitlement(req, res).catch((err) => {
+    console.error('[iap-entitlement]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'iap_entitlement_failed', message: 'Could not load entitlement.' })
+    }
+  })
+})
+
 app.post('/api/iap/restore', (req, res) => {
   void handleIapRestore(req, res).catch((err) => {
     console.error('[iap-restore]', err)
     if (!res.headersSent) {
       res.status(500).json({ ok: false, error: 'iap_restore_failed', message: 'Could not restore purchases.' })
+    }
+  })
+})
+
+// App Store Server Notifications V2 (Apple → server; JWS-authenticated, no JWT).
+app.post('/api/iap/apple/notifications', (req, res) => {
+  void handleAppleNotifications(req, res).catch((err) => {
+    console.error('[iap-notifications]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'notification_processing_failed' })
     }
   })
 })

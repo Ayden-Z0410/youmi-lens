@@ -6,7 +6,7 @@ import {
   transcriptCanonicalQualityGate,
 } from '../src/lib/transcriptCanonicalCore.js'
 import {
-  getOrCreateUserQuota,
+  getEffectiveQuota,
   checkProcessingAllowed,
   recordBetaUsage,
   BETA_ERROR_CODES,
@@ -261,7 +261,7 @@ export async function handleProcessRecording(req, res) {
   const durationSec = Number(row.duration_sec) || 0
   const email = userData.user?.email || ''
 
-  const quota = await getOrCreateUserQuota(userId, email)
+  const quota = await getEffectiveQuota(userId, email)
   const gate = await checkProcessingAllowed(quota, userId, durationSec)
   if (!gate.allowed) {
     console.warn(
