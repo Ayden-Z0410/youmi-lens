@@ -18,6 +18,7 @@
 
 import { createClient } from '@supabase/supabase-js'
 import { randomInt, createHash } from 'node:crypto'
+import { recordWatchCostEvent } from './watchLedger.mjs'
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
@@ -94,6 +95,42 @@ async function sendVerificationEmail(toEmail, code) {
   } catch (err) {
     console.error('[send-signup-code] Brevo send threw', JSON.stringify({ message: err?.message || 'unknown' }))
     return false
+  }
+}
+
+/**
+ * Best-effort internal usage ledger write for a CONFIRMED Brevo email send.
+ *
+ * Appends one row to public.watch_cost_events via the shared watchLedger helper
+ * (service-role, server-only). Call this ONLY after Brevo has accepted the send.
+ *
+ * Contract:
+ *   • Never throws and never blocks the email flow — recordWatchCostEvent is
+ *     itself best-effort, and this wrapper additionally guards against any
+ *     unexpected throw. A failed write logs a concise warning and is dropped.
+ *   • Metadata is limited to small, non-secret descriptors (purpose / template).
+ *     NEVER pass the recipient address, the code, the body, tokens, or headers.
+ */
+async function recordBrevoEmailSend({ purpose, templateType } = {}) {
+  try {
+    const result = await recordWatchCostEvent({
+      provider: 'brevo',
+      event_type: 'email_send',
+      quantity: 1,
+      unit: 'emails',
+      source: 'internal',
+      status: 'recorded',
+      user_id: null, // signup flow: no authenticated user exists yet
+      recording_id: null,
+      metadata: { email_purpose: purpose, template_type: templateType },
+    })
+    if (!result?.ok) {
+      console.warn(`[send-signup-code] usage ledger write skipped: ${result?.error || 'unknown'}`)
+    }
+  } catch (err) {
+    // Defensive: recordWatchCostEvent is best-effort, but never let a ledger
+    // problem affect the email send / API response.
+    console.warn(`[send-signup-code] usage ledger write threw: ${err?.message || 'unknown'}`)
   }
 }
 
@@ -218,6 +255,10 @@ export async function handleSendSignupCode(req, res) {
     res.status(502).json({ ok: false, error: 'email_send_failed', message: 'Could not send the verification email. Please try again.' })
     return
   }
+
+  // Email accepted by Brevo — append one internal usage event (best-effort).
+  // Must not affect the response below if the ledger write fails.
+  await recordBrevoEmailSend({ purpose: 'signup_verification', templateType: 'verification_code' })
 
   console.info('[send-signup-code] code sent', JSON.stringify({ emailDomain: email.split('@')[1] || null }))
   res.json({ ok: true })
