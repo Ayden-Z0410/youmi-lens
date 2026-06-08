@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import * as youmiHosted from './ai/hosted/youmiHosted.mjs'
 import { CLIENT_SAFE_UNAVAILABLE } from './ai/errors.mjs'
+import { recordDashscopeChatUsage } from './watchModelUsage.mjs'
 import {
   canonicalizeLectureTranscript,
   transcriptCanonicalQualityGate,
@@ -626,6 +627,16 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
       const s = await youmiHosted.summarizeTranscript(transcriptCanonical, row.course, row.title)
       summaryEn = s.summaryEn
       summaryZh = s.summaryZh
+      // Best-effort: record DashScope/Qwen token usage for this successful
+      // summary as internal cost-ledger events (Phase 5B). Fire-and-forget —
+      // never blocks or fails the job; records nothing if usage is absent.
+      void recordDashscopeChatUsage({
+        usage: s.usage,
+        userId,
+        recordingId,
+        eventType: 'summary',
+        feature: 'after_class_summary',
+      })
       jobLog('summarize_done', {
         recordingId,
         summaryEnLen: summaryEn?.length ?? 0,

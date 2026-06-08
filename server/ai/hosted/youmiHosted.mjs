@@ -132,6 +132,18 @@ async function chatCompleteJson(messages, opts = {}) {
           throw new Error('HOSTED_CHAT_FAILED')
         }
         const data = JSON.parse(raw)
+        // Surface token usage WITHOUT changing the string return type or any
+        // existing caller. Only the DashScope branch populates this (so an
+        // OpenAI fallback is never recorded as dashscope). No prompt/content is
+        // ever copied here — only the numeric usage block + model name.
+        if (opts.usageOut && data?.usage && typeof data.usage === 'object') {
+          opts.usageOut.provider = 'dashscope'
+          opts.usageOut.model =
+            typeof data.model === 'string' ? data.model : opts.modelDash ?? opts.model ?? QWEN_CHAT_MODEL
+          opts.usageOut.prompt_tokens = data.usage.prompt_tokens
+          opts.usageOut.completion_tokens = data.usage.completion_tokens
+          opts.usageOut.total_tokens = data.usage.total_tokens
+        }
         return data.choices?.[0]?.message?.content ?? ''
       },
     })
@@ -405,13 +417,18 @@ export async function summarizeTranscript(transcript, course, title) {
     return {
       summaryEn: `Demo summary for ${label}. Key points were generated in stub mode for local development.`,
       summaryZh: `${label} 的演示摘要：当前为本地开发 Stub 模式，内容用于流程验证。`,
+      usage: null, // stub path makes no real model request → nothing to meter
     }
   }
   const messages = buildSummarizeMessages(transcript, course, title)
+  // Collects token usage from the DashScope chat response (empty if the call
+  // fell back to OpenAI or the response carried no usage block).
+  const usageOut = {}
   const raw = await chatCompleteJson(messages, {
     temperature: 0.3,
     responseFormat: { type: 'json_object' },
     modelDash: QWEN_CHAT_MODEL,
+    usageOut,
   })
   let parsed
   try {
@@ -423,5 +440,7 @@ export async function summarizeTranscript(transcript, course, title) {
   const summaryZh = parsed.summary_zh?.trim()
   if (!summaryEn || !summaryZh) throw new Error('HOSTED_SUMMARY_SHAPE')
   console.warn('[youmiHosted] summarizeTranscript done', { summaryEnLen: summaryEn.length, summaryZhLen: summaryZh.length })
-  return { summaryEn, summaryZh }
+  // usage is populated only when the DashScope branch returned a usage block;
+  // null otherwise (OpenAI fallback / no usage) so callers never guess.
+  return { summaryEn, summaryZh, usage: usageOut.provider ? usageOut : null }
 }
