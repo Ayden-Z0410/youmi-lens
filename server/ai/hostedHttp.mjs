@@ -13,6 +13,7 @@ import {
   BETA_ERROR_CODES,
   BETA_LIMIT_MESSAGE,
 } from '../betaGate.mjs'
+import { recordDashscopeChatUsage } from '../watchModelUsage.mjs'
 
 export const hostedUpload = multer({
   storage: multer.memoryStorage(),
@@ -131,7 +132,15 @@ export async function handleHostedSummarize(req, res) {
   }
 
   try {
-    const { summaryEn, summaryZh } = await youmiHosted.summarizeTranscript(transcript, course, title)
+    const { summaryEn, summaryZh, usage } = await youmiHosted.summarizeTranscript(transcript, course, title)
+    // Best-effort Watch cost ledgering; records nothing for non-DashScope/no-usage paths.
+    void recordDashscopeChatUsage({
+      usage,
+      userId: user.userId,
+      recordingId: null,
+      eventType: 'summary',
+      feature: 'after_class_summary',
+    })
     void recordBetaUsage(user.userId, user.email, null, 'summary_generation', 0)
     res.json({ summary_en: summaryEn, summary_zh: summaryZh })
   } catch (e) {

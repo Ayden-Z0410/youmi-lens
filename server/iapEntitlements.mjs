@@ -9,7 +9,8 @@
  *
  * Apple's own expiresDate is ignored for entitlement decisions. The effective
  * plan is resolved at request time (no cron): an active, non-revoked entitlement
- * promotes the user to student_pass; otherwise they fall back to public_trial.
+ * promotes the user to student_pass; legacy paid quota rows keep their stored
+ * paid tier; otherwise users fall back to public_trial.
  *
  * The pure functions below (window/decision/resolution) carry the security
  * rules and are unit-tested directly. DB helpers are thin and injectable.
@@ -17,6 +18,7 @@
 import { findAppleIapTransactionBinding } from './iapLedger.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+const LEGACY_PAID_PLAN_TYPES = new Set(['student_basic', 'student_plus', 'student_pro'])
 
 /** Pure: compute the 30-day (configurable) entitlement window from purchaseDate. */
 export function computeEntitlementWindow(purchaseDateMs, entitlementDays) {
@@ -156,13 +158,15 @@ export function decideGrantWithBinding({ verified, product, binding, requestingU
 
 /**
  * Pure: resolve the effective plan_type at request time.
- * Precedence: admin → core_tester → active entitlement → public_trial.
- * An expired/absent entitlement yields public_trial WITHOUT any cron.
+ * Precedence: admin → core_tester → active entitlement → legacy paid plan →
+ * public_trial. An expired/absent Student Pass entitlement yields public_trial
+ * WITHOUT any cron, but must not erase pre-existing paid quota tiers.
  */
 export function resolveEffectivePlanType({ storedPlanType, entitlement, nowMs }) {
   if (storedPlanType === 'admin') return 'admin'
   if (storedPlanType === 'core_tester') return 'core_tester'
   if (isEntitlementActive(entitlement, nowMs)) return entitlement.plan_type
+  if (LEGACY_PAID_PLAN_TYPES.has(storedPlanType)) return storedPlanType
   return 'public_trial'
 }
 
