@@ -171,6 +171,28 @@ describe('effective plan resolution', () => {
     ).toBe('public_trial')
   })
 
+  it('preserves legacy paid quota tiers when no Student Pass entitlement is active', () => {
+    for (const storedPlanType of ['student_basic', 'student_plus', 'student_pro']) {
+      expect(
+        resolveEffectivePlanType({
+          storedPlanType,
+          entitlement: null,
+          nowMs: Date.parse('2026-06-10T00:00:00Z'),
+        }),
+      ).toBe(storedPlanType)
+    }
+  })
+
+  it('does not preserve a stored student_pass row after its entitlement expires', () => {
+    expect(
+      resolveEffectivePlanType({
+        storedPlanType: 'student_pass',
+        entitlement: activeEntitlement,
+        nowMs: Date.parse('2026-07-01T00:00:00Z'),
+      }),
+    ).toBe('public_trial')
+  })
+
   it('keeps admin override above entitlement', () => {
     expect(
       resolveEffectivePlanType({

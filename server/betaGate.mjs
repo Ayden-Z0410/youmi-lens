@@ -273,11 +273,13 @@ export async function getOrCreateUserQuota(userId, email) {
  * user_quota.plan_type is never permanently set to student_pass — paid access
  * lives in a time-boxed user_entitlement. This returns the stored quota row with
  * its plan_type replaced by the effective plan:
- *   admin / core_tester (stored override) > active student_pass entitlement > public_trial.
+ *   admin / core_tester (stored override) > active student_pass entitlement >
+ *   legacy paid plan > public_trial.
  *
  * PLAN_LIMITS keys off plan_type, so the returned object drives every existing
- * gate with the correct limits. An expired/absent entitlement yields
- * public_trial automatically — no cron required. `_entitlement` (if active) is
+ * gate with the correct limits. An expired/absent Student Pass entitlement
+ * yields public_trial automatically for public/pass rows — no cron required —
+ * while preserving legacy paid quota rows. `_entitlement` (if active) is
  * attached for status surfaces; it is not a DB column.
  */
 export async function getEffectiveQuota(userId, email) {
