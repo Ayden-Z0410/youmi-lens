@@ -232,6 +232,10 @@ async function verifyAndPersist(db, user, payload) {
 
   if (decision.active) {
     await grantEntitlement(db, user.userId, verified, product, decision.window)
+  } else if (decision.entitlementStatus === 'revoked') {
+    // Verify/restore can be the first place we learn about a refund if the
+    // App Store server notification was missed or delayed.
+    await revokeByTransaction(db, verified.transactionId, verified.revokedAt)
   }
   await recordBillingEvent(db, user.userId, { ...decision.event, event_type: 'verify_ok' })
   await recordBillingEvent(db, user.userId, decision.event)
