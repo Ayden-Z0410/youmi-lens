@@ -46,6 +46,14 @@ const PG_UNIQUE_VIOLATION = '23505'
 const SENSITIVE_KEY =
   /(key|secret|token|authorization|auth|password|passwd|pass|bearer|credential|cookie|session|signature|sign|transcript|audio|payload|body|raw|prompt|content|text)/i
 
+/**
+ * Exact-match descriptor keys that are SAFE despite containing a SENSITIVE_KEY
+ * fragment ('session', 'transcript'). These carry a short opaque id / boolean
+ * (Phase 5C-2 live-session events) — never the session token or any
+ * transcript text. Values still pass the normal scalar/size limits below.
+ */
+const SAFE_METADATA_KEYS = new Set(['session_id', 'has_final_transcript'])
+
 const MAX_STRING_LEN = 256 // longer strings are dropped (possible transcript / payload)
 const MAX_KEYS = 24
 const MAX_NESTED_KEYS = 12
@@ -117,7 +125,7 @@ export function scrubMetadata(metadata) {
   let keys = 0
   for (const [k, v] of Object.entries(metadata)) {
     if (keys >= MAX_KEYS) break
-    if (SENSITIVE_KEY.test(k)) continue
+    if (!SAFE_METADATA_KEYS.has(k) && SENSITIVE_KEY.test(k)) continue
     const cleaned = scrubValue(v)
     if (cleaned === undefined) continue
     out[k] = cleaned

@@ -94,6 +94,19 @@ describe('scrubMetadata', () => {
   it('returns null when nothing survives scrubbing', () => {
     expect(scrubMetadata({ apiKey: 'x', token: 'y' })).toBeNull()
   })
+
+  it('keeps the exact live-session descriptor keys but still drops lookalike sensitive keys', () => {
+    const out = scrubMetadata({
+      session_id: 'abc123def456', // allowlisted exact key (short opaque id)
+      has_final_transcript: true, // allowlisted exact key (boolean flag)
+      session: 'sess-token-xyz', // bare 'session' still dropped
+      sessionToken: 'tok', // still dropped
+      session_id_token: 'tok', // not an exact allowlist match → dropped
+      transcript: 'spoken words', // transcript TEXT still dropped
+      transcript_text: 'spoken words', // still dropped
+    })
+    expect(out).toEqual({ session_id: 'abc123def456', has_final_transcript: true })
+  })
 })
 
 // ── recordWatchCostEvent ────────────────────────────────────────────────────

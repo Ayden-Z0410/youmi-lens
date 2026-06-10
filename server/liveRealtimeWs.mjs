@@ -17,6 +17,7 @@ import {
 import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
 import { getDashScopeHttpAttempts } from './dashscopeWithFallback.mjs'
 import { createDeepgramStreamingSession } from './deepgramStreamingAsr.mjs'
+import { createDeepgramLiveCostFinalizer } from './watchLiveUsage.mjs'
 
 /**
  * `/api/live-realtime-ws` — **single default realtime semantics** (Phase 1+2):
@@ -179,6 +180,10 @@ export function attachLiveRealtimeWs(server) {
     }, CLIENT_WS_PING_MS)
 
     let frameCount = 0
+    // Increments per stream_start so each streaming segment on this WS gets its
+    // own cost-ledger identity (a re-start must not collide with the previous
+    // segment's idempotency key).
+    let streamSegment = 0
     let streamingSession = null
     /** PCM that arrives before stream_start finishes installing a session (rare race). */
     const pendingPcm = []
@@ -282,6 +287,14 @@ export function attachLiveRealtimeWs(server) {
         // ────────────────────────────────────────────────────────────────
 
         pendingPcm.length = 0
+        // Re-stream_start on the same WS: settle the PREVIOUS Deepgram
+        // segment's cost (once-guarded) before its session/handlers are
+        // replaced, so each segment records at most once.
+        if (typeof ws._youmiDeepgramCostFinalize === 'function') {
+          ws._youmiDeepgramCostFinalize('restart')
+          ws._youmiDeepgramCostFinalize = null
+        }
+        streamSegment += 1
         if (streamingSession) {
           streamingSession.destroy()
           streamingSession = null
@@ -304,6 +317,11 @@ export function attachLiveRealtimeWs(server) {
             })
             if (streamingSession) { try { streamingSession.finish() } catch { /* ignore */ } }
             void recordBetaUsage(liveUser.userId, liveUser.email, wsSessionId, 'live_caption_session', sessionSec)
+            // Cost ledger (Deepgram only; no-op otherwise). Once-guarded — the
+            // later WS close path can call the funnel again without double-write.
+            if (typeof ws._youmiDeepgramCostFinalize === 'function') {
+              ws._youmiDeepgramCostFinalize('session_limit')
+            }
           }, maxSessionMs)
         }
 
@@ -793,6 +811,11 @@ export function attachLiveRealtimeWs(server) {
                 if (streamingSession !== deepgramWrapper) return
                 streamingSession = null
                 if (!intentional) {
+                  // Unexpected upstream close after audio: settle the cost now
+                  // (once-guarded; the client-WS close below funnels here too).
+                  if (typeof ws._youmiDeepgramCostFinalize === 'function') {
+                    ws._youmiDeepgramCostFinalize('upstream_drop')
+                  }
                   const noClientPcm = frameCount === 0
                   if (clientRef.ws) {
                     safeSend(clientRef.ws, {
@@ -823,6 +846,23 @@ export function attachLiveRealtimeWs(server) {
             stop: () => deepgramSession.finish(),
             destroy: () => deepgramSession.destroy(),
           }
+          // Cost-ledger finalize funnel for THIS Deepgram segment (Phase 5C-2).
+          // Single once-guarded entry point; all end paths (stream_stop /
+          // ws close / session-limit timer / upstream drop / restart) call it,
+          // and the durable idempotency key blocks any cross-process repeat.
+          // Frame counts use a segment-start offset so a later segment never
+          // bills the previous segment's audio.
+          const segmentStartFrames = frameCount
+          ws._youmiDeepgramCostFinalize = createDeepgramLiveCostFinalizer({
+            provider: liveProvider,
+            userId: liveUser.userId,
+            sessionId: streamSegment > 1 ? `${wsSessionId}#${streamSegment}` : wsSessionId,
+            startedAtMs: liveSessionStartMs,
+            language: 'en-US', // fixed Deepgram connection params (deepgramStreamingAsr)
+            model: 'nova-3',
+            getFrameCount: () => frameCount - segmentStartFrames,
+            getFinalCount: () => relayFinalSeg,
+          })
           streamingSession = deepgramWrapper
           flushPendingPcm()
           return
@@ -908,6 +948,10 @@ export function attachLiveRealtimeWs(server) {
         console.info('[liveRealtimeWs] stream_stop_received', JSON.stringify({ wsSessionId, frameCount }))
         if (SRV_LIVE_VERBOSE) console.log('[YoumiLive][srv] stream_stop', JSON.stringify({ wsSessionId }))
         streamingSession?.stop()   // graceful: sends LAST_PACKET, waits for server final
+        // Cost ledger (Deepgram only; once-guarded funnel).
+        if (typeof ws._youmiDeepgramCostFinalize === 'function') {
+          ws._youmiDeepgramCostFinalize('stream_stop')
+        }
         // Log session end when user explicitly stops (timer-based close path handles timeout)
         if (typeof ws._youmiLiveSessionEnd === 'function') {
           ws._youmiLiveSessionEnd()
@@ -998,6 +1042,12 @@ export function attachLiveRealtimeWs(server) {
       if (SRV_LIVE_VERBOSE) console.log('[YoumiLive][srv] realtime ws closed', JSON.stringify({ wsSessionId, code }))
       streamingSession?.destroy()
       streamingSession = null
+      // Cost ledger (Deepgram only; once-guarded — a stream_stop / timer /
+      // upstream-drop that already finalized makes this a no-op).
+      if (typeof ws._youmiDeepgramCostFinalize === 'function') {
+        ws._youmiDeepgramCostFinalize('ws_close')
+        ws._youmiDeepgramCostFinalize = null
+      }
       // Log session end if not already logged via stream_stop
       if (typeof ws._youmiLiveSessionEnd === 'function') {
         ws._youmiLiveSessionEnd()
