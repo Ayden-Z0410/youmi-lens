@@ -33,6 +33,13 @@ const VALID_SNAPSHOT_STATUS = new Set([
   'unknown',
 ])
 
+// Partial UNIQUE index from supabase-watch-idempotency-key.sql. A 23505 on this
+// specific constraint means the logical event was already recorded → safe dup.
+const IDEMPOTENCY_CONSTRAINT = 'uq_watch_cost_events_idempotency_key'
+
+// Postgres unique-violation error code.
+const PG_UNIQUE_VIOLATION = '23505'
+
 // ── metadata scrubbing ──────────────────────────────────────────────────────
 
 /** Keys that may carry secrets or oversized/sensitive content — always dropped. */
@@ -151,12 +158,19 @@ function toIso(v) {
  * Best-effort; never throws. If `estimated_cost_usd` is omitted it is derived
  * from watchPricing. Returns { ok:true, id } or { ok:false, error }.
  *
+ * Pass an optional `idempotency_key` (any stable, unique-per-logical-event
+ * string, e.g. `deepgram:live:<sessionId>`) to make the write durably
+ * exactly-once: a unique-violation on that key is treated as a SAFE duplicate
+ * and returns `{ ok:true, duplicate:true, id:null }` rather than an error.
+ * Events without a key behave exactly as before.
+ *
  * @param {{
  *   provider: string, event_type: string,
  *   user_id?: string|null, recording_id?: string|null,
  *   quantity?: number, unit: string,
  *   estimated_cost_usd?: number, status?: string, source?: string,
- *   metadata?: object|null, occurred_at?: string|Date
+ *   metadata?: object|null, occurred_at?: string|Date,
+ *   idempotency_key?: string|null
  * }} event
  */
 export async function recordWatchCostEvent(input) {
@@ -195,7 +209,20 @@ export async function recordWatchCostEvent(input) {
   const occurredAt = toIso(event.occurred_at)
   if (occurredAt) row.occurred_at = occurredAt
 
-  return insertRow('watch_cost_events', row)
+  // Optional durable idempotency. Only set the column when a non-empty key is
+  // given; absent → NULL, which the partial unique index ignores (legacy
+  // behavior unchanged). When set, a unique-violation is a safe duplicate.
+  const idempotencyKey =
+    typeof event.idempotency_key === 'string' && event.idempotency_key.trim()
+      ? event.idempotency_key.trim()
+      : null
+  if (idempotencyKey) row.idempotency_key = idempotencyKey
+
+  return insertRow(
+    'watch_cost_events',
+    row,
+    idempotencyKey ? { dupeConstraint: IDEMPOTENCY_CONSTRAINT } : undefined,
+  )
 }
 
 /**
@@ -242,8 +269,17 @@ export async function recordWatchProviderSnapshot(input) {
   return insertRow('watch_provider_snapshots', row)
 }
 
-/** Shared best-effort insert returning the new id. Never throws. */
-async function insertRow(table, row) {
+/**
+ * Shared best-effort insert returning the new id. Never throws.
+ *
+ * NOTE on idempotency: the idempotency index is PARTIAL
+ * (WHERE idempotency_key IS NOT NULL), so PostgREST `upsert`/`on_conflict`
+ * cannot target it (it can't express the index predicate, and Postgres rejects
+ * an ON CONFLICT that doesn't match a full constraint). The safe pattern is a
+ * plain INSERT, then narrowly interpret a unique-violation (23505) on THIS
+ * constraint as a duplicate. `opts.dupeConstraint` opts a caller into that.
+ */
+async function insertRow(table, row, opts = {}) {
   const db = getAdminClient()
   if (!db) {
     console.warn(`[watchLedger] ${table}: no service-role client (skipped)`)
@@ -252,6 +288,17 @@ async function insertRow(table, row) {
   try {
     const { data, error } = await db.from(table).insert(row).select('id').single()
     if (error) {
+      // Narrow duplicate handling: only a 23505 on the caller's specific
+      // idempotency constraint counts as a safe duplicate — any other unique
+      // violation (or error) is still a real failure.
+      if (
+        opts.dupeConstraint &&
+        error.code === PG_UNIQUE_VIOLATION &&
+        String(error.message || '').includes(opts.dupeConstraint)
+      ) {
+        console.warn(`[watchLedger] ${table} duplicate idempotency_key — already recorded (safe)`)
+        return { ok: true, duplicate: true, id: null }
+      }
       console.warn(`[watchLedger] ${table} insert failed: ${error.message || 'unknown'}`)
       return { ok: false, error: error.message || 'insert_failed' }
     }

@@ -179,6 +179,78 @@ describe('recordWatchCostEvent', () => {
   })
 })
 
+// ── recordWatchCostEvent — durable idempotency_key (Phase 5C-1) ─────────────
+
+describe('recordWatchCostEvent — idempotency_key', () => {
+  const DUP_CONSTRAINT = 'uq_watch_cost_events_idempotency_key'
+
+  it('does NOT set idempotency_key when none is provided (legacy behavior)', async () => {
+    getAdminClientMock.mockReturnValue(clientReturning({ data: { id: 'c' }, error: null }))
+    await recordWatchCostEvent({ provider: 'deepgram', event_type: 'live_transcription', unit: 'minutes', quantity: 2 })
+    expect('idempotency_key' in capture.row).toBe(false)
+  })
+
+  it('inserts the idempotency_key when provided (trimmed)', async () => {
+    getAdminClientMock.mockReturnValue(clientReturning({ data: { id: 'c1' }, error: null }))
+    const res = await recordWatchCostEvent({
+      provider: 'deepgram',
+      event_type: 'live_transcription',
+      unit: 'minutes',
+      quantity: 2,
+      idempotency_key: '  deepgram:live:abc123  ',
+    })
+    expect(res).toEqual({ ok: true, id: 'c1' })
+    expect(capture.row.idempotency_key).toBe('deepgram:live:abc123')
+  })
+
+  it('treats a unique-violation (23505) on the idempotency constraint as a SAFE duplicate', async () => {
+    getAdminClientMock.mockReturnValue(
+      clientReturning({
+        data: null,
+        error: { code: '23505', message: `duplicate key value violates unique constraint "${DUP_CONSTRAINT}"` },
+      }),
+    )
+    const res = await recordWatchCostEvent({
+      provider: 'deepgram',
+      event_type: 'live_transcription',
+      unit: 'minutes',
+      quantity: 2,
+      idempotency_key: 'deepgram:live:dup',
+    })
+    expect(res).toEqual({ ok: true, duplicate: true, id: null })
+  })
+
+  it('does NOT swallow a 23505 on a DIFFERENT constraint (still a real error)', async () => {
+    getAdminClientMock.mockReturnValue(
+      clientReturning({
+        data: null,
+        error: { code: '23505', message: 'duplicate key value violates unique constraint "some_other_unique"' },
+      }),
+    )
+    const res = await recordWatchCostEvent({
+      provider: 'deepgram',
+      event_type: 'live_transcription',
+      unit: 'minutes',
+      quantity: 2,
+      idempotency_key: 'deepgram:live:other',
+    })
+    expect(res.ok).toBe(false)
+    expect(res.duplicate).toBeUndefined()
+  })
+
+  it('does NOT apply duplicate handling when no idempotency_key is set, even on 23505', async () => {
+    getAdminClientMock.mockReturnValue(
+      clientReturning({
+        data: null,
+        error: { code: '23505', message: `duplicate key value violates unique constraint "${DUP_CONSTRAINT}"` },
+      }),
+    )
+    const res = await recordWatchCostEvent({ provider: 'deepgram', event_type: 'x', unit: 'minutes', quantity: 1 })
+    expect(res.ok).toBe(false)
+    expect(res.duplicate).toBeUndefined()
+  })
+})
+
 // ── recordWatchProviderSnapshot ─────────────────────────────────────────────
 
 describe('recordWatchProviderSnapshot', () => {
@@ -215,5 +287,18 @@ describe('recordWatchProviderSnapshot', () => {
     getAdminClientMock.mockReturnValue(clientReturning({ data: null, error: { message: 'db error' } }))
     const res = await recordWatchProviderSnapshot({ provider: 'railway', status: 'operational' })
     expect(res).toEqual({ ok: false, error: 'db error' })
+  })
+
+  it('is unaffected by the idempotency change — never sets a key, and a 23505 is a real error', async () => {
+    getAdminClientMock.mockReturnValue(
+      clientReturning({
+        data: null,
+        error: { code: '23505', message: 'duplicate key value violates unique constraint "uq_watch_cost_events_idempotency_key"' },
+      }),
+    )
+    const res = await recordWatchProviderSnapshot({ provider: 'railway', status: 'operational' })
+    expect(res.ok).toBe(false) // no dupeConstraint passed for snapshots → not a safe duplicate
+    expect(res.duplicate).toBeUndefined()
+    expect('idempotency_key' in capture.row).toBe(false)
   })
 })
