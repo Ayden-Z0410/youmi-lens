@@ -1,7 +1,7 @@
 /**
  * Apple App Store server-side verification for Youmi Lens.
  *
- * Single product: the Student Pass (a NON-RENEWING subscription). We use the
+ * Single product: the Student Pass (a NON-CONSUMABLE purchase). We use the
  * modern, Apple-supported JWS path (@apple/app-store-server-library):
  *   - SignedDataVerifier.verifyAndDecodeTransaction  — signed StoreKit 2 txns
  *   - SignedDataVerifier.verifyAndDecodeNotification — App Store Server Notif. V2
@@ -11,8 +11,7 @@
  * productId / transactionId / purchaseDate / expiry / plan type / status; any
  * client value passed in must MATCH the decoded value or we reject.
  *
- * IMPORTANT: this module performs NO entitlement decision. For a non-renewing
- * subscription Apple supplies no meaningful expiry, so the 30-day window is
+ * IMPORTANT: this module performs NO entitlement decision. The 30-day window is
  * computed by the backend from the verified purchaseDate (see iapEntitlements
  * + iapRoutes). Apple's `expiresDate` is surfaced only as informational metadata.
  *
@@ -32,6 +31,7 @@ const VALID_ENVIRONMENTS = new Set([
   Environment.XCODE,
   Environment.LOCAL_TESTING,
 ])
+const STUDENT_PASS_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
 
 let verifier = null
 let apiClient = null
@@ -139,8 +139,11 @@ export function normalizeDecodedTransaction(decoded, { expectedBundleId, expecte
   if (typeof decoded.purchaseDate !== 'number' || !Number.isFinite(decoded.purchaseDate)) {
     throw new Error('Verified transaction is missing purchaseDate')
   }
-  if (decoded.type !== Type.NON_RENEWING_SUBSCRIPTION) {
-    throw new Error('Verified transaction is not a non-renewing subscription')
+  if (decoded.productId !== STUDENT_PASS_PRODUCT_ID) {
+    throw new Error('Verified transaction product is not supported')
+  }
+  if (decoded.type !== Type.NON_CONSUMABLE) {
+    throw new Error('Verified Student Pass transaction is not a non-consumable purchase')
   }
 
   return {
@@ -151,8 +154,8 @@ export function normalizeDecodedTransaction(decoded, { expectedBundleId, expecte
     productType: decoded.type ?? null,
     purchaseDateMs: decoded.purchaseDate,
     purchaseDate: isoFromAppleMs(decoded.purchaseDate),
-    // Apple `expiresDate` is informational only for a non-renewing subscription
-    // (often absent). Stored as apple_expires_date; never used for entitlement.
+    // Apple `expiresDate` is informational only. Stored as apple_expires_date;
+    // never used for the fixed 30-day entitlement.
     appleExpiresDate: isoFromAppleMs(decoded.expiresDate),
     revokedAt: isoFromAppleMs(decoded.revocationDate),
     revoked: Boolean(decoded.revocationDate),

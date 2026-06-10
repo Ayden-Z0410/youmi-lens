@@ -21,7 +21,8 @@ describe('Phase 4 backend/iPad IAP API contract', () => {
 
   it('uses one Student Pass product id across backend and iPad active code', () => {
     expect(purchases).toContain(`STUDENT_PASS_PRODUCT_ID = '${PRODUCT_ID}'`)
-    expect(apple).toContain('Type.NON_RENEWING_SUBSCRIPTION')
+    expect(apple).toContain(`STUDENT_PASS_PRODUCT_ID = '${PRODUCT_ID}'`)
+    expect(apple).toContain('Type.NON_CONSUMABLE')
     expect(routes).toContain("plan_type: product.plan_type")
   })
 

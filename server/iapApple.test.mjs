@@ -10,7 +10,7 @@ const baseDecoded = {
   productId: 'com.aydenz.youmilensipad.studentpass30d',
   purchaseDate: Date.parse('2026-06-10T12:00:00Z'),
   expiresDate: Date.parse('2099-01-01T00:00:00Z'),
-  type: Type.NON_RENEWING_SUBSCRIPTION,
+  type: Type.NON_CONSUMABLE,
 }
 
 function normalize(decoded = {}) {
@@ -24,14 +24,14 @@ function normalize(decoded = {}) {
 }
 
 describe('normalizeDecodedTransaction', () => {
-  it('accepts a valid non-renewing Student Pass transaction', () => {
+  it('accepts a valid non-consumable Student Pass transaction', () => {
     expect(normalize()).toMatchObject({
       productId: 'com.aydenz.youmilensipad.studentpass30d',
       transactionId: 'tx-1',
       originalTransactionId: 'orig-1',
       purchaseDate: '2026-06-10T12:00:00.000Z',
       appleExpiresDate: '2099-01-01T00:00:00.000Z',
-      productType: Type.NON_RENEWING_SUBSCRIPTION,
+      productType: Type.NON_CONSUMABLE,
     })
   })
 
@@ -47,7 +47,15 @@ describe('normalizeDecodedTransaction', () => {
     expect(() => normalize({ purchaseDate: undefined })).toThrow(/purchaseDate/)
   })
 
+  it('rejects unknown product IDs', () => {
+    expect(() => normalize({ productId: 'com.example.other' })).toThrow(/not supported/)
+  })
+
+  it('rejects non-renewing subscription transactions', () => {
+    expect(() => normalize({ type: Type.NON_RENEWING_SUBSCRIPTION })).toThrow(/non-consumable/)
+  })
+
   it('rejects auto-renewable subscription transactions', () => {
-    expect(() => normalize({ type: Type.AUTO_RENEWABLE_SUBSCRIPTION })).toThrow(/non-renewing/)
+    expect(() => normalize({ type: Type.AUTO_RENEWABLE_SUBSCRIPTION })).toThrow(/non-consumable/)
   })
 })
