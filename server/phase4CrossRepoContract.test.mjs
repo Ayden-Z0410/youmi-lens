@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const IPAD_REPO = process.env.IPAD_REPO_PATH || '/Users/summer/Documents/youmi-lens-ipad'
-const PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
+const PRODUCT_ID = 'com.aydenz.youmilensipad.studentbasic30d'
+const LEGACY_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
 
 function backend(path) {
   return readFileSync(new URL(path, import.meta.url), 'utf8')
@@ -19,9 +20,11 @@ describe('Phase 4 backend/iPad IAP API contract', () => {
   const purchases = ipad('lib/purchases.ts')
   const planStatus = ipad('lib/planStatus.ts')
 
-  it('uses one Student Pass product id across backend and iPad active code', () => {
+  it('uses the consumable Student Basic product across backend and iPad active code', () => {
     expect(purchases).toContain(`STUDENT_PASS_PRODUCT_ID = '${PRODUCT_ID}'`)
-    expect(apple).toContain(`STUDENT_PASS_PRODUCT_ID = '${PRODUCT_ID}'`)
+    expect(apple).toContain(`STUDENT_BASIC_PRODUCT_ID = '${PRODUCT_ID}'`)
+    expect(apple).toContain(`LEGACY_STUDENT_PASS_PRODUCT_ID = '${LEGACY_PRODUCT_ID}'`)
+    expect(apple).toContain('Type.CONSUMABLE')
     expect(apple).toContain('Type.NON_CONSUMABLE')
     expect(routes).toContain("plan_type: product.plan_type")
   })
@@ -40,16 +43,11 @@ describe('Phase 4 backend/iPad IAP API contract', () => {
     expect(apple).toContain('input.purchaseToken ||')
   })
 
-  it('matches restore route and backend-first entitlement ordering', () => {
+  it('keeps consumable access refresh backend-first without StoreKit restoration', () => {
     expect(routes).toContain('handleIapRestore')
-    expect(purchases).toContain('/api/iap/restore')
     expect(purchases.indexOf('const initial = await this.getBackendEntitlement(accessToken)')).toBeGreaterThan(0)
-    expect(purchases.indexOf('const recoveryPurchases = await this.discoverStudentPassTransactions()')).toBeGreaterThan(
-      purchases.indexOf('const initial = await this.getBackendEntitlement(accessToken)'),
-    )
-    expect(purchases.indexOf('const finalEntitlement = await this.getBackendEntitlement(accessToken)')).toBeGreaterThan(
-      purchases.indexOf('const recoveryPurchases = await this.discoverStudentPassTransactions()'),
-    )
+    expect(purchases).not.toContain('discoverStudentPassTransactions')
+    expect(purchases).not.toContain('/api/iap/restore')
   })
 
   it('matches enhanced inactive entitlement response shape', () => {

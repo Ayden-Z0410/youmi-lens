@@ -1,8 +1,9 @@
 /**
- * Student Pass entitlement logic.
+ * Student Basic entitlement logic.
  *
- * The backend is the source of truth. For a verified non-renewing Student Pass
- * transaction we compute the window from the Apple-verified purchaseDate:
+ * The backend is the source of truth. The active consumable SKU stacks 30-day
+ * grants from max(existing expiry, Apple-verified purchaseDate). The legacy
+ * non-consumable SKU retains its original purchaseDate-based window.
  *
  *     starts_at  = purchaseDate
  *     expires_at = purchaseDate + billing_products.entitlement_days
@@ -17,7 +18,12 @@
 import { findAppleIapTransactionBinding } from './iapLedger.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
-export const STUDENT_PASS_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
+export const STUDENT_BASIC_PRODUCT_ID = 'com.aydenz.youmilensipad.studentbasic30d'
+export const LEGACY_STUDENT_PASS_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
+export const STUDENT_ACCESS_PRODUCT_IDS = [
+  STUDENT_BASIC_PRODUCT_ID,
+  LEGACY_STUDENT_PASS_PRODUCT_ID,
+]
 
 /** Pure: compute the 30-day (configurable) entitlement window from purchaseDate. */
 export function computeEntitlementWindow(purchaseDateMs, entitlementDays) {
@@ -34,6 +40,31 @@ export function computeEntitlementWindow(purchaseDateMs, entitlementDays) {
     startsAtMs,
     expiresAtMs,
     startsAt: new Date(startsAtMs).toISOString(),
+    expiresAt: new Date(expiresAtMs).toISOString(),
+  }
+}
+
+export function computeConsumableEntitlementWindow(
+  purchaseDateMs,
+  entitlementDays,
+  existingExpiresAt = null,
+) {
+  const existingExpiresMs = existingExpiresAt ? new Date(existingExpiresAt).getTime() : NaN
+  const extensionBaseMs = Number.isFinite(existingExpiresMs)
+    ? Math.max(purchaseDateMs, existingExpiresMs)
+    : purchaseDateMs
+  const days = Number(entitlementDays)
+  if (typeof purchaseDateMs !== 'number' || !Number.isFinite(purchaseDateMs)) {
+    throw new Error('purchaseDateMs must be a finite number')
+  }
+  if (!Number.isFinite(days) || days <= 0) {
+    throw new Error('entitlementDays must be a positive number')
+  }
+  const expiresAtMs = extensionBaseMs + days * DAY_MS
+  return {
+    startsAtMs: purchaseDateMs,
+    expiresAtMs,
+    startsAt: new Date(purchaseDateMs).toISOString(),
     expiresAt: new Date(expiresAtMs).toISOString(),
   }
 }
@@ -55,7 +86,14 @@ export function computeEntitlementWindow(purchaseDateMs, entitlementDays) {
  *   - window already elapsed → record txn but do NOT grant an active entitlement
  *   - Apple-revoked transaction → record as revoked, no active grant
  */
-export function decideGrant({ verified, product, existingOwnerUserId, requestingUserId, nowMs }) {
+export function decideGrant({
+  verified,
+  product,
+  existingOwnerUserId,
+  requestingUserId,
+  existingEntitlementExpiresAt = null,
+  nowMs,
+}) {
   const baseEvent = {
     product_id: verified?.productId ?? null,
     transaction_id: verified?.transactionId ?? null,
@@ -89,13 +127,19 @@ export function decideGrant({ verified, product, existingOwnerUserId, requesting
       return {
         ok: false,
         code: 'sales_closed',
-        message: 'This purchase was made after Student Pass sales ended.',
+        message: 'This purchase was made after paid access sales ended.',
         event: { ...baseEvent, event_type: 'sales_cutoff_block', detail: { reason: 'after_sales_end_at' } },
       }
     }
   }
 
-  const window = computeEntitlementWindow(verified.purchaseDateMs, product.entitlement_days)
+  const window = product.kind === 'consumable'
+    ? computeConsumableEntitlementWindow(
+        verified.purchaseDateMs,
+        product.entitlement_days,
+        existingEntitlementExpiresAt,
+      )
+    : computeEntitlementWindow(verified.purchaseDateMs, product.entitlement_days)
 
   // Apple-revoked (refund already applied) → record, never grant.
   if (verified.revoked) {
@@ -132,7 +176,14 @@ export function decideGrant({ verified, product, existingOwnerUserId, requesting
   }
 }
 
-export function decideGrantWithBinding({ verified, product, binding, requestingUserId, nowMs }) {
+export function decideGrantWithBinding({
+  verified,
+  product,
+  binding,
+  requestingUserId,
+  existingEntitlementExpiresAt = null,
+  nowMs,
+}) {
   if (binding?.ownerState === 'account_deleted') {
     const baseEvent = {
       product_id: verified?.productId ?? null,
@@ -151,6 +202,7 @@ export function decideGrantWithBinding({ verified, product, binding, requestingU
     product,
     existingOwnerUserId: binding?.userId ?? null,
     requestingUserId,
+    existingEntitlementExpiresAt,
     nowMs,
   })
 }
@@ -209,7 +261,7 @@ export async function getActiveEntitlement(db, userId, nowIso) {
     .from('user_entitlements')
     .select('product_id, plan_type, starts_at, expires_at, status, revoked_at, source_transaction_id')
     .eq('user_id', userId)
-    .eq('product_id', STUDENT_PASS_PRODUCT_ID)
+    .in('product_id', STUDENT_ACCESS_PRODUCT_IDS)
     .eq('plan_type', 'student_pass')
     .eq('status', 'active')
     .lte('starts_at', nowIso)
@@ -220,6 +272,32 @@ export async function getActiveEntitlement(db, userId, nowIso) {
     .maybeSingle()
   if (error) throw error
   return data ?? null
+}
+
+export async function getEntitlementBySourceTransactionId(db, transactionId) {
+  if (!transactionId) return null
+  const { data, error } = await db
+    .from('user_entitlements')
+    .select('product_id, plan_type, starts_at, expires_at, status, revoked_at, source_transaction_id')
+    .eq('source_transaction_id', transactionId)
+    .maybeSingle()
+  if (error) throw error
+  return data ?? null
+}
+
+export async function getLatestStackableEntitlementExpiry(db, userId) {
+  const { data, error } = await db
+    .from('user_entitlements')
+    .select('expires_at')
+    .eq('user_id', userId)
+    .eq('plan_type', 'student_pass')
+    .eq('status', 'active')
+    .is('revoked_at', null)
+    .order('expires_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  return data?.expires_at ?? null
 }
 
 export function safeEntitlementSnapshot(entitlement) {

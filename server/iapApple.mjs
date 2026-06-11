@@ -1,7 +1,8 @@
 /**
  * Apple App Store server-side verification for Youmi Lens.
  *
- * Single product: the Student Pass (a NON-CONSUMABLE purchase). We use the
+ * Active product: Student Basic 30 Days (a CONSUMABLE purchase). The legacy
+ * Student Pass NON-CONSUMABLE remains verifiable for existing transactions.
  * modern, Apple-supported JWS path (@apple/app-store-server-library):
  *   - SignedDataVerifier.verifyAndDecodeTransaction  — signed StoreKit 2 txns
  *   - SignedDataVerifier.verifyAndDecodeNotification — App Store Server Notif. V2
@@ -31,7 +32,12 @@ const VALID_ENVIRONMENTS = new Set([
   Environment.XCODE,
   Environment.LOCAL_TESTING,
 ])
-const STUDENT_PASS_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
+export const STUDENT_BASIC_PRODUCT_ID = 'com.aydenz.youmilensipad.studentbasic30d'
+export const LEGACY_STUDENT_PASS_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
+const SUPPORTED_PRODUCT_TYPES = new Map([
+  [STUDENT_BASIC_PRODUCT_ID, Type.CONSUMABLE],
+  [LEGACY_STUDENT_PASS_PRODUCT_ID, Type.NON_CONSUMABLE],
+])
 
 let verifier = null
 let apiClient = null
@@ -139,11 +145,12 @@ export function normalizeDecodedTransaction(decoded, { expectedBundleId, expecte
   if (typeof decoded.purchaseDate !== 'number' || !Number.isFinite(decoded.purchaseDate)) {
     throw new Error('Verified transaction is missing purchaseDate')
   }
-  if (decoded.productId !== STUDENT_PASS_PRODUCT_ID) {
+  const expectedProductType = SUPPORTED_PRODUCT_TYPES.get(decoded.productId)
+  if (!expectedProductType) {
     throw new Error('Verified transaction product is not supported')
   }
-  if (decoded.type !== Type.NON_CONSUMABLE) {
-    throw new Error('Verified Student Pass transaction is not a non-consumable purchase')
+  if (decoded.type !== expectedProductType) {
+    throw new Error('Verified transaction type does not match the supported product')
   }
 
   return {

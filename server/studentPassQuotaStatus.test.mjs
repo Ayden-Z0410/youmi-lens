@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { PLAN_LIMITS } from './betaGate.mjs'
-import { getActiveEntitlement, STUDENT_PASS_PRODUCT_ID } from './iapEntitlements.mjs'
+import {
+  getActiveEntitlement,
+  STUDENT_ACCESS_PRODUCT_IDS,
+  STUDENT_BASIC_PRODUCT_ID,
+} from './iapEntitlements.mjs'
 
 function entitlementQuery(result) {
   const filters = []
   const query = {
     select() { return this },
     eq(column, value) { filters.push(['eq', column, value]); return this },
+    in(column, value) { filters.push(['in', column, value]); return this },
     lte(column, value) { filters.push(['lte', column, value]); return this },
     gt(column, value) { filters.push(['gt', column, value]); return this },
     is(column, value) { filters.push(['is', column, value]); return this },
@@ -29,7 +34,7 @@ function entitlementQuery(result) {
 describe('Student Pass quota entitlement lookup', () => {
   it('uses the exact active Student Pass window and revocation filters', async () => {
     const row = {
-      product_id: STUDENT_PASS_PRODUCT_ID,
+      product_id: STUDENT_BASIC_PRODUCT_ID,
       plan_type: 'student_pass',
       starts_at: '2026-06-11T03:04:18.000Z',
       expires_at: '2026-07-11T03:04:18.000Z',
@@ -42,7 +47,7 @@ describe('Student Pass quota entitlement lookup', () => {
     await expect(getActiveEntitlement(db, 'user-1', nowIso)).resolves.toEqual(row)
     expect(filters).toEqual([
       ['eq', 'user_id', 'user-1'],
-      ['eq', 'product_id', STUDENT_PASS_PRODUCT_ID],
+      ['in', 'product_id', STUDENT_ACCESS_PRODUCT_IDS],
       ['eq', 'plan_type', 'student_pass'],
       ['eq', 'status', 'active'],
       ['lte', 'starts_at', nowIso],

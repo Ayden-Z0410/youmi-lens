@@ -31,10 +31,16 @@ describe('Student Pass quota defaults', () => {
     })
   })
 
-  it('keeps new Student Pass sales disabled in the migration seed', () => {
-    const migration = read('../supabase-migration-student-pass-entitlements.sql')
-    expect(migration).toContain("'com.aydenz.youmilensipad.studentpass30d'")
-    expect(migration).toMatch(/'Student Pass – 30 Days',\s*false,\s*'2026-07-19T00:00:00Z'/)
+  it('keeps new Student Basic sales disabled in the consumable migration', () => {
+    const migration = read('../supabase-migration-student-basic-consumable.sql')
+    expect(migration).toContain("'com.aydenz.youmilensipad.studentbasic30d'")
+    expect(migration).toMatch(/'Student Basic – 30 Days',\s*false,\s*NULL/)
+    expect(migration).toMatch(/SET is_purchasable = false,[\s\S]*studentpass30d'/)
+    expect(migration).toContain("CHECK (kind IN ('non_renewing', 'consumable'))")
+    expect(migration).toContain('grant_consumable_entitlement')
+    expect(migration).toContain('pg_advisory_xact_lock')
+    expect(migration).toContain('WHERE source_transaction_id = p_source_transaction_id')
+    expect(migration).toContain('greatest(')
   })
 })
 

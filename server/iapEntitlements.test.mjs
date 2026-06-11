@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   computeEntitlementWindow,
+  computeConsumableEntitlementWindow,
   deriveInactiveEntitlementStatus,
   decideGrantWithBinding,
   isEntitlementActive,
@@ -9,7 +10,7 @@ import {
   safeEntitlementSnapshot,
 } from './iapEntitlements.mjs'
 
-const PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
+const PRODUCT_ID = 'com.aydenz.youmilensipad.studentbasic30d'
 const PURCHASE_MS = Date.parse('2026-06-10T12:00:00Z')
 const CUTOFF = '2026-07-19T00:00:00Z'
 
@@ -31,7 +32,7 @@ function product(overrides = {}) {
   return {
     product_id: PRODUCT_ID,
     plan_type: 'student_pass',
-    kind: 'non_renewing',
+    kind: 'consumable',
     entitlement_days: 30,
     is_purchasable: true,
     sales_end_at: CUTOFF,
@@ -40,7 +41,7 @@ function product(overrides = {}) {
 }
 
 describe('Student Pass entitlement decisions', () => {
-  it('grants a valid Student Pass transaction with server-computed 30-day expiry', () => {
+  it('grants a first consumable transaction with server-computed 30-day expiry', () => {
     const decision = decideGrantWithBinding({
       verified: verified(),
       product: product(),
@@ -53,6 +54,38 @@ describe('Student Pass entitlement decisions', () => {
     expect(decision.active).toBe(true)
     expect(decision.window.startsAt).toBe('2026-06-10T12:00:00.000Z')
     expect(decision.window.expiresAt).toBe('2026-07-10T12:00:00.000Z')
+  })
+
+  it('extends a repeated consumable purchase from the existing expiry', () => {
+    const decision = decideGrantWithBinding({
+      verified: verified({
+        transactionId: 'tx-2',
+        originalTransactionId: 'tx-2',
+        purchaseDateMs: Date.parse('2026-06-20T12:00:00Z'),
+      }),
+      product: product(),
+      binding: null,
+      requestingUserId: 'user-1',
+      existingEntitlementExpiresAt: '2026-07-10T12:00:00.000Z',
+      nowMs: Date.parse('2026-06-20T12:00:01Z'),
+    })
+
+    expect(decision.ok).toBe(true)
+    expect(decision.window.startsAt).toBe('2026-06-20T12:00:00.000Z')
+    expect(decision.window.expiresAt).toBe('2026-08-09T12:00:00.000Z')
+  })
+
+  it('starts a new consumable window at purchaseDate after an old pass expired', () => {
+    expect(
+      computeConsumableEntitlementWindow(
+        Date.parse('2026-08-20T12:00:00Z'),
+        30,
+        '2026-07-10T12:00:00.000Z',
+      ),
+    ).toMatchObject({
+      startsAt: '2026-08-20T12:00:00.000Z',
+      expiresAt: '2026-09-19T12:00:00.000Z',
+    })
   })
 
   it('ignores Apple expiresDate for access authority', () => {
@@ -88,6 +121,25 @@ describe('Student Pass entitlement decisions', () => {
       nowMs: Date.parse('2026-06-11T00:00:00Z'),
     })
     expect(decision.ok).toBe(true)
+  })
+
+  it('allows different accounts to use different consumable transactions', () => {
+    const first = decideGrantWithBinding({
+      verified: verified({ transactionId: 'tx-user-1', originalTransactionId: 'tx-user-1' }),
+      product: product(),
+      binding: null,
+      requestingUserId: 'user-1',
+      nowMs: Date.parse('2026-06-11T00:00:00Z'),
+    })
+    const second = decideGrantWithBinding({
+      verified: verified({ transactionId: 'tx-user-2', originalTransactionId: 'tx-user-2' }),
+      product: product(),
+      binding: null,
+      requestingUserId: 'user-2',
+      nowMs: Date.parse('2026-06-11T00:00:00Z'),
+    })
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
   })
 
   it('rejects the same transaction claimed by a second account', () => {

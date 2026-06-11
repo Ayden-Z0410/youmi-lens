@@ -17,7 +17,7 @@ import {
   getAdminClient,
 } from './betaGate.mjs'
 
-const STUDENT_PASS_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
+const STUDENT_BASIC_PRODUCT_ID = 'com.aydenz.youmilensipad.studentbasic30d'
 
 const DISPLAY_NAMES = {
   public_trial: 'Free Beta',
@@ -25,7 +25,7 @@ const DISPLAY_NAMES = {
   student_basic: 'Youmi Lens Basic',
   student_plus: 'Youmi Lens Plus',
   student_pro: 'Youmi Lens Pro',
-  student_pass: 'Student Pass',
+  student_pass: 'Student Basic',
   admin: 'Developer Mode',
 }
 
@@ -39,22 +39,22 @@ function planLimit(quota, key) {
 
 async function loadStudentPassPurchaseAvailability() {
   const db = getAdminClient()
-  if (!db) return { productId: STUDENT_PASS_PRODUCT_ID, isPurchasable: false, salesEndAt: null }
+  if (!db) return { productId: STUDENT_BASIC_PRODUCT_ID, isPurchasable: false, salesEndAt: null }
   try {
     const { data, error } = await db
       .from('billing_products')
       .select('product_id, is_purchasable, sales_end_at')
-      .eq('product_id', STUDENT_PASS_PRODUCT_ID)
+      .eq('product_id', STUDENT_BASIC_PRODUCT_ID)
       .maybeSingle()
     if (error) throw error
     return {
-      productId: STUDENT_PASS_PRODUCT_ID,
+      productId: STUDENT_BASIC_PRODUCT_ID,
       isPurchasable: Boolean(data?.is_purchasable),
       salesEndAt: data?.sales_end_at ?? null,
     }
   } catch (err) {
     console.warn('[quota-status] billing product availability failed', err instanceof Error ? err.message : String(err))
-    return { productId: STUDENT_PASS_PRODUCT_ID, isPurchasable: false, salesEndAt: null }
+    return { productId: STUDENT_BASIC_PRODUCT_ID, isPurchasable: false, salesEndAt: null }
   }
 }
 
@@ -214,7 +214,7 @@ const QUOTA_PLAN_DISPLAY_NAMES = {
   student_basic: 'Youmi Lens Basic',
   student_plus: 'Youmi Lens Plus',
   student_pro: 'Youmi Lens Pro',
-  student_pass: 'Student Pass',
+  student_pass: 'Student Basic',
   public_trial: 'Free Beta',
 }
 

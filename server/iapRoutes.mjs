@@ -1,5 +1,5 @@
 /**
- * Student Pass IAP routes (server is the source of truth).
+ * Student Basic IAP routes (server is the source of truth).
  *
  *   POST /api/iap/apple/verify         — verify a StoreKit 2 signed transaction,
  *                                        grant a server-computed 30-day window.
@@ -30,6 +30,8 @@ import {
   findTransactionBinding,
   findTransactionOwner,
   getActiveEntitlement,
+  getEntitlementBySourceTransactionId,
+  getLatestStackableEntitlementExpiry,
   getLatestStudentPassEntitlement,
   getLatestRevocationEventType,
   deriveInactiveEntitlementStatus,
@@ -146,8 +148,19 @@ async function persistTransaction(db, userId, verified, product, status, binding
   }
 }
 
-/** Upsert an ACTIVE entitlement (idempotent on source_transaction_id). */
-async function grantEntitlement(db, userId, verified, product, window) {
+/** Grant an ACTIVE entitlement. Consumables stack atomically in PostgreSQL. */
+export async function grantEntitlement(db, userId, verified, product, window) {
+  if (product.kind === 'consumable') {
+    const { data, error } = await db.rpc('grant_consumable_entitlement', {
+      p_user_id: userId,
+      p_product_id: verified.productId,
+      p_source_transaction_id: verified.transactionId,
+      p_purchase_date: verified.purchaseDate,
+    })
+    if (error) throw error
+    return Array.isArray(data) ? data[0] ?? null : data
+  }
+
   const { error } = await db
     .from('user_entitlements')
     .upsert(
@@ -211,12 +224,31 @@ async function verifyAndPersist(db, user, payload) {
   const verified = await verifyAppleTransaction(payload)
   const product = await loadBillingProduct(db, verified.productId)
   const binding = await findTransactionBinding(db, verified)
+  const existingGrant = binding?.userId === user.userId
+    ? await getEntitlementBySourceTransactionId(db, verified.transactionId)
+    : null
+
+  if (existingGrant) {
+    await persistTransaction(db, user.userId, verified, product, existingGrant.status, binding)
+    return {
+      granted:
+        existingGrant.status === 'active' &&
+        !existingGrant.revoked_at &&
+        new Date(existingGrant.expires_at).getTime() > Date.now(),
+      code: 'idempotent_replay',
+    }
+  }
+
+  const existingEntitlementExpiresAt = product?.kind === 'consumable'
+    ? await getLatestStackableEntitlementExpiry(db, user.userId)
+    : null
 
   const decision = decideGrantWithBinding({
     verified,
     product,
     binding,
     requestingUserId: user.userId,
+    existingEntitlementExpiresAt,
     nowMs: Date.now(),
   })
 
