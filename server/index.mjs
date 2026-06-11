@@ -39,6 +39,7 @@ import {
   handleWatchProviders,
   handleWatchSettings,
 } from './watchRead.mjs'
+import { handleWatchSnapshotsRefresh } from './watchSnapshots.mjs'
 
 const PORT = Number(process.env.PORT || process.env.AI_SERVER_PORT || 3847)
 
@@ -262,6 +263,17 @@ for (const [path, handler] of watchReadRoutes) {
     })
   })
 }
+
+// Admin-triggered provider snapshot refresh (Phase 5D-1). Self-probes only —
+// no external provider APIs. Cooldown + in-flight guarded; sanitized summary.
+app.post('/api/admin/watch/snapshots/refresh', (req, res) => {
+  void handleWatchSnapshotsRefresh(req, res).catch((err) => {
+    console.error('[watch-snapshots]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'snapshot_refresh_failed' })
+    }
+  })
+})
 
 // Primary Student Pass verification endpoint.
 app.post('/api/iap/apple/verify', (req, res) => {

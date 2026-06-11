@@ -295,6 +295,30 @@ describe('partial-coverage semantics', () => {
     expect(res.body.coverage.completenessPct).toBe(20)
   })
 
+  it('supabase + railway snapshots (Phase 5D-1 probes) → providers PARTIAL at 40%', async () => {
+    getAdminClientMock.mockReturnValue(
+      mockClient({
+        watch_provider_snapshots: [
+          { provider: 'supabase', status: 'operational', latency_ms: 84, captured_at: ts() },
+          { provider: 'railway', status: 'operational', latency_ms: 120, captured_at: ts() },
+        ],
+      }),
+    )
+    const res = fakeRes()
+    await handleWatchProviders({ headers: {} }, res)
+    expect(res.body.source).toBe('partial') // never Live at 2 of 5
+    expect(res.body.coverage.completenessPct).toBe(40)
+    expect(res.body.coverage.providersWithRealData.sort()).toEqual(['railway', 'supabase'])
+    const states = Object.fromEntries(res.body.providers.map((p) => [p.id, p.dataState]))
+    expect(states).toEqual({
+      supabase: 'live',
+      railway: 'live',
+      deepgram: 'unknown',
+      dashscope: 'unknown',
+      brevo: 'unknown',
+    })
+  })
+
   it('all expected provider snapshots → providers LIVE', async () => {
     const snaps = ['deepgram', 'dashscope', 'brevo', 'railway', 'supabase'].map((provider) => ({
       provider,
