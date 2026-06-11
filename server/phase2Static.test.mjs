@@ -9,6 +9,17 @@ function read(path) {
 }
 
 describe('Student Pass quota defaults', () => {
+  it('uses the limited server-side Student Access defaults', () => {
+    expect(PLAN_LIMITS.public_trial).toMatchObject({
+      monthly_minutes_limit: 300,
+      daily_minutes_limit: 120,
+      max_recording_minutes: 60,
+      max_live_session_minutes: 60,
+      max_recordings_per_day: 2,
+      max_processing_jobs_per_day: 2,
+    })
+  })
+
   it('uses the locked server-side Student Pass defaults', () => {
     expect(PLAN_LIMITS.student_pass).toMatchObject({
       monthly_minutes_limit: 600,

@@ -128,11 +128,11 @@ export async function handleBetaUsageStatus(req, res) {
       monthly_minutes_limit: limitMinutes,
       remaining_minutes_this_month: roundMinutes(remainingMinutes),
       recordings_today: recordingsToday,
-      daily_recording_limit: planLimit(quota, 'max_recordings_per_day') ?? 4,
+      daily_recording_limit: planLimit(quota, 'max_recordings_per_day') ?? 2,
       daily_processing_job_limit:
         planLimit(quota, 'max_processing_jobs_per_day') ??
         planLimit(quota, 'max_recordings_per_day') ??
-        4,
+        2,
       max_recording_minutes: planLimit(quota, 'max_recording_minutes') ?? 60,
       max_live_session_minutes: planLimit(quota, 'max_live_session_minutes') ?? 60,
       daily_minutes_used: roundMinutes(dailyMinutesUsed),

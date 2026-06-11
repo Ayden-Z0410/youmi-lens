@@ -2,7 +2,7 @@
  * Youmi Lens Beta Gate — server-side quota enforcement.
  *
  * Plan tiers (free-beta launch):
- *   public_trial  — Free Beta: 300 min/month, 120 min/day, 60 min/recording, 4 recordings/day, 60 min live session
+ *   public_trial  — Free Beta: 300 min/month, 120 min/day, 60 min/recording, 2 recordings/day, 2 processing jobs/day, 60 min live session
  *   core_tester   — Core Tester: 1000 min/month, 240 min/day, 120 min/recording, 10 recordings/day, 120 min live session
  *   student_basic — kept for IAP back-compat (UI hidden): 200 min/month, 120 min/day, 60 min/recording, 10/day, 60 min live
  *   student_plus  — kept for IAP back-compat (UI hidden): 600 min/month, 240 min/day, 120 min/recording, 20/day, 120 min live
@@ -57,7 +57,7 @@ export const BETA_ERROR_CODES = {
  *
  * Free-beta launch policy:
  *   - public_trial (Free Beta): 300 min/month, 120 min/day, 60 min/recording,
- *     4 recordings/day, 60 min live.
+ *     2 recordings/day, 2 processing jobs/day, 60 min live.
  *   - core_tester (Core Tester): 1000 min/month, 240 min/day, 120 min/recording,
  *     10 recordings/day, 120 min live.
  *   - admin: unlimited / bypass.
@@ -74,7 +74,14 @@ const PUBLIC_TRIAL_DAILY_MINUTES = Number(process.env.BETA_PUBLIC_TRIAL_DAILY_MI
 const CORE_TESTER_MONTHLY_MINUTES = Number(process.env.BETA_CORE_TESTER_MONTHLY_MINUTES || 1000)
 const CORE_TESTER_DAILY_MINUTES = Number(process.env.BETA_CORE_TESTER_DAILY_MINUTES || 240)
 const DEFAULT_MAX_RECORDING_MINUTES = Number(process.env.BETA_MAX_RECORDING_MINUTES || 60)
-const DEFAULT_MAX_RECORDINGS_PER_DAY = Number(process.env.BETA_MAX_RECORDINGS_PER_DAY || 4)
+const PUBLIC_TRIAL_MAX_RECORDINGS_PER_DAY = Number(
+  process.env.BETA_PUBLIC_TRIAL_MAX_RECORDINGS_PER_DAY ||
+    process.env.BETA_MAX_RECORDINGS_PER_DAY ||
+    2,
+)
+const PUBLIC_TRIAL_MAX_PROCESSING_JOBS_PER_DAY = Number(
+  process.env.BETA_PUBLIC_TRIAL_MAX_PROCESSING_JOBS_PER_DAY || 2,
+)
 const DEFAULT_MAX_LIVE_SESSION_MINUTES = Number(process.env.BETA_MAX_LIVE_SESSION_MINUTES || 60)
 
 // Paid Student Pass limits. Every value is env-overridable so quotas can
@@ -99,8 +106,8 @@ export const PLAN_LIMITS = {
     monthly_minutes_limit: PUBLIC_TRIAL_MONTHLY_MINUTES,
     daily_minutes_limit: PUBLIC_TRIAL_DAILY_MINUTES,
     max_recording_minutes: DEFAULT_MAX_RECORDING_MINUTES,
-    max_recordings_per_day: DEFAULT_MAX_RECORDINGS_PER_DAY,
-    max_processing_jobs_per_day: DEFAULT_MAX_RECORDINGS_PER_DAY,
+    max_recordings_per_day: PUBLIC_TRIAL_MAX_RECORDINGS_PER_DAY,
+    max_processing_jobs_per_day: PUBLIC_TRIAL_MAX_PROCESSING_JOBS_PER_DAY,
     max_live_session_minutes: DEFAULT_MAX_LIVE_SESSION_MINUTES,
   },
   core_tester: {
@@ -247,7 +254,7 @@ export async function getOrCreateUserQuota(userId, email) {
       monthly_minutes_limit: PUBLIC_TRIAL_MONTHLY_MINUTES,
       daily_minutes_limit: PUBLIC_TRIAL_DAILY_MINUTES,
       max_recording_minutes: DEFAULT_MAX_RECORDING_MINUTES,
-      max_recordings_per_day: DEFAULT_MAX_RECORDINGS_PER_DAY,
+      max_recordings_per_day: PUBLIC_TRIAL_MAX_RECORDINGS_PER_DAY,
       max_live_session_minutes: DEFAULT_MAX_LIVE_SESSION_MINUTES,
       extra_minutes_balance: 0,
       status: 'active',
@@ -497,7 +504,7 @@ export async function checkProcessingAllowed(quota, userId, durationSec) {
   const maxProcessingJobsPerDay = Number(
     planLimit(quota, 'max_processing_jobs_per_day') ??
       planLimit(quota, 'max_recordings_per_day') ??
-      DEFAULT_MAX_RECORDINGS_PER_DAY,
+      PUBLIC_TRIAL_MAX_PROCESSING_JOBS_PER_DAY,
   )
   if (todayCount >= maxProcessingJobsPerDay) {
     return {
@@ -675,7 +682,7 @@ export async function checkHostedActionAllowed(quota, userId) {
   const maxProcessingJobsPerDay = Number(
     planLimit(quota, 'max_processing_jobs_per_day') ??
       planLimit(quota, 'max_recordings_per_day') ??
-      DEFAULT_MAX_RECORDINGS_PER_DAY,
+      PUBLIC_TRIAL_MAX_PROCESSING_JOBS_PER_DAY,
   )
   if (todayCount >= maxProcessingJobsPerDay) {
     return {

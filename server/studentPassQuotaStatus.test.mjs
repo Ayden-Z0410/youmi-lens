@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { PLAN_LIMITS } from './betaGate.mjs'
 import { getActiveEntitlement, STUDENT_PASS_PRODUCT_ID } from './iapEntitlements.mjs'
 
 function entitlementQuery(result) {
@@ -57,5 +58,24 @@ describe('Student Pass quota entitlement lookup', () => {
     expect(source).toContain('effectivePlanType')
     expect(source).toContain('monthly_minutes:')
     expect(source).toContain('processing_jobs_per_day:')
+  })
+
+  it('keeps free and active Student Pass response quotas distinct', () => {
+    expect(PLAN_LIMITS.public_trial).toMatchObject({
+      monthly_minutes_limit: 300,
+      daily_minutes_limit: 120,
+      max_recording_minutes: 60,
+      max_live_session_minutes: 60,
+      max_recordings_per_day: 2,
+      max_processing_jobs_per_day: 2,
+    })
+    expect(PLAN_LIMITS.student_pass).toMatchObject({
+      monthly_minutes_limit: 600,
+      daily_minutes_limit: 120,
+      max_recording_minutes: 90,
+      max_live_session_minutes: 90,
+      max_recordings_per_day: 6,
+      max_processing_jobs_per_day: 10,
+    })
   })
 })
