@@ -273,7 +273,7 @@ export async function getOrCreateUserQuota(userId, email) {
  * user_quota.plan_type is never permanently set to student_pass — paid access
  * lives in a time-boxed user_entitlement. This returns the stored quota row with
  * its plan_type replaced by the effective plan:
- *   admin / core_tester (stored override) > active student_pass entitlement > public_trial.
+ *   admin (stored override) > active student_pass entitlement > core_tester > public_trial.
  *
  * PLAN_LIMITS keys off plan_type, so the returned object drives every existing
  * gate with the correct limits. An expired/absent entitlement yields
@@ -284,8 +284,8 @@ export async function getEffectiveQuota(userId, email) {
   const quota = await getOrCreateUserQuota(userId, email)
   if (!quota) return null
 
-  // Stored overrides win outright and need no entitlement lookup.
-  if (quota.plan_type === 'admin' || quota.plan_type === 'core_tester') return quota
+  // Admin remains the only stored override above a paid entitlement.
+  if (quota.plan_type === 'admin') return quota
 
   const db = getAdminClient()
   if (!db) return quota // fail safe: behave as stored plan if DB unavailable

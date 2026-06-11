@@ -181,14 +181,14 @@ describe('effective plan resolution', () => {
     ).toBe('admin')
   })
 
-  it('keeps core_tester override above entitlement', () => {
+  it('lets an active Student Pass override core_tester quota', () => {
     expect(
       resolveEffectivePlanType({
         storedPlanType: 'core_tester',
         entitlement: activeEntitlement,
         nowMs: Date.parse('2026-06-10T00:00:00Z'),
       }),
-    ).toBe('core_tester')
+    ).toBe('student_pass')
   })
 
   it('recognizes active non-revoked entitlement windows', () => {

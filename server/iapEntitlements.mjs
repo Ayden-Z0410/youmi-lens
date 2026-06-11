@@ -17,6 +17,7 @@
 import { findAppleIapTransactionBinding } from './iapLedger.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+export const STUDENT_PASS_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
 
 /** Pure: compute the 30-day (configurable) entitlement window from purchaseDate. */
 export function computeEntitlementWindow(purchaseDateMs, entitlementDays) {
@@ -156,13 +157,13 @@ export function decideGrantWithBinding({ verified, product, binding, requestingU
 
 /**
  * Pure: resolve the effective plan_type at request time.
- * Precedence: admin → core_tester → active entitlement → public_trial.
+ * Precedence: admin → active entitlement → core_tester → public_trial.
  * An expired/absent entitlement yields public_trial WITHOUT any cron.
  */
 export function resolveEffectivePlanType({ storedPlanType, entitlement, nowMs }) {
   if (storedPlanType === 'admin') return 'admin'
-  if (storedPlanType === 'core_tester') return 'core_tester'
   if (isEntitlementActive(entitlement, nowMs)) return entitlement.plan_type
+  if (storedPlanType === 'core_tester') return 'core_tester'
   return 'public_trial'
 }
 
@@ -208,9 +209,12 @@ export async function getActiveEntitlement(db, userId, nowIso) {
     .from('user_entitlements')
     .select('product_id, plan_type, starts_at, expires_at, status, revoked_at, source_transaction_id')
     .eq('user_id', userId)
+    .eq('product_id', STUDENT_PASS_PRODUCT_ID)
+    .eq('plan_type', 'student_pass')
     .eq('status', 'active')
     .lte('starts_at', nowIso)
     .gt('expires_at', nowIso)
+    .is('revoked_at', null)
     .order('expires_at', { ascending: false })
     .limit(1)
     .maybeSingle()

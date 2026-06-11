@@ -240,13 +240,34 @@ export async function buildQuotaStatus(userId, email) {
   // Entitlement summary for the paywall / account screen. Secret-free.
   const ent = quota._entitlement ?? null
   const entitlement = ent
-    ? { active: true, productId: ent.product_id, expiresAt: ent.expires_at }
+    ? {
+        active: true,
+        status: 'active',
+        productId: ent.product_id,
+        planType: ent.plan_type,
+        startsAt: ent.starts_at,
+        expiresAt: ent.expires_at,
+        revoked: false,
+      }
     : { active: false, productId: null, expiresAt: null }
+  const studentPassActive = Boolean(ent)
+  const studentPassExpiry = ent?.expires_at ?? null
+  const effectivePlanType = planType
   const studentPass = await loadStudentPassPurchaseAvailability()
 
   // Developer / admin: unlimited — no usage counters to report.
   if (UNLIMITED_PLAN_TYPES.has(planType)) {
-    return { planType, displayName, status, unlimited: true, entitlement, studentPass }
+    return {
+      planType,
+      displayName,
+      status,
+      unlimited: true,
+      entitlement,
+      studentPassActive,
+      studentPassExpiry,
+      effectivePlanType,
+      studentPass,
+    }
   }
 
   // Limited tiers: report live daily + minute usage from the existing helpers.
@@ -308,6 +329,19 @@ export async function buildQuotaStatus(userId, email) {
     dailyMinutesUsed: roundMinutes(dailyMinutesUsed),
     dailyMinutesLimit,
     dailyMinutesRemaining,
+    studentPassActive,
+    studentPassExpiry,
+    effectivePlanType,
+    quota: {
+      monthly_minutes: planLimit(quota, 'monthly_minutes_limit') == null
+        ? null
+        : Number(planLimit(quota, 'monthly_minutes_limit')),
+      daily_minutes: dailyMinutesLimit,
+      max_recording_minutes: maxRecordingMinutes,
+      max_live_minutes: maxLiveSessionMinutes,
+      recordings_per_day: maxRecordingsPerDay,
+      processing_jobs_per_day: maxProcessingJobsPerDay,
+    },
   }
 }
 
