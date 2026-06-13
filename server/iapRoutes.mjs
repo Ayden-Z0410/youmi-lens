@@ -22,7 +22,6 @@ import {
   isAppleIapLedgerUnavailableError,
   insertAppleIapTransaction,
   updateAppleIapTransactionByTransactionId,
-  revokeAppleIapTransaction,
 } from './iapLedger.mjs'
 import {
   decideGrantWithBinding,
@@ -180,15 +179,13 @@ export async function grantEntitlement(db, userId, verified, product, window) {
 }
 
 /** Mark an entitlement + its transaction revoked (refund / revoke). */
-async function revokeByTransaction(db, transactionId, revokedAtIso) {
+export async function revokeByTransaction(db, transactionId, revokedAtIso) {
   const revoked_at = revokedAtIso || new Date().toISOString()
-  const { error: entErr } = await db
-    .from('user_entitlements')
-    .update({ status: 'revoked', revoked_at })
-    .eq('source_transaction_id', transactionId)
-  if (entErr) throw entErr
-  const { error: txErr } = await revokeAppleIapTransaction(db, transactionId, revoked_at)
-  if (txErr) throw txErr
+  const { error } = await db.rpc('revoke_iap_entitlement_by_transaction', {
+    p_transaction_id: transactionId,
+    p_revoked_at: revoked_at,
+  })
+  if (error) throw error
 }
 
 // ── Verify (core) ────────────────────────────────────────────────────────────
@@ -198,7 +195,7 @@ function safeIapError(err) {
     return { status: 503, error: 'iap_temporarily_unavailable', message: 'In-app purchase service is temporarily unavailable.' }
   }
   if (
-    ['42P01', 'PGRST205', '42501', '42703', '23514', 'PGRST100', '57014'].includes(String(err?.code ?? '')) ||
+    ['42P01', '42883', 'PGRST202', 'PGRST205', '42501', '42703', '23514', 'PGRST100', '57014'].includes(String(err?.code ?? '')) ||
     /fetch failed|timeout|timed out/i.test(String(err?.message ?? ''))
   ) {
     return { status: 503, error: 'iap_temporarily_unavailable', message: 'In-app purchase service is temporarily unavailable.' }
@@ -229,6 +226,19 @@ async function verifyAndPersist(db, user, payload) {
     : null
 
   if (existingGrant) {
+    if (verified.revoked) {
+      await persistTransaction(db, user.userId, verified, product, 'revoked', binding)
+      await revokeByTransaction(db, verified.transactionId, verified.revokedAt)
+      await recordBillingEvent(db, user.userId, {
+        event_type: 'grant',
+        product_id: verified.productId,
+        transaction_id: verified.transactionId,
+        environment: verified.environment,
+        detail: { granted: false, reason: 'revoked_replay' },
+      })
+      return { granted: false, code: 'revoked' }
+    }
+
     await persistTransaction(db, user.userId, verified, product, existingGrant.status, binding)
     return {
       granted:
