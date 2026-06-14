@@ -34,6 +34,9 @@ import {
   getLatestStackableEntitlementExpiry,
   getLatestStudentPassEntitlement,
   getLatestRevocationEventType,
+  getRestackableStudentPassEntitlements,
+  loadBillingProducts,
+  computeRestackedConsumableEntitlementUpdates,
   deriveInactiveEntitlementStatus,
   safeEntitlementSnapshot,
   recordBillingEvent,
@@ -179,9 +182,36 @@ export async function grantEntitlement(db, userId, verified, product, window) {
   if (error) throw error
 }
 
+async function restackStudentPassEntitlements(db, userId) {
+  if (!userId) return
+  const entitlements = await getRestackableStudentPassEntitlements(db, userId)
+  const products = await loadBillingProducts(db, entitlements.map((entitlement) => entitlement.product_id))
+  const updates = computeRestackedConsumableEntitlementUpdates(entitlements, products)
+  for (const update of updates) {
+    const { error } = await db
+      .from('user_entitlements')
+      .update({ expires_at: update.expires_at })
+      .eq('user_id', userId)
+      .eq('source_transaction_id', update.source_transaction_id)
+      .eq('status', 'active')
+      .is('revoked_at', null)
+    if (error) throw error
+  }
+}
+
 /** Mark an entitlement + its transaction revoked (refund / revoke). */
-async function revokeByTransaction(db, transactionId, revokedAtIso) {
+async function revokeByTransaction(db, transactionId, revokedAtIso, knownEntitlement = null) {
   const revoked_at = revokedAtIso || new Date().toISOString()
+  let entitlement = knownEntitlement
+  if (!entitlement) {
+    const { data, error } = await db
+      .from('user_entitlements')
+      .select('user_id, product_id, plan_type, source_transaction_id')
+      .eq('source_transaction_id', transactionId)
+      .maybeSingle()
+    if (error) throw error
+    entitlement = data ?? null
+  }
   const { error: entErr } = await db
     .from('user_entitlements')
     .update({ status: 'revoked', revoked_at })
@@ -189,6 +219,9 @@ async function revokeByTransaction(db, transactionId, revokedAtIso) {
   if (entErr) throw entErr
   const { error: txErr } = await revokeAppleIapTransaction(db, transactionId, revoked_at)
   if (txErr) throw txErr
+  if (entitlement?.plan_type === 'student_pass') {
+    await restackStudentPassEntitlements(db, entitlement.user_id)
+  }
 }
 
 // ── Verify (core) ────────────────────────────────────────────────────────────
@@ -220,7 +253,7 @@ function safeIapError(err) {
  * Verify one purchase payload and persist transaction + entitlement idempotently.
  * Returns { granted:boolean, code? } — throws on verification/DB failure.
  */
-async function verifyAndPersist(db, user, payload) {
+export async function verifyAndPersist(db, user, payload) {
   const verified = await verifyAppleTransaction(payload)
   const product = await loadBillingProduct(db, verified.productId)
   const binding = await findTransactionBinding(db, verified)
@@ -229,6 +262,18 @@ async function verifyAndPersist(db, user, payload) {
     : null
 
   if (existingGrant) {
+    if (verified.revoked) {
+      await persistTransaction(db, user.userId, verified, product, 'revoked', binding)
+      await revokeByTransaction(db, verified.transactionId, verified.revokedAt, existingGrant)
+      await recordBillingEvent(db, user.userId, {
+        event_type: 'grant',
+        product_id: verified.productId,
+        transaction_id: verified.transactionId,
+        environment: verified.environment,
+        detail: { granted: false, reason: 'revoked' },
+      })
+      return { granted: false, code: 'revoked' }
+    }
     await persistTransaction(db, user.userId, verified, product, existingGrant.status, binding)
     return {
       granted:

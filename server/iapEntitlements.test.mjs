@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   computeEntitlementWindow,
   computeConsumableEntitlementWindow,
+  computeRestackedConsumableEntitlementUpdates,
   deriveInactiveEntitlementStatus,
   decideGrantWithBinding,
   isEntitlementActive,
@@ -245,6 +246,61 @@ describe('effective plan resolution', () => {
 
   it('recognizes active non-revoked entitlement windows', () => {
     expect(isEntitlementActive(activeEntitlement, Date.parse('2026-06-10T00:00:00Z'))).toBe(true)
+  })
+})
+
+describe('consumable entitlement restacking', () => {
+  const consumableProduct = product()
+
+  it('shortens later consumable grants when an earlier stacked grant is removed', () => {
+    const updates = computeRestackedConsumableEntitlementUpdates(
+      [
+        {
+          product_id: PRODUCT_ID,
+          source_transaction_id: 'tx-2',
+          starts_at: '2026-06-20T12:00:00.000Z',
+          expires_at: '2026-08-09T12:00:00.000Z',
+          created_at: '2026-06-20T12:00:01.000Z',
+        },
+      ],
+      [consumableProduct],
+    )
+
+    expect(updates).toEqual([
+      {
+        source_transaction_id: 'tx-2',
+        expires_at: '2026-07-20T12:00:00.000Z',
+      },
+    ])
+  })
+
+  it('preserves remaining paid stack order after a middle consumable is removed', () => {
+    const updates = computeRestackedConsumableEntitlementUpdates(
+      [
+        {
+          product_id: PRODUCT_ID,
+          source_transaction_id: 'tx-1',
+          starts_at: '2026-06-01T00:00:00.000Z',
+          expires_at: '2026-07-01T00:00:00.000Z',
+          created_at: '2026-06-01T00:00:01.000Z',
+        },
+        {
+          product_id: PRODUCT_ID,
+          source_transaction_id: 'tx-3',
+          starts_at: '2026-06-20T00:00:00.000Z',
+          expires_at: '2026-08-30T00:00:00.000Z',
+          created_at: '2026-06-20T00:00:01.000Z',
+        },
+      ],
+      [consumableProduct],
+    )
+
+    expect(updates).toEqual([
+      {
+        source_transaction_id: 'tx-3',
+        expires_at: '2026-07-31T00:00:00.000Z',
+      },
+    ])
   })
 })
 

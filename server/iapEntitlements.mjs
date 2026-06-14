@@ -69,6 +69,61 @@ export function computeConsumableEntitlementWindow(
   }
 }
 
+export function computeRestackedConsumableEntitlementUpdates(entitlements = [], products = []) {
+  const productById = products instanceof Map
+    ? products
+    : new Map(products.map((product) => [product.product_id, product]))
+  const sorted = [...entitlements].sort((a, b) => {
+    const startsDiff = new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime()
+    if (startsDiff !== 0) return startsDiff
+    return new Date(a.created_at ?? 0).getTime() - new Date(b.created_at ?? 0).getTime()
+  })
+  let currentExpiryMs = NaN
+  const updates = []
+
+  for (const entitlement of sorted) {
+    const startsMs = new Date(entitlement.starts_at).getTime()
+    const existingExpiresMs = new Date(entitlement.expires_at).getTime()
+    const product = productById.get(entitlement.product_id)
+
+    if (product?.kind !== 'consumable') {
+      if (Number.isFinite(existingExpiresMs)) {
+        currentExpiryMs = Number.isFinite(currentExpiryMs)
+          ? Math.max(currentExpiryMs, existingExpiresMs)
+          : existingExpiresMs
+      }
+      continue
+    }
+
+    const days = Number(product.entitlement_days)
+    if (!Number.isFinite(startsMs) || !Number.isFinite(days) || days <= 0) {
+      if (Number.isFinite(existingExpiresMs)) {
+        currentExpiryMs = Number.isFinite(currentExpiryMs)
+          ? Math.max(currentExpiryMs, existingExpiresMs)
+          : existingExpiresMs
+      }
+      continue
+    }
+
+    const extensionBaseMs = Number.isFinite(currentExpiryMs)
+      ? Math.max(startsMs, currentExpiryMs)
+      : startsMs
+    const expiresMs = extensionBaseMs + days * DAY_MS
+    const expiresAt = new Date(expiresMs).toISOString()
+    if (entitlement.expires_at !== expiresAt) {
+      updates.push({
+        source_transaction_id: entitlement.source_transaction_id,
+        expires_at: expiresAt,
+      })
+    }
+    currentExpiryMs = Number.isFinite(currentExpiryMs)
+      ? Math.max(currentExpiryMs, expiresMs)
+      : expiresMs
+  }
+
+  return updates
+}
+
 /**
  * Pure: decide what to write for a verified transaction. No I/O. The route
  * supplies the verified transaction, the billing_products row, the existing
@@ -278,7 +333,7 @@ export async function getEntitlementBySourceTransactionId(db, transactionId) {
   if (!transactionId) return null
   const { data, error } = await db
     .from('user_entitlements')
-    .select('product_id, plan_type, starts_at, expires_at, status, revoked_at, source_transaction_id')
+    .select('user_id, product_id, plan_type, starts_at, expires_at, status, revoked_at, source_transaction_id, created_at')
     .eq('source_transaction_id', transactionId)
     .maybeSingle()
   if (error) throw error
@@ -298,6 +353,31 @@ export async function getLatestStackableEntitlementExpiry(db, userId) {
     .maybeSingle()
   if (error) throw error
   return data?.expires_at ?? null
+}
+
+export async function getRestackableStudentPassEntitlements(db, userId) {
+  const { data, error } = await db
+    .from('user_entitlements')
+    .select('product_id, starts_at, expires_at, source_transaction_id, created_at')
+    .eq('user_id', userId)
+    .eq('plan_type', 'student_pass')
+    .eq('status', 'active')
+    .is('revoked_at', null)
+    .order('starts_at', { ascending: true })
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return data ?? []
+}
+
+export async function loadBillingProducts(db, productIds) {
+  const ids = [...new Set((productIds ?? []).filter(Boolean))]
+  if (ids.length === 0) return []
+  const { data, error } = await db
+    .from('billing_products')
+    .select('product_id, kind, entitlement_days')
+    .in('product_id', ids)
+  if (error) throw error
+  return data ?? []
 }
 
 export function safeEntitlementSnapshot(entitlement) {
