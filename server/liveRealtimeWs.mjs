@@ -88,6 +88,24 @@ function decodeBase64ToArrayBuffer(b64) {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
 }
 
+export function finalizeLiveSegmentForRestart(ws) {
+  if (!ws) return
+  if (typeof ws._youmiLiveSessionEnd === 'function') {
+    try {
+      ws._youmiLiveSessionEnd()
+    } finally {
+      ws._youmiLiveSessionEnd = null
+    }
+  }
+  if (typeof ws._youmiDeepgramCostFinalize === 'function') {
+    try {
+      ws._youmiDeepgramCostFinalize('restart')
+    } finally {
+      ws._youmiDeepgramCostFinalize = null
+    }
+  }
+}
+
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 const LIVE_BUCKET = 'lecture-audio'
@@ -287,13 +305,10 @@ export function attachLiveRealtimeWs(server) {
         // ────────────────────────────────────────────────────────────────
 
         pendingPcm.length = 0
-        // Re-stream_start on the same WS: settle the PREVIOUS Deepgram
-        // segment's cost (once-guarded) before its session/handlers are
-        // replaced, so each segment records at most once.
-        if (typeof ws._youmiDeepgramCostFinalize === 'function') {
-          ws._youmiDeepgramCostFinalize('restart')
-          ws._youmiDeepgramCostFinalize = null
-        }
+        // Re-stream_start on the same WS: close out the PREVIOUS segment before
+        // its timers/finalizers are replaced, so stale callbacks cannot touch
+        // the new segment.
+        finalizeLiveSegmentForRestart(ws)
         streamSegment += 1
         if (streamingSession) {
           streamingSession.destroy()
