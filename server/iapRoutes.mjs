@@ -26,6 +26,7 @@ import {
 } from './iapLedger.mjs'
 import {
   decideGrantWithBinding,
+  isEntitlementActive,
   loadBillingProduct,
   findTransactionBinding,
   findTransactionOwner,
@@ -220,7 +221,7 @@ function safeIapError(err) {
  * Verify one purchase payload and persist transaction + entitlement idempotently.
  * Returns { granted:boolean, code? } — throws on verification/DB failure.
  */
-async function verifyAndPersist(db, user, payload) {
+export async function verifyAndPersist(db, user, payload) {
   const verified = await verifyAppleTransaction(payload)
   const product = await loadBillingProduct(db, verified.productId)
   const binding = await findTransactionBinding(db, verified)
@@ -229,12 +230,14 @@ async function verifyAndPersist(db, user, payload) {
     : null
 
   if (existingGrant) {
-    await persistTransaction(db, user.userId, verified, product, existingGrant.status, binding)
+    const replayStatus = verified.revoked ? 'revoked' : existingGrant.status
+    await persistTransaction(db, user.userId, verified, product, replayStatus, binding)
+    if (verified.revoked) {
+      await revokeByTransaction(db, verified.transactionId, verified.revokedAt)
+      return { granted: false, code: 'revoked' }
+    }
     return {
-      granted:
-        existingGrant.status === 'active' &&
-        !existingGrant.revoked_at &&
-        new Date(existingGrant.expires_at).getTime() > Date.now(),
+      granted: isEntitlementActive(existingGrant, Date.now()),
       code: 'idempotent_replay',
     }
   }
