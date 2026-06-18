@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { grantEntitlement } from './iapRoutes.mjs'
+import { existingGrantReplayResult, grantEntitlement } from './iapRoutes.mjs'
 
 function read(path) {
   return readFileSync(new URL(path, import.meta.url), 'utf8')
@@ -74,6 +74,25 @@ describe('Student Basic consumable grant safety', () => {
         },
       },
     ])
+  })
+
+  it('does not keep access active when Apple replay shows a refund', () => {
+    const activeGrant = {
+      status: 'active',
+      revoked_at: null,
+      expires_at: '2026-07-11T00:00:00.000Z',
+    }
+
+    expect(
+      existingGrantReplayResult(
+        activeGrant,
+        { revoked: true, revokedAt: '2026-06-20T00:00:00.000Z' },
+        Date.parse('2026-06-20T00:00:00.000Z'),
+      ),
+    ).toEqual({ granted: false, code: 'revoked' })
+
+    expect(routes).toContain("const replayStatus = verified.revoked ? 'revoked' : existingGrant.status")
+    expect(routes).toContain('await revokeByTransaction(db, verified.transactionId, verified.revokedAt)')
   })
 
   it('keeps the new product closed while preserving the legacy product row', () => {
