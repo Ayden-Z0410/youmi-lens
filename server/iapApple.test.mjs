@@ -35,13 +35,13 @@ describe('normalizeDecodedTransaction', () => {
     })
   })
 
-  it('keeps the legacy Student Pass non-consumable compatible', () => {
+  it('keeps the legacy Student Pass non-renewing subscription compatible', () => {
     expect(normalize({
       productId: 'com.aydenz.youmilensipad.studentpass30d',
-      type: Type.NON_CONSUMABLE,
+      type: Type.NON_RENEWING_SUBSCRIPTION,
     })).toMatchObject({
       productId: 'com.aydenz.youmilensipad.studentpass30d',
-      productType: Type.NON_CONSUMABLE,
+      productType: Type.NON_RENEWING_SUBSCRIPTION,
     })
   })
 

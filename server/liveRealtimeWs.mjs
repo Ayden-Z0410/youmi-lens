@@ -51,6 +51,17 @@ function safeSend(ws, payload) {
   }
 }
 
+export function settlePriorLiveSessionForRestart(ws) {
+  if (typeof ws?._youmiLiveSessionEnd === 'function') {
+    ws._youmiLiveSessionEnd()
+    ws._youmiLiveSessionEnd = null
+  }
+  if (typeof ws?._youmiDeepgramCostFinalize === 'function') {
+    ws._youmiDeepgramCostFinalize('restart')
+    ws._youmiDeepgramCostFinalize = null
+  }
+}
+
 function wsCloseReasonToString(reason) {
   if (reason === undefined || reason === null) return ''
   return Buffer.isBuffer(reason) ? reason.toString('utf8') : String(reason)
@@ -287,13 +298,9 @@ export function attachLiveRealtimeWs(server) {
         // ────────────────────────────────────────────────────────────────
 
         pendingPcm.length = 0
-        // Re-stream_start on the same WS: settle the PREVIOUS Deepgram
-        // segment's cost (once-guarded) before its session/handlers are
-        // replaced, so each segment records at most once.
-        if (typeof ws._youmiDeepgramCostFinalize === 'function') {
-          ws._youmiDeepgramCostFinalize('restart')
-          ws._youmiDeepgramCostFinalize = null
-        }
+        // Re-stream_start on the same WS: clear the previous segment's timeout
+        // and settle Deepgram cost before session/handlers are replaced.
+        settlePriorLiveSessionForRestart(ws)
         streamSegment += 1
         if (streamingSession) {
           streamingSession.destroy()

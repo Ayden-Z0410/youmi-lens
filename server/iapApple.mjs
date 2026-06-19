@@ -2,7 +2,7 @@
  * Apple App Store server-side verification for Youmi Lens.
  *
  * Active product: Student Basic 30 Days (a CONSUMABLE purchase). The legacy
- * Student Pass NON-CONSUMABLE remains verifiable for existing transactions.
+ * Student Pass NON-RENEWING SUBSCRIPTION remains verifiable for existing transactions.
  * modern, Apple-supported JWS path (@apple/app-store-server-library):
  *   - SignedDataVerifier.verifyAndDecodeTransaction  — signed StoreKit 2 txns
  *   - SignedDataVerifier.verifyAndDecodeNotification — App Store Server Notif. V2
@@ -36,7 +36,7 @@ export const STUDENT_BASIC_PRODUCT_ID = 'com.aydenz.youmilensipad.studentbasic30
 export const LEGACY_STUDENT_PASS_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
 const SUPPORTED_PRODUCT_TYPES = new Map([
   [STUDENT_BASIC_PRODUCT_ID, Type.CONSUMABLE],
-  [LEGACY_STUDENT_PASS_PRODUCT_ID, Type.NON_CONSUMABLE],
+  [LEGACY_STUDENT_PASS_PRODUCT_ID, Type.NON_RENEWING_SUBSCRIPTION],
 ])
 
 let verifier = null

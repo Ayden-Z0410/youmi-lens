@@ -182,10 +182,10 @@ export async function grantEntitlement(db, userId, verified, product, window) {
 /** Mark an entitlement + its transaction revoked (refund / revoke). */
 async function revokeByTransaction(db, transactionId, revokedAtIso) {
   const revoked_at = revokedAtIso || new Date().toISOString()
-  const { error: entErr } = await db
-    .from('user_entitlements')
-    .update({ status: 'revoked', revoked_at })
-    .eq('source_transaction_id', transactionId)
+  const { error: entErr } = await db.rpc('revoke_student_pass_entitlement', {
+    p_source_transaction_id: transactionId,
+    p_revoked_at: revoked_at,
+  })
   if (entErr) throw entErr
   const { error: txErr } = await revokeAppleIapTransaction(db, transactionId, revoked_at)
   if (txErr) throw txErr
@@ -220,7 +220,7 @@ function safeIapError(err) {
  * Verify one purchase payload and persist transaction + entitlement idempotently.
  * Returns { granted:boolean, code? } — throws on verification/DB failure.
  */
-async function verifyAndPersist(db, user, payload) {
+export async function verifyAndPersist(db, user, payload) {
   const verified = await verifyAppleTransaction(payload)
   const product = await loadBillingProduct(db, verified.productId)
   const binding = await findTransactionBinding(db, verified)
@@ -229,6 +229,22 @@ async function verifyAndPersist(db, user, payload) {
     : null
 
   if (existingGrant) {
+    if (verified.revoked) {
+      await revokeByTransaction(db, verified.transactionId, verified.revokedAt)
+      await persistTransaction(db, user.userId, verified, product, 'revoked', binding)
+      await recordBillingEvent(db, user.userId, {
+        product_id: verified.productId,
+        transaction_id: verified.transactionId,
+        environment: verified.environment,
+        event_type: 'grant',
+        detail: { granted: false, reason: 'revoked' },
+      })
+      return {
+        granted: false,
+        code: 'revoked',
+        message: 'This purchase has been revoked or refunded.',
+      }
+    }
     await persistTransaction(db, user.userId, verified, product, existingGrant.status, binding)
     return {
       granted:

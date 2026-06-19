@@ -29,8 +29,18 @@ describe('Student Basic consumable grant safety', () => {
     expect(migration).toContain('v_transaction.user_id <> p_user_id')
     expect(migration).toContain('v_transaction.product_id <> p_product_id')
     expect(routes).toContain("db.rpc('grant_consumable_entitlement'")
+    expect(routes).toContain("db.rpc('revoke_student_pass_entitlement'")
     expect(routes).toContain('p_user_id: userId')
     expect(routes).toContain('p_source_transaction_id: verified.transactionId')
+  })
+
+  it('recomputes remaining stacked consumables after a refund under the per-user lock', () => {
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION public.revoke_student_pass_entitlement')
+    expect(migration).toContain('pg_advisory_xact_lock')
+    expect(migration).toContain("SET status = 'revoked'")
+    expect(migration).toContain("AND p.kind = 'consumable'")
+    expect(migration).toContain('ORDER BY t.purchase_date, e.created_at, e.id')
+    expect(migration).toContain('expires_at = v_extension_base + pg_catalog.make_interval')
   })
 
   it('routes a verified consumable purchase through the atomic grant function', async () => {
