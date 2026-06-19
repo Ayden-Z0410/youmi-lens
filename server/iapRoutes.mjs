@@ -182,10 +182,10 @@ export async function grantEntitlement(db, userId, verified, product, window) {
 /** Mark an entitlement + its transaction revoked (refund / revoke). */
 async function revokeByTransaction(db, transactionId, revokedAtIso) {
   const revoked_at = revokedAtIso || new Date().toISOString()
-  const { error: entErr } = await db
-    .from('user_entitlements')
-    .update({ status: 'revoked', revoked_at })
-    .eq('source_transaction_id', transactionId)
+  const { error: entErr } = await db.rpc('revoke_student_pass_entitlement', {
+    p_source_transaction_id: transactionId,
+    p_revoked_at: revoked_at,
+  })
   if (entErr) throw entErr
   const { error: txErr } = await revokeAppleIapTransaction(db, transactionId, revoked_at)
   if (txErr) throw txErr

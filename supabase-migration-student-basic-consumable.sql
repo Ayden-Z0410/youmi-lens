@@ -129,4 +129,97 @@ REVOKE ALL ON FUNCTION public.grant_consumable_entitlement(uuid, text, text, tim
 GRANT EXECUTE ON FUNCTION public.grant_consumable_entitlement(uuid, text, text, timestamptz)
   TO service_role;
 
+CREATE OR REPLACE FUNCTION public.revoke_student_pass_entitlement(
+  p_source_transaction_id text,
+  p_revoked_at timestamptz
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = ''
+AS $$
+DECLARE
+  v_target public.user_entitlements%ROWTYPE;
+  v_revoked_at timestamptz := coalesce(p_revoked_at, now());
+  v_target_kind text;
+  v_current_expiry timestamptz;
+  v_entitlement RECORD;
+  v_purchase_date timestamptz;
+  v_extension_base timestamptz;
+BEGIN
+  SELECT *
+    INTO v_target
+    FROM public.user_entitlements
+   WHERE source_transaction_id = p_source_transaction_id;
+
+  IF NOT FOUND THEN
+    RETURN;
+  END IF;
+
+  PERFORM pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_target.user_id::text, 0)
+  );
+
+  UPDATE public.user_entitlements
+     SET status = 'revoked',
+         revoked_at = v_revoked_at
+   WHERE source_transaction_id = p_source_transaction_id;
+
+  SELECT kind
+    INTO v_target_kind
+    FROM public.billing_products
+   WHERE product_id = v_target.product_id;
+
+  IF v_target_kind <> 'consumable' OR v_target.plan_type <> 'student_pass' THEN
+    RETURN;
+  END IF;
+
+  SELECT max(e.expires_at)
+    INTO v_current_expiry
+    FROM public.user_entitlements e
+    JOIN public.billing_products p ON p.product_id = e.product_id
+   WHERE e.user_id = v_target.user_id
+     AND e.plan_type = 'student_pass'
+     AND e.status = 'active'
+     AND e.revoked_at IS NULL
+     AND p.kind <> 'consumable';
+
+  FOR v_entitlement IN
+    SELECT e.id,
+           e.starts_at,
+           e.created_at,
+           t.purchase_date,
+           p.entitlement_days
+      FROM public.user_entitlements e
+      JOIN public.billing_products p ON p.product_id = e.product_id
+      JOIN public.apple_iap_transactions t ON t.transaction_id = e.source_transaction_id
+     WHERE e.user_id = v_target.user_id
+       AND e.plan_type = 'student_pass'
+       AND e.status = 'active'
+       AND e.revoked_at IS NULL
+       AND p.kind = 'consumable'
+     ORDER BY t.purchase_date, e.created_at, e.id
+     FOR UPDATE OF e
+  LOOP
+    v_purchase_date := coalesce(v_entitlement.purchase_date, v_entitlement.starts_at);
+    v_extension_base := greatest(
+      v_purchase_date,
+      coalesce(v_current_expiry, v_purchase_date)
+    );
+
+    UPDATE public.user_entitlements
+       SET starts_at = v_purchase_date,
+           expires_at = v_extension_base + pg_catalog.make_interval(days => v_entitlement.entitlement_days)
+     WHERE id = v_entitlement.id;
+
+    v_current_expiry := v_extension_base + pg_catalog.make_interval(days => v_entitlement.entitlement_days);
+  END LOOP;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.revoke_student_pass_entitlement(text, timestamptz)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.revoke_student_pass_entitlement(text, timestamptz)
+  TO service_role;
+
 COMMIT;

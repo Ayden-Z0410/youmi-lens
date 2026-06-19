@@ -29,6 +29,10 @@ function fakeIapDb() {
   const calls = []
   const db = {
     calls,
+    rpc(name, args) {
+      calls.push({ method: 'rpc', name, args })
+      return Promise.resolve(ok())
+    },
     from(table) {
       const state = {
         table,
@@ -124,10 +128,12 @@ describe('verifyAndPersist', () => {
     })
 
     expect(db.calls).toContainEqual({
-      table: 'user_entitlements',
-      method: 'update',
-      filters: [{ column: 'source_transaction_id', value: TX_ID }],
-      updates: { status: 'revoked', revoked_at: REVOKED_AT },
+      method: 'rpc',
+      name: 'revoke_student_pass_entitlement',
+      args: {
+        p_source_transaction_id: TX_ID,
+        p_revoked_at: REVOKED_AT,
+      },
     })
     expect(
       db.calls.filter((call) => call.table === 'apple_iap_transactions' && call.method === 'update'),
