@@ -39,7 +39,7 @@ const SUPPORTED_PRODUCT_TYPES = new Map([
   [LEGACY_STUDENT_PASS_PRODUCT_ID, Type.NON_CONSUMABLE],
 ])
 
-let verifier = null
+const verifiers = new Map()
 let apiClient = null
 
 function requiredEnv(name) {
@@ -82,23 +82,73 @@ function loadRootCertificates() {
   return certs
 }
 
-function getVerifier() {
-  if (verifier) return verifier
-  const environment = appleEnvironment()
+function buildVerifier(environment) {
   const bundleId = requiredEnv('APPLE_BUNDLE_ID')
   const appAppleIdRaw = process.env.APPLE_APP_APPLE_ID?.trim()
   const appAppleId = appAppleIdRaw ? Number(appAppleIdRaw) : undefined
   if (environment === Environment.PRODUCTION && !Number.isFinite(appAppleId)) {
     throw new Error('APPLE_APP_APPLE_ID is required for Production verification')
   }
-  verifier = new SignedDataVerifier(
+  return new SignedDataVerifier(
     loadRootCertificates(),
     process.env.APPLE_IAP_ENABLE_ONLINE_CHECKS !== 'false',
     environment,
     bundleId,
     appAppleId,
   )
-  return verifier
+}
+
+function getVerifierForEnvironment(environment) {
+  let v = verifiers.get(environment)
+  if (!v) {
+    v = buildVerifier(environment)
+    verifiers.set(environment, v)
+  }
+  return v
+}
+
+/**
+ * Apple environments to attempt, in order. The configured APPLE_IAP_ENVIRONMENT
+ * is preferred, then Production, then Sandbox. ONE backend therefore serves both
+ * TestFlight (Sandbox transactions) and the App Store (Production transactions):
+ * Apple embeds the environment inside the signed transaction, so we accept
+ * whichever environment cryptographically verifies instead of rejecting on a
+ * single static config (which would make either TestFlight or production fail).
+ */
+export function environmentTryOrder() {
+  const order = [appleEnvironment(), Environment.PRODUCTION, Environment.SANDBOX]
+  return [...new Set(order)]
+}
+
+/**
+ * Verify + decode a signed transaction against each candidate environment until
+ * one succeeds. Returns the decoded payload and the environment that verified it.
+ */
+async function verifyAndDecodeTransactionAnyEnvironment(signedTransactionInfo) {
+  let lastError = null
+  for (const environment of environmentTryOrder()) {
+    try {
+      const decoded = await getVerifierForEnvironment(environment).verifyAndDecodeTransaction(signedTransactionInfo)
+      return { decoded, environment }
+    } catch (err) {
+      lastError = err
+    }
+  }
+  throw lastError ?? new Error('Transaction could not be verified in any Apple environment')
+}
+
+/** Verify + decode a notification against each candidate environment. */
+async function verifyAndDecodeNotificationAnyEnvironment(signedPayload) {
+  let lastError = null
+  for (const environment of environmentTryOrder()) {
+    try {
+      const decoded = await getVerifierForEnvironment(environment).verifyAndDecodeNotification(signedPayload)
+      return { decoded, environment }
+    } catch (err) {
+      lastError = err
+    }
+  }
+  throw lastError ?? new Error('Notification could not be verified in any Apple environment')
 }
 
 function getApiClient() {
@@ -198,10 +248,10 @@ export async function verifyAppleTransaction(input = {}) {
     throw new Error('signedTransactionInfo or purchaseToken is required')
   }
 
-  const decoded = await getVerifier().verifyAndDecodeTransaction(signedTransactionInfo)
+  const { decoded, environment } = await verifyAndDecodeTransactionAnyEnvironment(signedTransactionInfo)
   const normalized = normalizeDecodedTransaction(decoded, {
     expectedBundleId: requiredEnv('APPLE_BUNDLE_ID'),
-    expectedEnvironment: appleEnvironment(),
+    expectedEnvironment: environment,
   })
 
   if (input.productId && input.productId !== normalized.productId) {
@@ -223,26 +273,23 @@ export async function verifyAppleTransaction(input = {}) {
 /**
  * Verify + decode an App Store Server Notification V2 `signedPayload` and, when
  * present, the embedded signed transaction. Returns a compact, audit-safe shape.
- * Environment on the notification must match the server configuration.
+ * Accepts Sandbox or Production notifications (the same backend serves both).
  */
 export async function verifyAppleNotification(signedPayload) {
   if (!signedPayload || typeof signedPayload !== 'string') {
     throw new Error('signedPayload is required')
   }
-  const decoded = await getVerifier().verifyAndDecodeNotification(signedPayload)
-  const expectedEnvironment = appleEnvironment()
-  const env = decoded?.data?.environment
-  if (env && env !== expectedEnvironment) {
-    throw new Error('Notification environment does not match server configuration')
-  }
+  const { decoded, environment: verifiedEnvironment } = await verifyAndDecodeNotificationAnyEnvironment(signedPayload)
+  const env = decoded?.data?.environment ?? verifiedEnvironment
 
   let transaction = null
   const signedTransactionInfo = decoded?.data?.signedTransactionInfo
   if (signedTransactionInfo) {
-    const decodedTx = await getVerifier().verifyAndDecodeTransaction(signedTransactionInfo)
+    const { decoded: decodedTx, environment: txEnvironment } =
+      await verifyAndDecodeTransactionAnyEnvironment(signedTransactionInfo)
     transaction = normalizeDecodedTransaction(decodedTx, {
       expectedBundleId: requiredEnv('APPLE_BUNDLE_ID'),
-      expectedEnvironment,
+      expectedEnvironment: txEnvironment,
     })
   }
 
@@ -250,7 +297,7 @@ export async function verifyAppleNotification(signedPayload) {
     notificationType: decoded?.notificationType ?? null,
     subtype: decoded?.subtype ?? null,
     notificationUUID: decoded?.notificationUUID ?? null,
-    environment: env ?? expectedEnvironment,
+    environment: env,
     transaction,
   }
 }

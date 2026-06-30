@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { Type } from '@apple/app-store-server-library'
-import { normalizeDecodedTransaction } from './iapApple.mjs'
+import { afterEach, describe, expect, it } from 'vitest'
+import { Environment, Type } from '@apple/app-store-server-library'
+import { environmentTryOrder, normalizeDecodedTransaction } from './iapApple.mjs'
 
 const baseDecoded = {
   bundleId: 'com.aydenz.youmilensipad',
@@ -67,5 +67,31 @@ describe('normalizeDecodedTransaction', () => {
 
   it('rejects auto-renewable subscription transactions', () => {
     expect(() => normalize({ type: Type.AUTO_RENEWABLE_SUBSCRIPTION })).toThrow(/type/)
+  })
+})
+
+describe('environmentTryOrder', () => {
+  const original = process.env.APPLE_IAP_ENVIRONMENT
+  afterEach(() => {
+    if (original === undefined) delete process.env.APPLE_IAP_ENVIRONMENT
+    else process.env.APPLE_IAP_ENVIRONMENT = original
+  })
+
+  it('attempts both Production and Sandbox so one backend serves TestFlight + App Store', () => {
+    delete process.env.APPLE_IAP_ENVIRONMENT // default (Sandbox preferred)
+    const order = environmentTryOrder()
+    expect(order).toContain(Environment.PRODUCTION)
+    expect(order).toContain(Environment.SANDBOX)
+    expect(new Set(order).size).toBe(order.length) // de-duplicated
+  })
+
+  it('prefers the configured environment first', () => {
+    process.env.APPLE_IAP_ENVIRONMENT = 'Production'
+    expect(environmentTryOrder()[0]).toBe(Environment.PRODUCTION)
+    expect(environmentTryOrder()).toContain(Environment.SANDBOX)
+
+    process.env.APPLE_IAP_ENVIRONMENT = 'Sandbox'
+    expect(environmentTryOrder()[0]).toBe(Environment.SANDBOX)
+    expect(environmentTryOrder()).toContain(Environment.PRODUCTION)
   })
 })
