@@ -18,6 +18,11 @@ import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
 import { getDashScopeHttpAttempts } from './dashscopeWithFallback.mjs'
 import { createDeepgramStreamingSession } from './deepgramStreamingAsr.mjs'
 import { createDeepgramLiveCostFinalizer } from './watchLiveUsage.mjs'
+import {
+  appendSegment,
+  shouldFlushBuffer,
+  FINAL_BUFFER_DEBOUNCE_MS,
+} from './liveTranslationBuffer.mjs'
 
 /**
  * `/api/live-realtime-ws` — **single default realtime semantics** (Phase 1+2):
@@ -294,6 +299,11 @@ export function attachLiveRealtimeWs(server) {
           ws._youmiDeepgramCostFinalize('restart')
           ws._youmiDeepgramCostFinalize = null
         }
+        // Drop any pending translation buffer/timer from the previous segment.
+        if (typeof ws._youmiClearTranslationBuffer === 'function') {
+          ws._youmiClearTranslationBuffer()
+          ws._youmiClearTranslationBuffer = null
+        }
         streamSegment += 1
         if (streamingSession) {
           streamingSession.destroy()
@@ -366,6 +376,17 @@ export function attachLiveRealtimeWs(server) {
         let activeFinalTranslations = 0
         const MAX_CONCURRENT_FINAL_TRANSLATIONS = 2
         const MAX_FINAL_TRANSLATION_QUEUE = 5
+
+        // Sentence-aware translation buffer. Deepgram finals are relayed to the
+        // client immediately as `stream_final` (English stays responsive), but
+        // their TRANSLATION is accumulated here into a coherent phrase so a
+        // sentence split across finals ("I have something" / "that I want to
+        // show you today.") is translated as one unit instead of disconnected
+        // fragments. The combined translation is attached to the LAST buffered
+        // segment id (which the iPad client already maps to that caption line).
+        let pendingFinalBuffer = ''
+        let pendingFinalLastId = null
+        let pendingFinalTimer = null
 
         const translationEnabled = () =>
           process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT === 'enabled'
@@ -486,6 +507,33 @@ export function attachLiveRealtimeWs(server) {
           drainFinalTranslationQueue()
         }
 
+        // Translate whatever coherent phrase has accumulated, attaching the
+        // result to the last buffered segment id. Called on a sentence boundary,
+        // a debounce pause, or stream teardown.
+        const flushFinalTranslationBuffer = () => {
+          if (pendingFinalTimer) {
+            clearTimeout(pendingFinalTimer)
+            pendingFinalTimer = null
+          }
+          const text = pendingFinalBuffer.trim()
+          const id = pendingFinalLastId
+          pendingFinalBuffer = ''
+          pendingFinalLastId = null
+          if (!id || !text) return
+          if (!translationEnabled()) return
+          enqueueFinalTranslation(id, text)
+        }
+        // Cross-scope cleanup: re-stream_start and WS close clear a stray buffer
+        // timer (same pattern as ws._youmiLiveSessionEnd / cost finalize refs).
+        ws._youmiClearTranslationBuffer = () => {
+          if (pendingFinalTimer) {
+            clearTimeout(pendingFinalTimer)
+            pendingFinalTimer = null
+          }
+          pendingFinalBuffer = ''
+          pendingFinalLastId = null
+        }
+
         const relayInterim = (text) => {
           relayInterimSeg += 1
           const open = clientRef.ws?.readyState === 1
@@ -569,7 +617,16 @@ export function attachLiveRealtimeWs(server) {
             return
           }
           if (!trimmed) return
-          enqueueFinalTranslation(id, trimmed)
+          // Buffer this final into the current phrase; translate when a sentence
+          // boundary / max length is reached, otherwise after a short pause.
+          pendingFinalBuffer = appendSegment(pendingFinalBuffer, trimmed)
+          pendingFinalLastId = id
+          if (shouldFlushBuffer(pendingFinalBuffer) === 'flush') {
+            flushFinalTranslationBuffer()
+          } else {
+            if (pendingFinalTimer) clearTimeout(pendingFinalTimer)
+            pendingFinalTimer = setTimeout(flushFinalTranslationBuffer, FINAL_BUFFER_DEBOUNCE_MS)
+          }
         }
 
         if (liveProvider === 'dashscope') {
@@ -1052,6 +1109,11 @@ export function attachLiveRealtimeWs(server) {
       if (typeof ws._youmiLiveSessionEnd === 'function') {
         ws._youmiLiveSessionEnd()
         ws._youmiLiveSessionEnd = null
+      }
+      // Cancel any pending translation-buffer timer so it can't fire post-close.
+      if (typeof ws._youmiClearTranslationBuffer === 'function') {
+        ws._youmiClearTranslationBuffer()
+        ws._youmiClearTranslationBuffer = null
       }
     })
   })
