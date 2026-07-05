@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   appendSegment,
@@ -22,6 +23,10 @@ function simulate(chunks, opts) {
   }
   if (buffer.trim()) units.push(buffer.trim())
   return units
+}
+
+function readRelaySource() {
+  return readFileSync(new URL('./liveRealtimeWs.mjs', import.meta.url), 'utf8')
 }
 
 describe('liveTranslationBuffer segmentation', () => {
@@ -79,5 +84,19 @@ describe('liveTranslationBuffer segmentation', () => {
   it('treats CJK sentence punctuation as a boundary', () => {
     expect(endsSentence('这是一个句子。')).toBe(true)
     expect(shouldFlushBuffer('这是一个句子。')).toBe('flush')
+  })
+
+  it('wires stream_stop to flush trailing server-owned translations immediately', () => {
+    const source = readRelaySource()
+    const stopStart = source.indexOf("if (msg?.type === 'stream_stop')")
+    const legacyStart = source.indexOf('// ── Legacy JSON transcribe', stopStart)
+    const stopBlock = source.slice(stopStart, legacyStart)
+
+    expect(source).toContain('ws._youmiFlushTranslationBuffer = () => {')
+    expect(source).toContain('finalTranslationStopRequested || shouldFlushBuffer(pendingFinalBuffer)')
+    expect(stopBlock).toContain('ws._youmiFlushTranslationBuffer()')
+    expect(stopBlock.indexOf('ws._youmiFlushTranslationBuffer()')).toBeLessThan(
+      stopBlock.indexOf('streamingSession?.stop()'),
+    )
   })
 })
