@@ -19,9 +19,7 @@ import { getDashScopeHttpAttempts } from './dashscopeWithFallback.mjs'
 import { createDeepgramStreamingSession } from './deepgramStreamingAsr.mjs'
 import { createDeepgramLiveCostFinalizer } from './watchLiveUsage.mjs'
 import {
-  appendSegment,
-  shouldFlushBuffer,
-  FINAL_BUFFER_DEBOUNCE_MS,
+  createFinalTranslationBuffer,
 } from './liveTranslationBuffer.mjs'
 
 /**
@@ -299,11 +297,13 @@ export function attachLiveRealtimeWs(server) {
           ws._youmiDeepgramCostFinalize('restart')
           ws._youmiDeepgramCostFinalize = null
         }
-        // Drop any pending translation buffer/timer from the previous segment.
-        if (typeof ws._youmiClearTranslationBuffer === 'function') {
-          ws._youmiClearTranslationBuffer()
-          ws._youmiClearTranslationBuffer = null
+        // Re-stream_start on the same socket should preserve the previous
+        // segment's final translation instead of discarding its debounce buffer.
+        if (typeof ws._youmiFlushTranslationBuffer === 'function') {
+          ws._youmiFlushTranslationBuffer()
+          ws._youmiFlushTranslationBuffer = null
         }
+        ws._youmiClearTranslationBuffer = null
         streamSegment += 1
         if (streamingSession) {
           streamingSession.destroy()
@@ -384,10 +384,6 @@ export function attachLiveRealtimeWs(server) {
         // show you today.") is translated as one unit instead of disconnected
         // fragments. The combined translation is attached to the LAST buffered
         // segment id (which the iPad client already maps to that caption line).
-        let pendingFinalBuffer = ''
-        let pendingFinalLastId = null
-        let pendingFinalTimer = null
-
         const translationEnabled = () =>
           process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT === 'enabled'
 
@@ -507,32 +503,14 @@ export function attachLiveRealtimeWs(server) {
           drainFinalTranslationQueue()
         }
 
-        // Translate whatever coherent phrase has accumulated, attaching the
-        // result to the last buffered segment id. Called on a sentence boundary,
-        // a debounce pause, or stream teardown.
-        const flushFinalTranslationBuffer = () => {
-          if (pendingFinalTimer) {
-            clearTimeout(pendingFinalTimer)
-            pendingFinalTimer = null
-          }
-          const text = pendingFinalBuffer.trim()
-          const id = pendingFinalLastId
-          pendingFinalBuffer = ''
-          pendingFinalLastId = null
-          if (!id || !text) return
-          if (!translationEnabled()) return
-          enqueueFinalTranslation(id, text)
-        }
-        // Cross-scope cleanup: re-stream_start and WS close clear a stray buffer
-        // timer (same pattern as ws._youmiLiveSessionEnd / cost finalize refs).
-        ws._youmiClearTranslationBuffer = () => {
-          if (pendingFinalTimer) {
-            clearTimeout(pendingFinalTimer)
-            pendingFinalTimer = null
-          }
-          pendingFinalBuffer = ''
-          pendingFinalLastId = null
-        }
+        const finalTranslationBuffer = createFinalTranslationBuffer({
+          isEnabled: translationEnabled,
+          enqueue: enqueueFinalTranslation,
+        })
+        // Cross-scope teardown: re-stream_start / stream_stop / intentional
+        // upstream close flush buffered finals; hard WS close clears leftovers.
+        ws._youmiFlushTranslationBuffer = () => finalTranslationBuffer.flush()
+        ws._youmiClearTranslationBuffer = () => finalTranslationBuffer.clear()
 
         const relayInterim = (text) => {
           relayInterimSeg += 1
@@ -619,14 +597,7 @@ export function attachLiveRealtimeWs(server) {
           if (!trimmed) return
           // Buffer this final into the current phrase; translate when a sentence
           // boundary / max length is reached, otherwise after a short pause.
-          pendingFinalBuffer = appendSegment(pendingFinalBuffer, trimmed)
-          pendingFinalLastId = id
-          if (shouldFlushBuffer(pendingFinalBuffer) === 'flush') {
-            flushFinalTranslationBuffer()
-          } else {
-            if (pendingFinalTimer) clearTimeout(pendingFinalTimer)
-            pendingFinalTimer = setTimeout(flushFinalTranslationBuffer, FINAL_BUFFER_DEBOUNCE_MS)
-          }
+          finalTranslationBuffer.push(id, trimmed)
         }
 
         if (liveProvider === 'dashscope') {
@@ -743,7 +714,10 @@ export function attachLiveRealtimeWs(server) {
                           }
                           if (!sessionWrapper || streamingSession !== sessionWrapper) return
                           streamingSession = null
-                          if (intentional) return
+                          if (intentional) {
+                            ws._youmiFlushTranslationBuffer?.()
+                            return
+                          }
 
                           reconnectBudget -= 1
                           const clientOpen = Boolean(clientRef.ws && clientRef.ws.readyState === clientRef.ws.OPEN)
@@ -867,6 +841,10 @@ export function attachLiveRealtimeWs(server) {
               onClose: (intentional) => {
                 if (streamingSession !== deepgramWrapper) return
                 streamingSession = null
+                if (intentional) {
+                  ws._youmiFlushTranslationBuffer?.()
+                  return
+                }
                 if (!intentional) {
                   // Unexpected upstream close after audio: settle the cost now
                   // (once-guarded; the client-WS close below funnels here too).
@@ -983,6 +961,10 @@ export function attachLiveRealtimeWs(server) {
               )
             }
             streamingSession = null
+            if (intentional) {
+              ws._youmiFlushTranslationBuffer?.()
+              return
+            }
             if (!intentional) {
               if (SRV_LIVE_VERBOSE) {
                 console.log('[YoumiLive][srv] unexpected close — closing client WS', JSON.stringify({ wsSessionId }))
@@ -1005,6 +987,9 @@ export function attachLiveRealtimeWs(server) {
         console.info('[liveRealtimeWs] stream_stop_received', JSON.stringify({ wsSessionId, frameCount }))
         if (SRV_LIVE_VERBOSE) console.log('[YoumiLive][srv] stream_stop', JSON.stringify({ wsSessionId }))
         streamingSession?.stop()   // graceful: sends LAST_PACKET, waits for server final
+        // Do not leave a dangling final-translation buffer behind the normal
+        // debounce; clients may tear down shortly after sending stream_stop.
+        ws._youmiFlushTranslationBuffer?.()
         // Cost ledger (Deepgram only; once-guarded funnel).
         if (typeof ws._youmiDeepgramCostFinalize === 'function') {
           ws._youmiDeepgramCostFinalize('stream_stop')
@@ -1115,6 +1100,7 @@ export function attachLiveRealtimeWs(server) {
         ws._youmiClearTranslationBuffer()
         ws._youmiClearTranslationBuffer = null
       }
+      ws._youmiFlushTranslationBuffer = null
     })
   })
 
