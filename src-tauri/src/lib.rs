@@ -341,7 +341,10 @@ pub fn run() {
 
       activate_main_for_auth_callback(&app);
       if !args.is_empty() {
-        log::info!("[single-instance] secondary launch args: {:?}", args);
+        log::info!(
+          "[single-instance] secondary launch args: {}",
+          summarize_secondary_launch_args(&args)
+        );
       }
     }));
   }
@@ -486,6 +489,17 @@ fn activate_main_for_auth_callback<R: Runtime>(app: &tauri::AppHandle<R>) {
   }
 }
 
+/// Do not log raw argv: custom-scheme auth callbacks can contain OAuth codes or
+/// Supabase implicit access/refresh tokens.
+#[cfg(all(not(target_os = "android"), not(target_os = "ios")))]
+fn summarize_secondary_launch_args(args: &[String]) -> String {
+  let deep_link_count = args
+    .iter()
+    .filter(|arg| arg.contains("lecturecompanion://"))
+    .count();
+  format!("count={} lecturecompanion_urls={}", args.len(), deep_link_count)
+}
+
 /// macOS: single-instance forwards `std::env::args()` from the secondary process. If the custom
 /// scheme appears there, emit the same event the deep-link plugin uses so the main webview runs
 /// `onOpenUrl` and updates Supabase session on the existing window.
@@ -520,4 +534,25 @@ fn collect_lecturecompanion_urls_from_args(args: &[String]) -> Vec<String> {
     }
   }
   out
+}
+
+#[cfg(all(test, not(target_os = "android"), not(target_os = "ios")))]
+mod tests {
+  use super::summarize_secondary_launch_args;
+
+  #[test]
+  fn secondary_launch_arg_summary_omits_auth_callback_secrets() {
+    let args = vec![
+      "youmi-lens".to_string(),
+      "lecturecompanion://auth-callback?code=pkce-secret&state=abc#access_token=token-secret"
+        .to_string(),
+      "--flag".to_string(),
+    ];
+
+    let summary = summarize_secondary_launch_args(&args);
+
+    assert_eq!(summary, "count=3 lecturecompanion_urls=1");
+    assert!(!summary.contains("pkce-secret"));
+    assert!(!summary.contains("token-secret"));
+  }
 }
