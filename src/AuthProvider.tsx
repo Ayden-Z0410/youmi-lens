@@ -92,13 +92,42 @@ function userForLog(s: Session | null): { id: string | null; email: string | nul
   }
 }
 
+const PASSWORD_RECOVERY_PENDING_KEY = 'youmi_lens_password_recovery_pending_v1'
+
+function readPasswordRecoveryPending(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(PASSWORD_RECOVERY_PENDING_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writePasswordRecoveryPending(pending: boolean): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (pending) {
+      window.localStorage.setItem(PASSWORD_RECOVERY_PENDING_KEY, '1')
+    } else {
+      window.localStorage.removeItem(PASSWORD_RECOVERY_PENDING_KEY)
+    }
+  } catch {
+    /* ignore unavailable storage */
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const configured = isSupabaseConfigured()
   const supabase = getSupabase()
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(configured)
   const [deepLinkAuthError, setDeepLinkAuthError] = useState<string | null>(null)
-  const [inPasswordRecovery, setInPasswordRecovery] = useState(false)
+  const [inPasswordRecovery, setInPasswordRecovery] = useState(readPasswordRecoveryPending)
+
+  const setPasswordRecoveryPending = useCallback((pending: boolean) => {
+    writePasswordRecoveryPending(pending)
+    setInPasswordRecovery(pending)
+  }, [])
 
   /**
    * Single bootstrap: subscribe first, then (Tauri) apply any pending deep-link auth before
@@ -118,9 +147,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // link). The recovery session must not route into AuthenticatedApp until the user finishes
       // setting a new password; cleared on SIGNED_OUT which follows updateUser({password}).
       if (event === 'PASSWORD_RECOVERY') {
-        setInPasswordRecovery(true)
+        setPasswordRecoveryPending(true)
       } else if (event === 'SIGNED_OUT') {
-        setInPasswordRecovery(false)
+        setPasswordRecoveryPending(false)
       }
     })
 
@@ -144,6 +173,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const applied = await applySessionFromSupabaseCallbackUrl(supabase, window.location.href, {
             source: 'webLocation',
           })
+          if (applied.isPasswordRecovery) {
+            setPasswordRecoveryPending(true)
+          }
           if (applied.session) {
             sessionFromCallback = applied.session
             if (!cancelled) setSession(applied.session)
@@ -193,6 +225,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 hasReturnedSession: Boolean(applied.session),
                 returnedUser: userForLog(applied.session),
               })
+              if (applied.isPasswordRecovery) {
+                setPasswordRecoveryPending(true)
+              }
               if (!applied.error) {
                 anyOk = true
                 if (applied.session) {
@@ -215,6 +250,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const finalSession = sessionFromCallback ?? data.session
       if (!cancelled) {
         setSession(finalSession)
+        if (!finalSession) {
+          setPasswordRecoveryPending(false)
+        }
         console.info('[Auth] startup getSession result:', {
           hasSession: Boolean(finalSession),
         })
@@ -230,7 +268,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       cancelled = true
       sub.subscription.unsubscribe()
     }
-  }, [supabase, configured])
+  }, [supabase, configured, setPasswordRecoveryPending])
 
   /** Runtime deep links (e.g. app already open). Sync session after exchange. */
   useEffect(() => {
@@ -267,6 +305,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 hasReturnedSession: Boolean(applied.session),
                 returnedUser: userForLog(applied.session),
               })
+              if (applied.isPasswordRecovery) {
+                setPasswordRecoveryPending(true)
+              }
               if (!applied.error) {
                 anyOk = true
                 if (applied.session) {
@@ -302,7 +343,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       unlisten?.()
     }
-  }, [supabase, configured])
+  }, [supabase, configured, setPasswordRecoveryPending])
 
   const signInWithGoogle = useCallback(async () => {
     if (!supabase) return
@@ -469,7 +510,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!error) {
         // Defensive: set recovery flag immediately so a race between this resolving and the
         // PASSWORD_RECOVERY event can never let App.tsx mount AuthenticatedApp first.
-        setInPasswordRecovery(true)
+        setPasswordRecoveryPending(true)
         return { error: null }
       }
       const raw = (error.message || '').toLowerCase()
@@ -479,7 +520,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       return { error: error.message || 'Could not verify the code.' }
     },
-    [supabase],
+    [supabase, setPasswordRecoveryPending],
   )
 
   const updatePassword = useCallback(
@@ -504,7 +545,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!supabase) return
     const { error } = await supabase.auth.signOut()
     if (error) throw error
-  }, [supabase])
+    setPasswordRecoveryPending(false)
+  }, [supabase, setPasswordRecoveryPending])
 
   const clearDeepLinkAuthError = useCallback(() => {
     setDeepLinkAuthError(null)
