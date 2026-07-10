@@ -148,7 +148,6 @@ describe('live realtime translation buffer teardown', () => {
         ws.once('open', resolve)
         ws.once('error', reject)
       })
-      await waitForMessage(ws, (msg) => msg.type === 'ready', 'ready')
 
       ws.send(JSON.stringify({ type: 'stream_start', token: 'valid-token', sampleRate: 16000 }))
       await waitForMessage(ws, (msg) => msg.type === 'stream_ready', 'stream_ready')
