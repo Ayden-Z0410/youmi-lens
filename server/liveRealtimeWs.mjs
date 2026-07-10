@@ -299,11 +299,13 @@ export function attachLiveRealtimeWs(server) {
           ws._youmiDeepgramCostFinalize('restart')
           ws._youmiDeepgramCostFinalize = null
         }
-        // Drop any pending translation buffer/timer from the previous segment.
-        if (typeof ws._youmiClearTranslationBuffer === 'function') {
-          ws._youmiClearTranslationBuffer()
-          ws._youmiClearTranslationBuffer = null
+        // Re-stream_start on the same WS ends the previous segment: translate any
+        // buffered final text before replacing the upstream session.
+        if (typeof ws._youmiFlushTranslationBuffer === 'function') {
+          ws._youmiFlushTranslationBuffer()
+          ws._youmiFlushTranslationBuffer = null
         }
+        if (typeof ws._youmiClearTranslationBuffer === 'function') ws._youmiClearTranslationBuffer = null
         streamSegment += 1
         if (streamingSession) {
           streamingSession.destroy()
@@ -523,8 +525,10 @@ export function attachLiveRealtimeWs(server) {
           if (!translationEnabled()) return
           enqueueFinalTranslation(id, text)
         }
-        // Cross-scope cleanup: re-stream_start and WS close clear a stray buffer
-        // timer (same pattern as ws._youmiLiveSessionEnd / cost finalize refs).
+        // Cross-scope lifecycle hooks (same pattern as ws._youmiLiveSessionEnd /
+        // cost finalize refs). Flush while the socket can still deliver; clear is
+        // only for post-close cleanup.
+        ws._youmiFlushTranslationBuffer = flushFinalTranslationBuffer
         ws._youmiClearTranslationBuffer = () => {
           if (pendingFinalTimer) {
             clearTimeout(pendingFinalTimer)
@@ -743,6 +747,9 @@ export function attachLiveRealtimeWs(server) {
                           }
                           if (!sessionWrapper || streamingSession !== sessionWrapper) return
                           streamingSession = null
+                          if (typeof ws._youmiFlushTranslationBuffer === 'function') {
+                            ws._youmiFlushTranslationBuffer()
+                          }
                           if (intentional) return
 
                           reconnectBudget -= 1
@@ -867,6 +874,9 @@ export function attachLiveRealtimeWs(server) {
               onClose: (intentional) => {
                 if (streamingSession !== deepgramWrapper) return
                 streamingSession = null
+                if (typeof ws._youmiFlushTranslationBuffer === 'function') {
+                  ws._youmiFlushTranslationBuffer()
+                }
                 if (!intentional) {
                   // Unexpected upstream close after audio: settle the cost now
                   // (once-guarded; the client-WS close below funnels here too).
@@ -983,6 +993,9 @@ export function attachLiveRealtimeWs(server) {
               )
             }
             streamingSession = null
+            if (typeof ws._youmiFlushTranslationBuffer === 'function') {
+              ws._youmiFlushTranslationBuffer()
+            }
             if (!intentional) {
               if (SRV_LIVE_VERBOSE) {
                 console.log('[YoumiLive][srv] unexpected close — closing client WS', JSON.stringify({ wsSessionId }))
@@ -1004,6 +1017,9 @@ export function attachLiveRealtimeWs(server) {
       if (msg?.type === 'stream_stop') {
         console.info('[liveRealtimeWs] stream_stop_received', JSON.stringify({ wsSessionId, frameCount }))
         if (SRV_LIVE_VERBOSE) console.log('[YoumiLive][srv] stream_stop', JSON.stringify({ wsSessionId }))
+        if (typeof ws._youmiFlushTranslationBuffer === 'function') {
+          ws._youmiFlushTranslationBuffer()
+        }
         streamingSession?.stop()   // graceful: sends LAST_PACKET, waits for server final
         // Cost ledger (Deepgram only; once-guarded funnel).
         if (typeof ws._youmiDeepgramCostFinalize === 'function') {
@@ -1114,6 +1130,9 @@ export function attachLiveRealtimeWs(server) {
       if (typeof ws._youmiClearTranslationBuffer === 'function') {
         ws._youmiClearTranslationBuffer()
         ws._youmiClearTranslationBuffer = null
+      }
+      if (typeof ws._youmiFlushTranslationBuffer === 'function') {
+        ws._youmiFlushTranslationBuffer = null
       }
     })
   })
