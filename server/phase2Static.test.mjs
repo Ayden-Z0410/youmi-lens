@@ -73,6 +73,12 @@ describe('Phase 2 active path guarantees', () => {
     expect(source).toContain('recordBetaUsage')
   })
 
+  it('/api/live-realtime-ws stops streaming sessions when the session limit fires', () => {
+    const source = read('./liveRealtimeWs.mjs')
+    expect(source).toMatch(/live_session_limit_reached[\s\S]{0,500}streamingSession\.stop\(\)/)
+    expect(source).not.toMatch(/live_session_limit_reached[\s\S]{0,500}streamingSession\.finish\(\)/)
+  })
+
   it('/api/beta-usage-status resolves effective quota instead of stored plan only', () => {
     const source = read('./betaUsageStatus.mjs')
     expect(source).toContain('getEffectiveQuota(user.userId, user.email)')
