@@ -59,3 +59,79 @@ export function shouldFlushBuffer(buffer, { maxChars = FINAL_BUFFER_MAX_CHARS } 
   if (endsSentence(t)) return 'flush' // clear sentence boundary
   return 'wait' // keep accumulating
 }
+
+/**
+ * Stateful lifecycle wrapper used by the WebSocket relay. It keeps timers out of
+ * the pure segmentation helpers while making stop/restart teardown flushable and
+ * idempotent.
+ */
+export function createFinalTranslationBuffer({
+  enqueue,
+  isEnabled = () => true,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+  debounceMs = FINAL_BUFFER_DEBOUNCE_MS,
+} = {}) {
+  if (typeof enqueue !== 'function') {
+    throw new TypeError('createFinalTranslationBuffer requires an enqueue function')
+  }
+
+  let buffer = ''
+  let lastId = null
+  let timer = null
+
+  const cancelTimer = () => {
+    if (timer) {
+      clearTimer(timer)
+      timer = null
+    }
+  }
+
+  const reset = () => {
+    buffer = ''
+    lastId = null
+  }
+
+  const flush = () => {
+    cancelTimer()
+    const text = buffer.trim()
+    const id = lastId
+    reset()
+    if (!id || !text) return false
+    if (!isEnabled()) return false
+    enqueue(id, text)
+    return true
+  }
+
+  const clear = () => {
+    cancelTimer()
+    reset()
+  }
+
+  const appendFinal = (id, text) => {
+    if (!isEnabled()) {
+      clear()
+      return 'skipped'
+    }
+    const trimmed = typeof text === 'string' ? text.trim() : ''
+    if (!id || !trimmed) return 'skipped'
+
+    buffer = appendSegment(buffer, trimmed)
+    lastId = id
+
+    if (shouldFlushBuffer(buffer) === 'flush') {
+      return flush() ? 'flushed' : 'skipped'
+    }
+
+    cancelTimer()
+    timer = setTimer(flush, debounceMs)
+    return 'buffered'
+  }
+
+  return {
+    appendFinal,
+    flush,
+    clear,
+    hasPending: () => Boolean(buffer.trim()),
+  }
+}

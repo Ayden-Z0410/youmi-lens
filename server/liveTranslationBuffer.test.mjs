@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   appendSegment,
+  createFinalTranslationBuffer,
   endsSentence,
   endsWithConnector,
   shouldFlushBuffer,
+  FINAL_BUFFER_DEBOUNCE_MS,
   FINAL_BUFFER_MAX_CHARS,
 } from './liveTranslationBuffer.mjs'
 
@@ -79,5 +81,34 @@ describe('liveTranslationBuffer segmentation', () => {
   it('treats CJK sentence punctuation as a boundary', () => {
     expect(endsSentence('这是一个句子。')).toBe(true)
     expect(shouldFlushBuffer('这是一个句子。')).toBe('flush')
+  })
+})
+
+describe('liveTranslationBuffer lifecycle', () => {
+  it('flushes a trailing unpunctuated final on teardown before debounce fires', () => {
+    const emitted = []
+    let scheduled = null
+    const buffer = createFinalTranslationBuffer({
+      enqueue: (id, text) => emitted.push({ id, text }),
+      setTimer: (fn, ms) => {
+        scheduled = { fn, ms }
+        return scheduled
+      },
+      clearTimer: (timer) => {
+        if (scheduled === timer) scheduled = null
+      },
+    })
+
+    expect(buffer.appendFinal('seg-1', 'Today we are going to talk about')).toBe('buffered')
+    expect(scheduled?.ms).toBe(FINAL_BUFFER_DEBOUNCE_MS)
+
+    expect(buffer.flush()).toBe(true)
+    expect(scheduled).toBeNull()
+    expect(emitted).toEqual([
+      { id: 'seg-1', text: 'Today we are going to talk about' },
+    ])
+
+    expect(buffer.flush()).toBe(false)
+    expect(emitted).toHaveLength(1)
   })
 })
