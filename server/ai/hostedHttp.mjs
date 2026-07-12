@@ -5,6 +5,7 @@
 import multer from 'multer'
 import * as youmiHosted from './hosted/youmiHosted.mjs'
 import { CLIENT_SAFE_UNAVAILABLE } from './errors.mjs'
+import { qwenLanguageFor } from '../contentLanguages.mjs'
 import {
   verifyJwt,
   getEffectiveQuota,
@@ -170,7 +171,8 @@ export async function handleHostedTranslateCaption(req, res) {
   }
 
   try {
-    const out = await youmiHosted.translateText(text, target)
+    const appTarget = target === 'zh' ? 'zh-Hans' : 'en'
+    const out = await youmiHosted.translateText(text, qwenLanguageFor(appTarget).name)
     res.json({ text: out })
   } catch (e) {
     console.warn('[hosted/translate-caption]', e)

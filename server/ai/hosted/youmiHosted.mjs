@@ -177,7 +177,7 @@ async function chatCompleteJson(messages, opts = {}) {
  * Recorded lecture transcription via DashScope Paraformer (official file ASR).
  * @param {string} fileUrl HTTPS URL reachable from DashScope (e.g. Supabase signed URL).
  */
-export async function transcribeAudioFromUrl(fileUrl) {
+export async function transcribeAudioFromUrl(fileUrl, languageHints) {
   if (STUB_ENABLED) {
     await stubDelay()
     return `Demo transcript (${new Date().toLocaleTimeString()}): Lecture audio processed in local development mode.`
@@ -187,7 +187,7 @@ export async function transcribeAudioFromUrl(fileUrl) {
     const text = await withDashScopeHttpFallback({
       name: 'paraformer_transcribe_url',
       op: async (att) => {
-        const taskId = await submitParaformerTask(att.key, att.bases, fileUrl)
+        const taskId = await submitParaformerTask(att.key, att.bases, fileUrl, languageHints)
         const output = await pollParaformerTask(att.key, att.bases, taskId)
         return transcriptTextFromParaformerOutput(output)
       },
@@ -208,7 +208,7 @@ export async function transcribeAudioFromUrl(fileUrl) {
   return transcribeAudio(ab, mime, `lecture.${ext}`)
 }
 
-async function submitParaformerTask(apiKey, bases, fileUrl) {
+async function submitParaformerTask(apiKey, bases, fileUrl, languageHints) {
   const submitUrl = bases.paraformerSubmit
   const r = await dashScopeFetch(submitUrl, {
     method: 'POST',
@@ -222,7 +222,7 @@ async function submitParaformerTask(apiKey, bases, fileUrl) {
       input: { file_urls: [fileUrl] },
       parameters: {
         channel_id: [0],
-        language_hints: parseLanguageHints(),
+        language_hints: Array.isArray(languageHints) && languageHints.length ? languageHints : parseLanguageHints(),
       },
     }),
   })
@@ -389,16 +389,14 @@ export async function transcribeAudio(arrayBuffer, mime, filename) {
   return json.text ?? ''
 }
 
-export async function translateText(text, target) {
+export async function translateText(text, target, source = 'English') {
   if (STUB_ENABLED) {
     await stubDelay(90)
-    return target === 'zh' ? `【开发演示】${text}` : `[Demo] ${text}`
+    return target === 'Simplified Chinese' ? `【开发演示】${text}` : `[Demo] ${text}`
   }
-  if (target !== 'zh' && target !== 'en') throw new Error('BAD_TARGET')
-  const system =
-    target === 'zh'
-      ? 'You translate live classroom captions. Output Simplified Chinese only. Keep natural lecture tone. Output only the translation, no quotes, labels, or explanations.'
-      : 'You translate live classroom captions into natural English. Output only the translation, no quotes, labels, or explanations.'
+  const supportedTargets = new Set(['English', 'Simplified Chinese', 'Japanese', 'French', 'Spanish', 'Korean'])
+  if (!supportedTargets.has(target)) throw new Error('BAD_TARGET')
+  const system = `You translate live classroom captions from ${source} into ${target}. Keep a natural lecture tone. Output only the translation, with no quotes, labels, or explanations.`
   const out = await chatCompleteJson(
     [
       { role: 'system', content: system },

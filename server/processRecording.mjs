@@ -12,6 +12,7 @@ import {
   recordBetaUsage,
   BETA_ERROR_CODES,
 } from './betaGate.mjs'
+import { qwenLanguageFor, resolveContentLanguagePair, shouldTranslate } from './contentLanguages.mjs'
 
 const BUCKET = 'lecture-audio'
 
@@ -150,13 +151,15 @@ function chunkTranscriptForTranslation(text, maxChars = TRANSCRIPT_TRANSLATE_CHU
  * Throws if any chunk fails — the caller treats translation as best-effort and
  * never fails the job over it.
  */
-async function translateTranscriptToChinese(transcriptEn) {
-  const chunks = chunkTranscriptForTranslation(transcriptEn)
+async function translateTranscript(transcript, sourceLanguage, translationLanguage) {
+  const chunks = chunkTranscriptForTranslation(transcript)
   if (chunks.length === 0) return ''
+  const source = qwenLanguageFor(sourceLanguage)
+  const target = qwenLanguageFor(translationLanguage)
   const out = []
   for (let i = 0; i < chunks.length; i += 1) {
-    const zh = await youmiHosted.translateText(chunks[i], 'zh')
-    out.push(typeof zh === 'string' ? zh.trim() : '')
+    const translated = await youmiHosted.translateText(chunks[i], target.name, source.name)
+    out.push(typeof translated === 'string' ? translated.trim() : '')
   }
   return out.join('\n\n').trim()
 }
@@ -167,27 +170,11 @@ async function translateTranscriptToChinese(transcriptEn) {
  * or any write error is logged and swallowed so the English transcript and
  * summaries are unaffected.
  */
-async function persistTranscriptZh(dbSb, recordingId, userId, transcriptZh) {
-  const { error } = await dbSb
-    .from('recordings')
-    .update({ transcript_zh: transcriptZh })
-    .eq('id', recordingId)
-    .eq('user_id', userId)
-  if (error) {
-    console.warn(
-      '[process-recording] transcript_zh_update_failed',
-      JSON.stringify({
-        recordingId,
-        migrationHint: 'Run supabase-migration-transcript-zh.sql to add the transcript_zh column.',
-        message: error.message,
-        code: error.code,
-        details: error.details,
-        hint: error.hint,
-      }),
-    )
-    return false
-  }
-  return true
+async function persistTranslatedTranscript(dbSb, recordingId, userId, translated, translationLanguage) {
+  const patch = { translated_transcript: translated }
+  if (translationLanguage === 'zh-Hans') patch.transcript_zh = translated
+  const { error } = await dbSb.from('recordings').update(patch).eq('id', recordingId).eq('user_id', userId)
+  if (error) throw error
 }
 
 /**
@@ -386,7 +373,7 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
     const metaClient = usingServiceRoleForRecordings ? dbSb : userSb
     const { data: row, error: metaErr } = await metaClient
       .from('recordings')
-      .select('storage_path,course,title')
+      .select('storage_path,course,title,source_language,translation_language')
       .eq('id', recordingId)
       .eq('user_id', userId)
       .maybeSingle()
@@ -414,6 +401,10 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
       await markFailed('Invalid storage path for this recording.')
       return
     }
+    const { sourceLanguage, translationLanguage } = resolveContentLanguagePair({
+      sourceLanguage: row.source_language,
+      translationLanguage: row.translation_language,
+    })
 
     const { error: stErr } = await dbSb
       .from('recordings')
@@ -472,7 +463,7 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
     let transcriptRaw
     try {
       jobLog('transcribe_begin', { recordingId })
-      transcriptRaw = await youmiHosted.transcribeAudioFromUrl(signed.signedUrl)
+      transcriptRaw = await youmiHosted.transcribeAudioFromUrl(signed.signedUrl, [qwenLanguageFor(sourceLanguage).code])
       jobLog('transcribe_done', { recordingId, textLen: transcriptRaw?.length ?? 0 })
     } catch (e) {
       console.warn('[process-recording] transcribe', e)
@@ -587,16 +578,16 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
     // study support. A failure here must never fail the job — the English
     // transcript is already persisted and the summaries stand on their own.
     const canTranslate = youmiHosted.hostedCapabilities().translate
-    if (canTranslate) {
+    if (canTranslate && shouldTranslate(sourceLanguage, translationLanguage)) {
       try {
         jobLog('transcript_translate_begin', {
           recordingId,
           transcriptLen: transcriptCanonical.length,
         })
-        const transcriptZh = await translateTranscriptToChinese(transcriptCanonical)
-        if (transcriptZh) {
-          await persistTranscriptZh(dbSb, recordingId, userId, transcriptZh)
-          jobLog('transcript_translate_done', { recordingId, transcriptZhLen: transcriptZh.length })
+        const translatedTranscript = await translateTranscript(transcriptCanonical, sourceLanguage, translationLanguage)
+        if (translatedTranscript) {
+          await persistTranslatedTranscript(dbSb, recordingId, userId, translatedTranscript, translationLanguage)
+          jobLog('transcript_translate_done', { recordingId, translatedTranscriptLen: translatedTranscript.length, translationLanguage })
         } else {
           jobLog('transcript_translate_empty', { recordingId })
         }
@@ -609,7 +600,7 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
         })
       }
     } else {
-      jobLog('transcript_translate_skipped', { recordingId, reason: 'translate_unconfigured' })
+      jobLog('transcript_translate_skipped', { recordingId, reason: canTranslate ? 'source_equals_target' : 'translate_unconfigured' })
     }
 
     const canSummarize = youmiHosted.hostedCapabilities().summarize
