@@ -296,6 +296,10 @@ export function attachLiveRealtimeWs(server) {
           ? liveGate.maxSessionMinutes * 60 * 1000
           : null
         const liveSessionStartMs = Date.now()
+        // A live caption session starts before any public.recordings row exists.
+        // beta_usage.recording_id is a nullable UUID identity for a real recording;
+        // the short wsSessionId belongs only to session/cost-ledger metadata.
+        const liveUsageRecordingUuid = null
         // ────────────────────────────────────────────────────────────────
 
         pendingPcm.length = 0
@@ -333,7 +337,13 @@ export function attachLiveRealtimeWs(server) {
               message: `Live caption session limit reached (${liveGate.maxSessionMinutes} min). ${BETA_LIMIT_MESSAGE}`,
             })
             if (streamingSession) { try { streamingSession.finish() } catch { /* ignore */ } }
-            void recordBetaUsage(liveUser.userId, liveUser.email, wsSessionId, 'live_caption_session', sessionSec)
+            void recordBetaUsage(
+              liveUser.userId,
+              liveUser.email,
+              liveUsageRecordingUuid,
+              'live_caption_session',
+              sessionSec,
+            )
             // Cost ledger (Deepgram only; no-op otherwise). Once-guarded — the
             // later WS close path can call the funnel again without double-write.
             if (typeof ws._youmiDeepgramCostFinalize === 'function') {
@@ -349,7 +359,13 @@ export function attachLiveRealtimeWs(server) {
             sessionLimitTimer = null
           }
           const sessionSec = Math.round((Date.now() - liveSessionStartMs) / 1000)
-          void recordBetaUsage(liveUser.userId, liveUser.email, wsSessionId, 'live_caption_session', sessionSec)
+          void recordBetaUsage(
+            liveUser.userId,
+            liveUser.email,
+            liveUsageRecordingUuid,
+            'live_caption_session',
+            sessionSec,
+          )
         }
         // Attach close-time cleanup (replaces any prior onLiveSessionEnd ref)
         ws._youmiLiveSessionEnd = onLiveSessionEnd
