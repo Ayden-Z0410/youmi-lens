@@ -108,16 +108,13 @@ function getVerifierForEnvironment(environment) {
 }
 
 /**
- * Apple environments to attempt, in order. The configured APPLE_IAP_ENVIRONMENT
- * is preferred, then Production, then Sandbox. ONE backend therefore serves both
- * TestFlight (Sandbox transactions) and the App Store (Production transactions):
- * Apple embeds the environment inside the signed transaction, so we accept
- * whichever environment cryptographically verifies instead of rejecting on a
- * single static config (which would make either TestFlight or production fail).
+ * Apple environments to attempt, in order. A production backend must not accept
+ * Sandbox transactions: sandbox JWS payloads are cryptographically valid, but
+ * they do not represent paid App Store purchases. TestFlight/staging should run
+ * with APPLE_IAP_ENVIRONMENT=Sandbox.
  */
 export function environmentTryOrder() {
-  const order = [appleEnvironment(), Environment.PRODUCTION, Environment.SANDBOX]
-  return [...new Set(order)]
+  return [appleEnvironment()]
 }
 
 /**
@@ -248,10 +245,10 @@ export async function verifyAppleTransaction(input = {}) {
     throw new Error('signedTransactionInfo or purchaseToken is required')
   }
 
-  const { decoded, environment } = await verifyAndDecodeTransactionAnyEnvironment(signedTransactionInfo)
+  const { decoded } = await verifyAndDecodeTransactionAnyEnvironment(signedTransactionInfo)
   const normalized = normalizeDecodedTransaction(decoded, {
     expectedBundleId: requiredEnv('APPLE_BUNDLE_ID'),
-    expectedEnvironment: environment,
+    expectedEnvironment: appleEnvironment(),
   })
 
   if (input.productId && input.productId !== normalized.productId) {
@@ -285,11 +282,10 @@ export async function verifyAppleNotification(signedPayload) {
   let transaction = null
   const signedTransactionInfo = decoded?.data?.signedTransactionInfo
   if (signedTransactionInfo) {
-    const { decoded: decodedTx, environment: txEnvironment } =
-      await verifyAndDecodeTransactionAnyEnvironment(signedTransactionInfo)
+    const { decoded: decodedTx } = await verifyAndDecodeTransactionAnyEnvironment(signedTransactionInfo)
     transaction = normalizeDecodedTransaction(decodedTx, {
       expectedBundleId: requiredEnv('APPLE_BUNDLE_ID'),
-      expectedEnvironment: txEnvironment,
+      expectedEnvironment: appleEnvironment(),
     })
   }
 

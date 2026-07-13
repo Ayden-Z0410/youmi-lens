@@ -193,6 +193,26 @@ async function revokeByTransaction(db, transactionId, revokedAtIso) {
 
 // ── Verify (core) ────────────────────────────────────────────────────────────
 
+export function resolveExistingGrantReplay(existingGrant, verified, nowMs = Date.now()) {
+  if (verified.revoked) {
+    return {
+      granted: false,
+      code: 'revoked',
+      ledgerStatus: 'revoked',
+      revoke: true,
+    }
+  }
+  return {
+    granted:
+      existingGrant.status === 'active' &&
+      !existingGrant.revoked_at &&
+      new Date(existingGrant.expires_at).getTime() > nowMs,
+    code: 'idempotent_replay',
+    ledgerStatus: existingGrant.status,
+    revoke: false,
+  }
+}
+
 function safeIapError(err) {
   if (isAppleIapLedgerUnavailableError(err)) {
     return { status: 503, error: 'iap_temporarily_unavailable', message: 'In-app purchase service is temporarily unavailable.' }
@@ -229,13 +249,21 @@ async function verifyAndPersist(db, user, payload) {
     : null
 
   if (existingGrant) {
-    await persistTransaction(db, user.userId, verified, product, existingGrant.status, binding)
+    const replay = resolveExistingGrantReplay(existingGrant, verified)
+    await persistTransaction(db, user.userId, verified, product, replay.ledgerStatus, binding)
+    if (replay.revoke) {
+      await revokeByTransaction(db, verified.transactionId, verified.revokedAt)
+      await recordBillingEvent(db, user.userId, {
+        event_type: 'grant',
+        product_id: verified.productId,
+        transaction_id: verified.transactionId,
+        environment: verified.environment,
+        detail: { granted: false, reason: 'revoked', replay: true },
+      })
+    }
     return {
-      granted:
-        existingGrant.status === 'active' &&
-        !existingGrant.revoked_at &&
-        new Date(existingGrant.expires_at).getTime() > Date.now(),
-      code: 'idempotent_replay',
+      granted: replay.granted,
+      code: replay.code,
     }
   }
 
