@@ -43,6 +43,21 @@ function log(tag: string, fields?: Record<string, unknown>) {
   else console.info(`[LiveEngine][YoumiAdapter] ${tag}`)
 }
 
+const FATAL_STREAM_ERROR_CODES = new Set([
+  'auth_required',
+  'quota_required',
+  'beta_limit_reached',
+  'recording_too_long',
+  'daily_recording_limit_reached',
+  'daily_minutes_limit_reached',
+  'quota_suspended',
+  'session_limit_reached',
+])
+
+export function isFatalStreamErrorCode(reason: string) {
+  return FATAL_STREAM_ERROR_CODES.has(reason)
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 // Speech onset threshold (Int16 ±32767). Filters out silence before first word.
@@ -513,6 +528,24 @@ export class YoumiLiveAdapter {
 
       onError: (reason) => {
         if (!ref.active || this.closed || gen !== this.sessionInitGeneration) return
+        if (isFatalStreamErrorCode(reason)) {
+          log('FATAL - stream error', { reason })
+          ref.active = false
+          this.closed = true
+          this.sessionReady = false
+          this.upstreamHandshakeComplete = false
+          this.boundSampleRate = null
+          this.pcmQueue = []
+          this.rejectAllHandshakeWaiters(new Error(String(reason)))
+          this.clearHandshakeTimeout()
+          this.clearWarmIdleTimer()
+          const dying = this.session
+          this.session = null
+          setTimeout(() => dying?.destroy(), 0)
+          this.abandonCurrentSegment('fatal_session_error')
+          this.listener?.({ type: 'error', code: reason, message: reason, recoverable: false })
+          return
+        }
         log('RECONNECT — session error', { reason, segId: this.currentSegId || '(none)' })
         ref.active = false
         this.sessionReady = false

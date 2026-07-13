@@ -2333,7 +2333,8 @@ function RecordingWorkspace({
         // Beta gate errors: show specific quota message, do not attempt reconnect
         const BETA_CODES = new Set([
           'beta_limit_reached', 'recording_too_long', 'daily_recording_limit_reached',
-          'quota_suspended', 'auth_required', 'session_limit_reached',
+          'daily_minutes_limit_reached', 'quota_suspended', 'auth_required',
+          'quota_required', 'session_limit_reached',
         ])
         if (BETA_CODES.has(ev.code)) {
           const betaMsg = ev.code === 'auth_required'
