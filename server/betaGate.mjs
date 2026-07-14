@@ -750,11 +750,11 @@ export async function checkHostedActionAllowed(quota, userId) {
  * Record a beta usage event. Best-effort — never throws.
  * @param {string} userId
  * @param {string} email
- * @param {string|null} recordingId
+ * @param {string|null} recordingUuid  Real public.recordings.id UUID, or null when no recording exists.
  * @param {string} actionType
  * @param {number} durationSec
  */
-export async function recordBetaUsage(userId, email, recordingId, actionType, durationSec = 0) {
+export async function recordBetaUsage(userId, email, recordingUuid, actionType, durationSec = 0) {
   const db = getAdminClient()
   if (!db) return
   const BILLABLE_ACTIONS = new Set(['process_recording', 'regenerate_summary'])
@@ -765,7 +765,7 @@ export async function recordBetaUsage(userId, email, recordingId, actionType, du
     const { error } = await db.from('beta_usage').insert({
       user_id: userId,
       email: (email || '').toLowerCase(),
-      recording_id: recordingId || null,
+      recording_id: recordingUuid || null,
       action_type: actionType,
       duration_sec: Math.round(durationSec) || 0,
       billable_minutes: billableMinutes,

@@ -31,6 +31,7 @@ import {
   recordBetaUsage,
   BETA_ERROR_CODES,
 } from './betaGate.mjs'
+import { resolveContentLanguagePair } from './contentLanguages.mjs'
 
 const BUCKET = 'lecture-audio'
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024 // 500 MB
@@ -100,6 +101,9 @@ export async function handleUploadAudio(req, res) {
     title: rawTitle,
     live_transcript: rawLiveTranscript,
     live_transcript_raw: rawLiveTranscriptRaw,
+    translated_live_transcript: rawTranslatedLiveTranscript,
+    source_language: rawSourceLanguage,
+    translation_language: rawTranslationLanguage,
   } = req.body
   if (!recordingId || typeof recordingId !== 'string' || !/^[\w-]{8,}$/.test(recordingId)) {
     return res.status(400).json({ error: 'invalid_request', message: 'Invalid or missing recordingId' })
@@ -114,6 +118,11 @@ export async function handleUploadAudio(req, res) {
   const title = cleanText(rawTitle, 'Lecture')
   const liveTranscript = nullableText(rawLiveTranscript)
   const liveTranscriptRaw = nullableText(rawLiveTranscriptRaw)
+  const translatedLiveTranscript = nullableText(rawTranslatedLiveTranscript)
+  const { sourceLanguage, translationLanguage } = resolveContentLanguagePair({
+    sourceLanguage: rawSourceLanguage,
+    translationLanguage: rawTranslationLanguage,
+  })
 
   // ── Beta gate: per-recording duration check ───────────────────────────────
   if (durationSec > 0) {
@@ -223,6 +232,9 @@ export async function handleUploadAudio(req, res) {
     storage_path: storagePath,
     live_transcript: liveTranscript,
     live_transcript_raw: liveTranscriptRaw,
+    translated_live_transcript: translatedLiveTranscript,
+    source_language: sourceLanguage,
+    translation_language: translationLanguage,
     ai_status: 'pending',
     ai_error: null,
     ai_updated_at: nowIso,

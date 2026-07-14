@@ -20,6 +20,7 @@
  */
 
 import { buildSummarizeMessages } from '../summarizePrompt.mjs'
+import { qwenLanguageFor, resolveContentLanguagePair, shouldTranslate } from '../../contentLanguages.mjs'
 import {
   getDashScopeEffectiveKey,
   getDashScopeEnvSummary,
@@ -177,7 +178,7 @@ async function chatCompleteJson(messages, opts = {}) {
  * Recorded lecture transcription via DashScope Paraformer (official file ASR).
  * @param {string} fileUrl HTTPS URL reachable from DashScope (e.g. Supabase signed URL).
  */
-export async function transcribeAudioFromUrl(fileUrl) {
+export async function transcribeAudioFromUrl(fileUrl, languageHints) {
   if (STUB_ENABLED) {
     await stubDelay()
     return `Demo transcript (${new Date().toLocaleTimeString()}): Lecture audio processed in local development mode.`
@@ -187,7 +188,7 @@ export async function transcribeAudioFromUrl(fileUrl) {
     const text = await withDashScopeHttpFallback({
       name: 'paraformer_transcribe_url',
       op: async (att) => {
-        const taskId = await submitParaformerTask(att.key, att.bases, fileUrl)
+        const taskId = await submitParaformerTask(att.key, att.bases, fileUrl, languageHints)
         const output = await pollParaformerTask(att.key, att.bases, taskId)
         return transcriptTextFromParaformerOutput(output)
       },
@@ -208,7 +209,7 @@ export async function transcribeAudioFromUrl(fileUrl) {
   return transcribeAudio(ab, mime, `lecture.${ext}`)
 }
 
-async function submitParaformerTask(apiKey, bases, fileUrl) {
+async function submitParaformerTask(apiKey, bases, fileUrl, languageHints) {
   const submitUrl = bases.paraformerSubmit
   const r = await dashScopeFetch(submitUrl, {
     method: 'POST',
@@ -222,7 +223,7 @@ async function submitParaformerTask(apiKey, bases, fileUrl) {
       input: { file_urls: [fileUrl] },
       parameters: {
         channel_id: [0],
-        language_hints: parseLanguageHints(),
+        language_hints: Array.isArray(languageHints) && languageHints.length ? languageHints : parseLanguageHints(),
       },
     }),
   })
@@ -389,16 +390,14 @@ export async function transcribeAudio(arrayBuffer, mime, filename) {
   return json.text ?? ''
 }
 
-export async function translateText(text, target) {
+export async function translateText(text, target, source = 'English') {
   if (STUB_ENABLED) {
     await stubDelay(90)
-    return target === 'zh' ? `【开发演示】${text}` : `[Demo] ${text}`
+    return target === 'Simplified Chinese' ? `【开发演示】${text}` : `[Demo] ${text}`
   }
-  if (target !== 'zh' && target !== 'en') throw new Error('BAD_TARGET')
-  const system =
-    target === 'zh'
-      ? 'You translate live classroom captions. Output Simplified Chinese only. Keep natural lecture tone. Output only the translation, no quotes, labels, or explanations.'
-      : 'You translate live classroom captions into natural English. Output only the translation, no quotes, labels, or explanations.'
+  const supportedTargets = new Set(['English', 'Simplified Chinese', 'Japanese', 'French', 'Spanish', 'Korean'])
+  if (!supportedTargets.has(target)) throw new Error('BAD_TARGET')
+  const system = `You translate live classroom captions from ${source} into ${target}. Keep a natural lecture tone. Output only the translation, with no quotes, labels, or explanations.`
   const out = await chatCompleteJson(
     [
       { role: 'system', content: system },
@@ -409,18 +408,35 @@ export async function translateText(text, target) {
   return out.trim()
 }
 
-export async function summarizeTranscript(transcript, course, title) {
-  console.warn('[youmiHosted] summarizeTranscript begin', { courseLen: course?.length, titleLen: title?.length })
+/**
+ * Summarize a lecture transcript into a source-language summary and, when the
+ * lecture's target differs, a translated summary — in a SINGLE model call.
+ *
+ * @param {string} transcript
+ * @param {string} course
+ * @param {string} title
+ * @param {{ sourceLanguage?: string, translationLanguage?: string }} [options]
+ * @returns {Promise<{ sourceSummary: string, translatedSummary: string|null, usage: object|null }>}
+ *   `translatedSummary` is null when source === target (one summary only).
+ */
+export async function summarizeTranscript(transcript, course, title, options = {}) {
+  const { sourceLanguage, translationLanguage } = resolveContentLanguagePair(options)
+  const needTranslated = shouldTranslate(sourceLanguage, translationLanguage)
+  const sourceName = qwenLanguageFor(sourceLanguage).name
+  const targetName = qwenLanguageFor(translationLanguage).name
+  console.warn('[youmiHosted] summarizeTranscript begin', {
+    courseLen: course?.length, titleLen: title?.length, sourceLanguage, translationLanguage, needTranslated,
+  })
   if (STUB_ENABLED) {
     await stubDelay(180)
     const label = [course, title].filter(Boolean).join(' - ') || 'Lecture'
     return {
-      summaryEn: `Demo summary for ${label}. Key points were generated in stub mode for local development.`,
-      summaryZh: `${label} 的演示摘要：当前为本地开发 Stub 模式，内容用于流程验证。`,
+      sourceSummary: `[${sourceName}] Demo summary for ${label}. Stub mode for local development.`,
+      translatedSummary: needTranslated ? `[${targetName}] Demo translated summary for ${label}.` : null,
       usage: null, // stub path makes no real model request → nothing to meter
     }
   }
-  const messages = buildSummarizeMessages(transcript, course, title)
+  const messages = buildSummarizeMessages(transcript, course, title, { sourceName, targetName, needTranslated })
   // Collects token usage from the DashScope chat response (empty if the call
   // fell back to OpenAI or the response carried no usage block).
   const usageOut = {}
@@ -436,11 +452,17 @@ export async function summarizeTranscript(transcript, course, title) {
   } catch {
     throw new Error('HOSTED_SUMMARY_PARSE')
   }
-  const summaryEn = parsed.summary_en?.trim()
-  const summaryZh = parsed.summary_zh?.trim()
-  if (!summaryEn || !summaryZh) throw new Error('HOSTED_SUMMARY_SHAPE')
-  console.warn('[youmiHosted] summarizeTranscript done', { summaryEnLen: summaryEn.length, summaryZhLen: summaryZh.length })
+  const sourceSummary = parsed.source_summary?.trim()
+  if (!sourceSummary) throw new Error('HOSTED_SUMMARY_SHAPE')
+  let translatedSummary = null
+  if (needTranslated) {
+    translatedSummary = parsed.translated_summary?.trim() || null
+    if (!translatedSummary) throw new Error('HOSTED_SUMMARY_SHAPE')
+  }
+  console.warn('[youmiHosted] summarizeTranscript done', {
+    sourceSummaryLen: sourceSummary.length, translatedSummaryLen: translatedSummary?.length ?? 0,
+  })
   // usage is populated only when the DashScope branch returned a usage block;
   // null otherwise (OpenAI fallback / no usage) so callers never guess.
-  return { summaryEn, summaryZh, usage: usageOut.provider ? usageOut : null }
+  return { sourceSummary, translatedSummary, usage: usageOut.provider ? usageOut : null }
 }

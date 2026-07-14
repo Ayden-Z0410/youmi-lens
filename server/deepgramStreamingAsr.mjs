@@ -30,6 +30,7 @@ const SRV_DEEP_VERBOSE = process.env.YOUMI_LIVE_VERBOSE === '1'
  * @param {string} apiKey  Deepgram API key
  * @param {{
  *   sampleRate?: number,
+ *   language?: string,
  *   onReady?: () => void,
  *   onInterim?: (text: string) => void,
  *   onFinal?: (text: string) => void,
@@ -42,6 +43,7 @@ const SRV_DEEP_VERBOSE = process.env.YOUMI_LIVE_VERBOSE === '1'
 export function createDeepgramStreamingSession(apiKey, callbacks = {}, options = {}) {
   const {
     sampleRate = 48000,
+    language = 'en-US',
     onReady,
     onInterim,
     onFinal,
@@ -74,7 +76,7 @@ export function createDeepgramStreamingSession(apiKey, callbacks = {}, options =
   // smart_format:   formats numbers, dates, currencies naturally
   const params = new URLSearchParams({
     model: 'nova-3',
-    language: 'en-US',
+    language,
     encoding: 'linear16',
     sample_rate: String(sampleRate),
     channels: '1',

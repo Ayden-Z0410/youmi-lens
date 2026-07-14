@@ -17,6 +17,13 @@ import {
 import { createDashscopeStreamingSession } from './dashscopeStreamingAsr.mjs'
 import { getDashScopeHttpAttempts } from './dashscopeWithFallback.mjs'
 import { createDeepgramStreamingSession } from './deepgramStreamingAsr.mjs'
+import {
+  deepgramLanguageFor,
+  isContentLanguage,
+  qwenLanguageFor,
+  resolveContentLanguagePair,
+  shouldTranslate,
+} from './contentLanguages.mjs'
 import { createDeepgramLiveCostFinalizer } from './watchLiveUsage.mjs'
 import {
   appendSegment,
@@ -289,6 +296,10 @@ export function attachLiveRealtimeWs(server) {
           ? liveGate.maxSessionMinutes * 60 * 1000
           : null
         const liveSessionStartMs = Date.now()
+        // A live caption session starts before any public.recordings row exists.
+        // beta_usage.recording_id is a nullable UUID identity for a real recording;
+        // the short wsSessionId belongs only to session/cost-ledger metadata.
+        const liveUsageRecordingUuid = null
         // ────────────────────────────────────────────────────────────────
 
         pendingPcm.length = 0
@@ -326,7 +337,13 @@ export function attachLiveRealtimeWs(server) {
               message: `Live caption session limit reached (${liveGate.maxSessionMinutes} min). ${BETA_LIMIT_MESSAGE}`,
             })
             if (streamingSession) { try { streamingSession.finish() } catch { /* ignore */ } }
-            void recordBetaUsage(liveUser.userId, liveUser.email, wsSessionId, 'live_caption_session', sessionSec)
+            void recordBetaUsage(
+              liveUser.userId,
+              liveUser.email,
+              liveUsageRecordingUuid,
+              'live_caption_session',
+              sessionSec,
+            )
             // Cost ledger (Deepgram only; no-op otherwise). Once-guarded — the
             // later WS close path can call the funnel again without double-write.
             if (typeof ws._youmiDeepgramCostFinalize === 'function') {
@@ -342,12 +359,28 @@ export function attachLiveRealtimeWs(server) {
             sessionLimitTimer = null
           }
           const sessionSec = Math.round((Date.now() - liveSessionStartMs) / 1000)
-          void recordBetaUsage(liveUser.userId, liveUser.email, wsSessionId, 'live_caption_session', sessionSec)
+          void recordBetaUsage(
+            liveUser.userId,
+            liveUser.email,
+            liveUsageRecordingUuid,
+            'live_caption_session',
+            sessionSec,
+          )
         }
         // Attach close-time cleanup (replaces any prior onLiveSessionEnd ref)
         ws._youmiLiveSessionEnd = onLiveSessionEnd
 
         const sampleRate   = typeof msg.sampleRate === 'number' ? msg.sampleRate : 48000
+        if ((msg.sourceLanguage !== undefined && !isContentLanguage(msg.sourceLanguage)) ||
+            (msg.translationLanguage !== undefined && !isContentLanguage(msg.translationLanguage))) {
+          safeSend(ws, { type: 'stream_error', code: 'invalid_language', message: 'Unsupported content language.' })
+          return
+        }
+        const { sourceLanguage, translationLanguage } = resolveContentLanguagePair(msg)
+        const translationRequired = shouldTranslate(sourceLanguage, translationLanguage)
+        const qwenSource = qwenLanguageFor(sourceLanguage)
+        const qwenTarget = qwenLanguageFor(translationLanguage)
+        const deepgramLanguage = deepgramLanguageFor(sourceLanguage)
         const liveProvider = resolveLiveAsrProvider()
         const clientRef    = { ws }
         let streamReadySent = false
@@ -389,7 +422,7 @@ export function attachLiveRealtimeWs(server) {
         let pendingFinalTimer = null
 
         const translationEnabled = () =>
-          process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT === 'enabled'
+          translationRequired && process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT === 'enabled'
 
         const shouldTranslateInterim = (text) => {
           const t = text.trim()
@@ -415,10 +448,10 @@ export function attachLiveRealtimeWs(server) {
               JSON.stringify({ wsSessionId, id, textLen: text.length, interim: true }),
             )
             void youmiHosted
-              .translateText(text, 'zh')
-              .then((translationZh) => {
+              .translateText(text, qwenTarget.name, qwenSource.name)
+              .then((translatedText) => {
                 if (expectedGen !== interimTranslationGen) return
-                const out = typeof translationZh === 'string' ? translationZh.trim() : ''
+                const out = typeof translatedText === 'string' ? translatedText.trim() : ''
                 if (!out) return
                 lastTranslatedInterimEn = text
                 lastTranslatedInterimAt = Date.now()
@@ -430,7 +463,9 @@ export function attachLiveRealtimeWs(server) {
                   safeSend(clientRef.ws, {
                     type: 'stream_translation',
                     id,
-                    translation_zh: out,
+                    translated_text: out,
+                    translation_language: translationLanguage,
+                    ...(translationLanguage === 'zh-Hans' ? { translation_zh: out } : {}),
                     is_final: false,
                     source_text: text,
                   })
@@ -465,16 +500,20 @@ export function attachLiveRealtimeWs(server) {
               JSON.stringify({ wsSessionId, id: job.id, textLen: job.text.length, interim: false }),
             )
             void youmiHosted
-              .translateText(job.text, 'zh')
-              .then((translationZh) => {
-                const out = typeof translationZh === 'string' ? translationZh.trim() : ''
+              .translateText(job.text, qwenTarget.name, qwenSource.name)
+              .then((translatedText) => {
+                const out = typeof translatedText === 'string' ? translatedText.trim() : ''
                 if (!out) return
                 console.info(
                   '[liveRealtimeWs] live_translation_ok',
                   JSON.stringify({ wsSessionId, id: job.id, textLen: job.text.length, translationLen: out.length }),
                 )
                 if (clientRef.ws) {
-                  safeSend(clientRef.ws, { type: 'stream_translation', id: job.id, translation_zh: out, is_final: true })
+                  safeSend(clientRef.ws, {
+                    type: 'stream_translation', id: job.id, translated_text: out,
+                    translation_language: translationLanguage, is_final: true,
+                    ...(translationLanguage === 'zh-Hans' ? { translation_zh: out } : {}),
+                  })
                   console.info(
                     '[liveRealtimeWs] live_translation_sent',
                     JSON.stringify({ wsSessionId, id: job.id, translationLen: out.length, interim: false }),
@@ -853,6 +892,7 @@ export function attachLiveRealtimeWs(server) {
             deepgramKey,
             {
               sampleRate,
+              language: deepgramLanguage,
               onReady: sendStreamReadyOnce,
               onInterim: relayInterim,
               onFinal: relayFinal,
@@ -915,7 +955,7 @@ export function attachLiveRealtimeWs(server) {
             userId: liveUser.userId,
             sessionId: streamSegment > 1 ? `${wsSessionId}#${streamSegment}` : wsSessionId,
             startedAtMs: liveSessionStartMs,
-            language: 'en-US', // fixed Deepgram connection params (deepgramStreamingAsr)
+            language: deepgramLanguage,
             model: 'nova-3',
             getFrameCount: () => frameCount - segmentStartFrames,
             getFinalCount: () => relayFinalSeg,
