@@ -132,9 +132,11 @@ export async function handleHostedSummarize(req, res) {
   }
 
   try {
-    const { summaryEn, summaryZh } = await youmiHosted.summarizeTranscript(transcript, course, title)
+    // Default (no language options) yields an English source summary + a
+    // Simplified-Chinese translated summary, preserving this endpoint's contract.
+    const { sourceSummary, translatedSummary } = await youmiHosted.summarizeTranscript(transcript, course, title)
     void recordBetaUsage(user.userId, user.email, null, 'summary_generation', 0)
-    res.json({ summary_en: summaryEn, summary_zh: summaryZh })
+    res.json({ summary_en: sourceSummary, summary_zh: translatedSummary })
   } catch (e) {
     console.warn('[hosted/summarize]', e)
     res.status(503).json({ error: CLIENT_SAFE_UNAVAILABLE })

@@ -12,7 +12,7 @@ import {
   recordBetaUsage,
   BETA_ERROR_CODES,
 } from './betaGate.mjs'
-import { qwenLanguageFor, resolveContentLanguagePair, shouldTranslate } from './contentLanguages.mjs'
+import { qwenLanguageFor, resolveContentLanguagePair, shouldTranslate, legacySummaryMirror } from './contentLanguages.mjs'
 
 const BUCKET = 'lecture-audio'
 
@@ -175,6 +175,25 @@ async function persistTranslatedTranscript(dbSb, recordingId, userId, translated
   if (translationLanguage === 'zh-Hans') patch.transcript_zh = translated
   const { error } = await dbSb.from('recordings').update(patch).eq('id', recordingId).eq('user_id', userId)
   if (error) throw error
+}
+
+/**
+ * Best-effort write of the generic multilingual summary fields
+ * (source_summary / translated_summary). Never fails the job: a missing column
+ * (migration supabase-migration-generic-summaries.sql not yet applied) or any
+ * write error is logged and swallowed, since the language-based legacy mirror
+ * (summary_en / summary_zh) has already been written in the done payload.
+ * `translated_summary` is null when source === target.
+ */
+async function persistGenericSummaries(dbSb, recordingId, userId, sourceSummary, translatedSummary) {
+  const patch = { source_summary: sourceSummary, translated_summary: translatedSummary ?? null }
+  const { error } = await dbSb.from('recordings').update(patch).eq('id', recordingId).eq('user_id', userId)
+  if (error) {
+    console.warn(
+      '[process-recording] generic summary persist skipped',
+      JSON.stringify({ recordingId, message: error.message }),
+    )
+  }
 }
 
 /**
@@ -610,14 +629,17 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
       return
     }
 
-    let summaryEn
-    let summaryZh
+    let sourceSummary
+    let translatedSummary
     const summarizeWallT0 = Date.now()
     try {
       jobLog('summarize_begin', { recordingId })
-      const s = await youmiHosted.summarizeTranscript(transcriptCanonical, row.course, row.title)
-      summaryEn = s.summaryEn
-      summaryZh = s.summaryZh
+      const s = await youmiHosted.summarizeTranscript(transcriptCanonical, row.course, row.title, {
+        sourceLanguage,
+        translationLanguage,
+      })
+      sourceSummary = s.sourceSummary
+      translatedSummary = s.translatedSummary
       // Best-effort: record DashScope/Qwen token usage for this successful
       // summary as internal cost-ledger events (Phase 5B). Fire-and-forget —
       // never blocks or fails the job; records nothing if usage is absent.
@@ -630,8 +652,8 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
       })
       jobLog('summarize_done', {
         recordingId,
-        summaryEnLen: summaryEn?.length ?? 0,
-        summaryZhLen: summaryZh?.length ?? 0,
+        sourceSummaryLen: sourceSummary?.length ?? 0,
+        translatedSummaryLen: translatedSummary?.length ?? 0,
       })
     } catch (e) {
       console.warn('[process-recording] summarize', e)
@@ -691,15 +713,25 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
       summarize_wall_ms: Date.now() - summarizeWallT0,
     })
 
-    const summaryOk = Boolean(summaryEn?.trim() && summaryZh?.trim())
+    const translationRequired = shouldTranslate(sourceLanguage, translationLanguage)
+    const summaryOk = Boolean(sourceSummary?.trim() && (!translationRequired || translatedSummary?.trim()))
     /**
      * Summary success path: write ONLY core columns present on every greenfield schema.
      * Do not repeat transcript/transcript_raw here — already persisted; re-including them can fail
      * on older DBs or widen failure surface. V1 flags/timing follow in tryOptionalV1PipelineExtras.
      */
+    // Legacy language-specific mirror: each legacy column holds the summary
+    // version in THAT language, whether it is the source or the translated one.
+    // Non-English/non-Chinese summaries are never written into these columns.
+    const { summary_en, summary_zh } = legacySummaryMirror(
+      sourceLanguage,
+      translationLanguage,
+      sourceSummary,
+      translatedSummary,
+    )
     const doneCorePayload = {
-      summary_en: summaryEn,
-      summary_zh: summaryZh,
+      summary_en,
+      summary_zh,
       ai_status: 'done',
       ai_error: null,
       ai_updated_at: new Date().toISOString(),
@@ -745,6 +777,9 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
       })
       await markFailed('Could not save summaries after processing.')
     } else {
+      // Generic multilingual summary fields (authoritative for the UI). Best-effort:
+      // the legacy summary_en/summary_zh mirror above already landed in the done payload.
+      await persistGenericSummaries(dbSb, recordingId, userId, sourceSummary, translatedSummary)
       await tryOptionalV1PipelineExtras(
         dbSb,
         recordingId,

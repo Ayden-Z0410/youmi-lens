@@ -27,3 +27,22 @@ export function qwenLanguageFor(language) {
   return { code: DESCRIPTORS[language].qwenCode, name: DESCRIPTORS[language].qwenName }
 }
 export function shouldTranslate(sourceLanguage, translationLanguage) { return sourceLanguage !== translationLanguage }
+
+/**
+ * Derive the legacy language-specific summary columns (summary_en / summary_zh)
+ * from the generic source/translated summaries. Each legacy column holds the
+ * summary written in THAT language — whether it is the source or the translated
+ * version — and a non-English/non-Chinese summary is never placed in either.
+ * Generic source_summary / translated_summary remain authoritative.
+ */
+export function legacySummaryMirror(sourceLanguage, translationLanguage, sourceSummary, translatedSummary) {
+  const summary_en =
+    sourceLanguage === 'en' ? (sourceSummary ?? null)
+      : translationLanguage === 'en' ? (translatedSummary ?? null)
+        : null
+  const summary_zh =
+    sourceLanguage === 'zh-Hans' ? (sourceSummary ?? null)
+      : translationLanguage === 'zh-Hans' ? (translatedSummary ?? null)
+        : null
+  return { summary_en, summary_zh }
+}
