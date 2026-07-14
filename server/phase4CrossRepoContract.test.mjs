@@ -45,7 +45,15 @@ describe('Phase 4 backend/iPad IAP API contract', () => {
 
   it('keeps consumable access refresh backend-first without StoreKit restoration', () => {
     expect(routes).toContain('handleIapRestore')
-    expect(purchases.indexOf('const initial = await this.getBackendEntitlement(accessToken)')).toBeGreaterThan(0)
+    const restoreStart = purchases.indexOf('async restoreStudentPass(accessToken')
+    const restoreEnd = purchases.indexOf('\n  cleanup()', restoreStart)
+    const restore = purchases.slice(restoreStart, restoreEnd)
+    const backendLookup = restore.indexOf('initial = await this.getBackendEntitlement(accessToken)')
+    const unfinishedRecovery = restore.indexOf('this.recoverUnfinishedPurchases(accessToken)')
+    expect(restoreStart).toBeGreaterThan(0)
+    expect(restoreEnd).toBeGreaterThan(restoreStart)
+    expect(backendLookup).toBeGreaterThan(0)
+    expect(unfinishedRecovery).toBeGreaterThan(backendLookup)
     expect(purchases).not.toContain('discoverStudentPassTransactions')
     expect(purchases).not.toContain('/api/iap/restore')
   })

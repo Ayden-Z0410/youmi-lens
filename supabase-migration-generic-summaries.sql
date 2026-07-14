@@ -8,7 +8,7 @@
 -- Idempotent and additive: safe to run more than once; nullable columns so
 -- existing rows and pre-deploy code are unaffected.
 --
--- STAGING ONLY. Do not apply to production in this pass.
+-- Safe for production after the recording content-language migration.
 
 ALTER TABLE public.recordings ADD COLUMN IF NOT EXISTS source_summary     text;
 ALTER TABLE public.recordings ADD COLUMN IF NOT EXISTS translated_summary text;
@@ -16,6 +16,5 @@ ALTER TABLE public.recordings ADD COLUMN IF NOT EXISTS translated_summary text;
 COMMENT ON COLUMN public.recordings.source_summary     IS 'Summary in the lecture source_language (authoritative). Mirrors into summary_en/summary_zh only when that language is English/Chinese.';
 COMMENT ON COLUMN public.recordings.translated_summary IS 'Summary in the lecture translation_language when source != target (authoritative). Null when source == target.';
 
--- Rollback (staging only, if ever needed):
---   ALTER TABLE public.recordings DROP COLUMN IF EXISTS translated_summary;
---   ALTER TABLE public.recordings DROP COLUMN IF EXISTS source_summary;
+-- Rollback guidance: retain these nullable additive columns and roll back the
+-- application deployment. Dropping them could destroy multilingual content.

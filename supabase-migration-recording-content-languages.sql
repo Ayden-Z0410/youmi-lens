@@ -1,7 +1,8 @@
 -- Youmi Lens Phase 1: persist each recording's caption/translation language
 -- snapshot and language-neutral translated transcript fields.
 --
--- Proposal only: do not apply until the matching application changes are ready.
+-- Idempotent, additive, and backward compatible with clients that only use
+-- transcript_zh / summary_en / summary_zh.
 -- Existing English -> Simplified Chinese rows retain their historical behavior
 -- through the defaults. Legacy transcript_zh / summary_en / summary_zh columns
 -- are intentionally unchanged.
