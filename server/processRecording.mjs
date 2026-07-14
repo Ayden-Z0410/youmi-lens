@@ -178,25 +178,6 @@ async function persistTranslatedTranscript(dbSb, recordingId, userId, translated
 }
 
 /**
- * Best-effort write of the generic multilingual summary fields
- * (source_summary / translated_summary). Never fails the job: a missing column
- * (migration supabase-migration-generic-summaries.sql not yet applied) or any
- * write error is logged and swallowed, since the language-based legacy mirror
- * (summary_en / summary_zh) has already been written in the done payload.
- * `translated_summary` is null when source === target.
- */
-async function persistGenericSummaries(dbSb, recordingId, userId, sourceSummary, translatedSummary) {
-  const patch = { source_summary: sourceSummary, translated_summary: translatedSummary ?? null }
-  const { error } = await dbSb.from('recordings').update(patch).eq('id', recordingId).eq('user_id', userId)
-  if (error) {
-    console.warn(
-      '[process-recording] generic summary persist skipped',
-      JSON.stringify({ recordingId, message: error.message }),
-    )
-  }
-}
-
-/**
  * POST /api/process-recording
  * Body: { recordingId: string }
  * Header: Authorization: Bearer <Supabase user JWT>
@@ -715,11 +696,7 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
 
     const translationRequired = shouldTranslate(sourceLanguage, translationLanguage)
     const summaryOk = Boolean(sourceSummary?.trim() && (!translationRequired || translatedSummary?.trim()))
-    /**
-     * Summary success path: write ONLY core columns present on every greenfield schema.
-     * Do not repeat transcript/transcript_raw here — already persisted; re-including them can fail
-     * on older DBs or widen failure surface. V1 flags/timing follow in tryOptionalV1PipelineExtras.
-     */
+    /** Summary success path: persist the complete language pair atomically. */
     // Legacy language-specific mirror: each legacy column holds the summary
     // version in THAT language, whether it is the source or the translated one.
     // Non-English/non-Chinese summaries are never written into these columns.
@@ -729,57 +706,59 @@ async function runJob({ userSb, dbSb, userId, email, recordingId, durationSec, b
       sourceSummary,
       translatedSummary,
     )
-    const doneCorePayload = {
+    // The authoritative generic fields and terminal status must land in one
+    // atomic row update. Otherwise a client can observe `done`, stop polling,
+    // and permanently miss the generic translated summary written afterward.
+    const donePayload = {
       summary_en,
       summary_zh,
+      source_summary: sourceSummary,
+      translated_summary: translationRequired ? translatedSummary : null,
       ai_status: 'done',
       ai_error: null,
       ai_updated_at: new Date().toISOString(),
     }
-    const doneCoreColumns = Object.keys(doneCorePayload)
+    const doneColumns = Object.keys(donePayload)
     console.warn(
       '[process-recording] supabase update start',
       JSON.stringify({
-        step: 'final_done_core',
+        step: 'final_done_summaries',
         recordingId,
         userIdPrefix: userId.slice(0, 8),
         table: 'recordings',
-        payloadKeys: doneCoreColumns,
-        columnsWritten: doneCoreColumns,
+        payloadKeys: doneColumns,
+        columnsWritten: doneColumns,
         usingServiceRoleForRecordings,
       }),
     )
     const { error: doneErr } = await dbSb
       .from('recordings')
-      .update(doneCorePayload)
+      .update(donePayload)
       .eq('id', recordingId)
       .eq('user_id', userId)
     if (doneErr) {
       console.warn(
         '[process-recording] supabase update error',
         JSON.stringify({
-          step: 'final_done_core',
+          step: 'final_done_summaries',
           recordingId,
           userIdPrefix: userId.slice(0, 8),
-          payloadKeys: doneCoreColumns,
-          columnsWritten: doneCoreColumns,
+          payloadKeys: doneColumns,
+          columnsWritten: doneColumns,
           message: doneErr.message,
           code: doneErr.code,
           details: doneErr.details,
           hint: doneErr.hint,
         }),
       )
-      logPostgrestError('runJob final done (summary core only)', doneErr, {
+      logPostgrestError('runJob final done summaries', doneErr, {
         recordingId,
         userIdPrefix: userId.slice(0, 8),
-        payloadKeys: doneCoreColumns,
-        columnsWritten: doneCoreColumns,
+        payloadKeys: doneColumns,
+        columnsWritten: doneColumns,
       })
       await markFailed('Could not save summaries after processing.')
     } else {
-      // Generic multilingual summary fields (authoritative for the UI). Best-effort:
-      // the legacy summary_en/summary_zh mirror above already landed in the done payload.
-      await persistGenericSummaries(dbSb, recordingId, userId, sourceSummary, translatedSummary)
       await tryOptionalV1PipelineExtras(
         dbSb,
         recordingId,
