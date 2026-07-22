@@ -40,6 +40,13 @@ import {
   handleWatchSettings,
 } from './watchRead.mjs'
 import { handleWatchSnapshotsRefresh } from './watchSnapshots.mjs'
+import {
+  handleCheckout,
+  handlePortal,
+  handleSubscriptionStatus,
+  handleSubscriptionRefresh,
+  handleStripeWebhookRoute,
+} from './stripeRoutes.mjs'
 
 const PORT = Number(process.env.PORT || process.env.AI_SERVER_PORT || 3847)
 
@@ -51,6 +58,23 @@ if (process.env.YOUMI_TRANSCRIBE_FORCE_TEST === '1') {
 
 const app = express()
 app.use(cors({ origin: true, credentials: true }))
+
+// Stripe webhook MUST read the raw request body for signature verification, so
+// it is registered BEFORE the global JSON parser (which would consume the body).
+// This is the only route that bypasses express.json.
+app.post(
+  '/api/billing/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  (req, res) => {
+    void handleStripeWebhookRoute(req, res).catch((err) => {
+      console.error('[stripe-webhook]', err)
+      if (!res.headersSent) {
+        res.status(500).json({ ok: false, error: 'webhook_processing_failed' })
+      }
+    })
+  },
+)
+
 app.use(express.json({ limit: '2mb' }))
 
 function present(v) {
@@ -319,6 +343,43 @@ app.post('/api/iap/apple/notifications', (req, res) => {
     console.error('[iap-notifications]', err)
     if (!res.headersSent) {
       res.status(500).json({ ok: false, error: 'notification_processing_failed' })
+    }
+  })
+})
+
+// ── Desktop Stripe billing (Website checkout + Mac/Windows read-only status) ──
+app.post('/api/billing/checkout', (req, res) => {
+  void handleCheckout(req, res).catch((err) => {
+    console.error('[billing-checkout]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'checkout_failed', message: 'Could not start checkout.' })
+    }
+  })
+})
+
+app.post('/api/billing/portal', (req, res) => {
+  void handlePortal(req, res).catch((err) => {
+    console.error('[billing-portal]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'portal_failed', message: 'Could not open the billing portal.' })
+    }
+  })
+})
+
+app.get('/api/subscription/status', (req, res) => {
+  void handleSubscriptionStatus(req, res).catch((err) => {
+    console.error('[subscription-status]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'subscription_status_failed', message: 'Could not load subscription.' })
+    }
+  })
+})
+
+app.post('/api/subscription/refresh', (req, res) => {
+  void handleSubscriptionRefresh(req, res).catch((err) => {
+    console.error('[subscription-refresh]', err)
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: 'subscription_refresh_failed', message: 'Could not refresh subscription.' })
     }
   })
 })

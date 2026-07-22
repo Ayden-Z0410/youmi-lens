@@ -255,13 +255,22 @@ export async function findTransactionOwner(db, transaction) {
   return binding?.userId ?? null
 }
 
-/** Fetch the user's current best active entitlement (latest-expiring), or null. */
+/**
+ * Fetch the user's current best active entitlement (latest-expiring), or null.
+ *
+ * Source-agnostic (Commercialization V2 · 1A): resolution keys off
+ * plan_type='student_pass' only, so an active grant projected from EITHER an
+ * Apple transaction OR a Stripe subscription resolves identically. The previous
+ * Apple-product-id filter was redundant (only student products ever carry
+ * plan_type='student_pass') and would have excluded Stripe grants. Quota is
+ * per user_id, so returning a single row here never multiplies quota even if a
+ * user held multiple active grants.
+ */
 export async function getActiveEntitlement(db, userId, nowIso) {
   const { data, error } = await db
     .from('user_entitlements')
     .select('product_id, plan_type, starts_at, expires_at, status, revoked_at, source_transaction_id')
     .eq('user_id', userId)
-    .in('product_id', STUDENT_ACCESS_PRODUCT_IDS)
     .eq('plan_type', 'student_pass')
     .eq('status', 'active')
     .lte('starts_at', nowIso)
