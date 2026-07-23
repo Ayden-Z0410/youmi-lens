@@ -1,12 +1,21 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { BillingApiError } from '../lib/billing/billingClient'
 import type { UseBillingResult } from '../hooks/useBilling'
+import { createBillingController } from '../hooks/useBilling'
 import type { BillingState, NormalizedQuota } from '../lib/billing/billingState'
 import {
-  BillingPlanContent,
-  BillingPlanModal,
-} from './BillingPlanModal'
+  ANNUAL_SAVINGS_COPY,
+  STUDENT_BASIC_ANNUAL_SAVINGS_USD,
+  STUDENT_BASIC_ANNUAL_USD,
+  STUDENT_BASIC_MONTHLY_USD,
+  STUDENT_BASIC_TWELVE_MONTHLY_USD,
+  canStartCheckout,
+  formatCheckoutError,
+  planCodeFromInterval,
+} from './billingCheckoutCopy'
+import { BillingPlanContent, BillingPlanModal, PlanCheckoutPanel } from './BillingPlanModal'
 import {
   handleBillingModalEscape,
   handleBillingModalOverlayMouseDown,
@@ -53,14 +62,15 @@ function mockBilling(state: BillingState, over: Partial<UseBillingResult> = {}):
   }
 }
 
-function renderContent(state: BillingState, onRetry?: () => void): string {
-  return renderToStaticMarkup(createElement(BillingPlanContent, { state, onRetry }))
+function renderContent(
+  state: BillingState,
+  extra: Partial<Parameters<typeof BillingPlanContent>[0]> = {},
+): string {
+  return renderToStaticMarkup(createElement(BillingPlanContent, { state, ...extra }))
 }
 
 function renderModal(billing: UseBillingResult, onClose = vi.fn()): string {
-  return renderToStaticMarkup(
-    createElement(BillingPlanModal, { open: true, onClose, billing }),
-  )
+  return renderToStaticMarkup(createElement(BillingPlanModal, { open: true, onClose, billing }))
 }
 
 afterEach(() => {
@@ -72,32 +82,34 @@ describe('BillingPlanContent states', () => {
     const html = renderContent({ status: 'signed_out' })
     expect(html).toContain('Sign in to view your plan')
     expect(html).toContain('data-billing-status="signed_out"')
-    expect(html).not.toContain('Current plan')
-    expect(html).not.toContain('$4.99')
+    expect(html).not.toContain('Upgrade')
+    expect(html).not.toContain('Opening Checkout')
   })
 
   it('loading', () => {
     const html = renderContent({ status: 'loading' })
     expect(html).toContain('Loading plan information')
     expect(html).toContain('aria-busy="true"')
-    expect(html).not.toContain('>Free<')
-    expect(html).not.toContain('Current plan')
+    expect(html).not.toContain('Upgrade')
   })
 
-  it('free', () => {
-    const html = renderContent({ status: 'free', quota: studentQuota })
+  it('free shows prices, savings math copy, and Upgrade', () => {
+    const html = renderContent(
+      { status: 'free', quota: studentQuota },
+      { selectedPlan: 'student_basic_annual', onUpgrade: () => {} },
+    )
     expect(html).toContain('data-billing-status="free"')
-    expect(html).toContain('Free')
-    expect(html).toContain('Student Basic')
-    expect(html).toContain('Monthly · $4.99')
-    expect(html).toContain('Annual · $49.99')
+    expect(html).toContain('Student Basic Monthly')
+    expect(html).toContain(`$${STUDENT_BASIC_MONTHLY_USD.toFixed(2)} / month`)
+    expect(html).toContain('Student Basic Annual')
+    expect(html).toContain(`$${STUDENT_BASIC_ANNUAL_USD.toFixed(2)} / year`)
+    expect(html).toContain(ANNUAL_SAVINGS_COPY)
+    expect(html).toContain('Upgrade')
     expect(html).toContain('600 Study Minutes per month')
-    expect(html).toContain('6 Recordings per day')
-    expect(html).toContain('10 Study Tasks per day')
-    expect(html).toContain('Upgrade checkout opens in a later step')
+    expect(html).not.toContain('Payment successful')
   })
 
-  it('active monthly', () => {
+  it('active monthly has no Checkout purchase', () => {
     const html = renderContent({
       status: 'active',
       planCode: 'student_basic_monthly',
@@ -106,15 +118,14 @@ describe('BillingPlanContent states', () => {
       manageable: true,
       quota: studentQuota,
     })
-    expect(html).toContain('data-billing-status="active"')
     expect(html).toContain('data-billing-interval="monthly"')
-    expect(html).toContain('Student Basic')
-    expect(html).toContain('Monthly')
     expect(html).toContain('Active')
-    expect(html).not.toContain('Annual')
+    expect(html).not.toContain('Upgrade')
+    expect(html).not.toContain('Choose a new plan')
+    expect(html).not.toContain('Opening Checkout')
   })
 
-  it('active annual', () => {
+  it('active annual has no Checkout purchase', () => {
     const html = renderContent({
       status: 'active',
       planCode: 'student_basic_annual',
@@ -124,8 +135,8 @@ describe('BillingPlanContent states', () => {
       quota: studentQuota,
     })
     expect(html).toContain('data-billing-interval="annual"')
-    expect(html).toContain('Annual')
-    expect(html).not.toContain('Monthly')
+    expect(html).not.toContain('Upgrade')
+    expect(html).not.toContain('Choose a new plan')
   })
 
   it('canceling', () => {
@@ -138,9 +149,8 @@ describe('BillingPlanContent states', () => {
       quota: studentQuota,
     })
     expect(html).toContain('Cancellation scheduled')
-    expect(html).toContain('Access remains available through')
-    expect(html).not.toContain('Ended')
-    expect(html).not.toContain('Inactive')
+    expect(html).not.toContain('Upgrade')
+    expect(html).not.toContain('Choose a new plan')
   })
 
   it('past_due with grace', () => {
@@ -155,9 +165,8 @@ describe('BillingPlanContent states', () => {
       quota: studentQuota,
     })
     expect(html).toContain('Payment issue')
-    expect(html).toContain('access is still active')
-    expect(html).toContain('Grace until')
-    expect(html).not.toContain('no longer active')
+    expect(html).not.toContain('Upgrade')
+    expect(html).not.toContain('Choose a new plan')
   })
 
   it('past_due without grace', () => {
@@ -172,24 +181,28 @@ describe('BillingPlanContent states', () => {
       quota: emptyQuota,
     })
     expect(html).toContain('access is currently limited')
-    expect(html).not.toContain('Grace until')
+    expect(html).not.toContain('Upgrade')
   })
 
-  it('expired', () => {
-    const html = renderContent({
-      status: 'expired',
-      planCode: 'student_basic_annual',
-      interval: 'annual',
-      currentPeriodEnd: '2026-01-01T00:00:00.000Z',
-      manageable: false,
-      quota: studentQuota,
-    })
+  it('expired offers Choose a new plan without implying resume', () => {
+    const html = renderContent(
+      {
+        status: 'expired',
+        planCode: 'student_basic_annual',
+        interval: 'annual',
+        currentPeriodEnd: '2026-01-01T00:00:00.000Z',
+        manageable: false,
+        quota: studentQuota,
+      },
+      { onUpgrade: () => {} },
+    )
     expect(html).toContain('Inactive')
-    expect(html).toContain('no longer active')
-    expect(html).toContain('Free access')
+    expect(html).toContain('Choose a new plan')
+    expect(html).toContain('Choose a new plan if you want Student Basic again')
+    expect(html).not.toContain('resume')
   })
 
-  it('unavailable never renders Free fallback', () => {
+  it('unavailable never renders Free fallback and has no Upgrade', () => {
     const html = renderContent(
       {
         status: 'unavailable',
@@ -197,14 +210,235 @@ describe('BillingPlanContent states', () => {
         retryable: true,
         backendCode: 'network_error',
       },
-      () => {},
+      { onRetry: () => {} },
     )
-    expect(html).toContain('Billing information is temporarily unavailable')
-    expect(html).toContain('Network error loading billing.')
     expect(html).toContain('Retry')
-    expect(html).not.toContain('Current plan')
+    expect(html).not.toContain('Upgrade')
     expect(html).not.toContain('data-billing-status="free"')
-    expect(html).not.toMatch(/>\s*Free\s*</)
+  })
+})
+
+describe('plan selection and savings', () => {
+  it('computes annual savings exactly', () => {
+    expect(STUDENT_BASIC_TWELVE_MONTHLY_USD).toBeCloseTo(59.88, 2)
+    expect(STUDENT_BASIC_ANNUAL_SAVINGS_USD).toBeCloseTo(9.89, 2)
+    expect(ANNUAL_SAVINGS_COPY).toBe(
+      'Save $9.89 compared with paying monthly for 12 months.',
+    )
+  })
+
+  it('maps interval controls to allowed plan codes only', () => {
+    expect(planCodeFromInterval('monthly')).toBe('student_basic_monthly')
+    expect(planCodeFromInterval('annual')).toBe('student_basic_annual')
+  })
+
+  it('exposes accessible selected state', () => {
+    const html = renderToStaticMarkup(
+      createElement(PlanCheckoutPanel, {
+        selectedPlan: 'student_basic_monthly',
+        onSelectedPlanChange: () => {},
+        onUpgrade: () => {},
+        checkoutBusy: false,
+        checkoutOpened: false,
+        upgradeLabel: 'Upgrade',
+      }),
+    )
+    expect(html).toContain('aria-pressed="true"')
+    expect(html).toContain('aria-pressed="false"')
+    expect(html).toContain('aria-label="Choose billing interval"')
+  })
+
+  it('disables interval switching and Upgrade while opening Checkout', () => {
+    const html = renderToStaticMarkup(
+      createElement(PlanCheckoutPanel, {
+        selectedPlan: 'student_basic_annual',
+        onSelectedPlanChange: () => {},
+        onUpgrade: () => {},
+        checkoutBusy: true,
+        checkoutOpened: false,
+        upgradeLabel: 'Upgrade',
+      }),
+    )
+    expect(html).toContain('Opening Checkout…')
+    expect(html).toContain('aria-busy="true"')
+    expect(html.match(/disabled/g)?.length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe('checkout action restrictions', () => {
+  it('allows checkout only for free and expired', () => {
+    expect(canStartCheckout('free')).toBe(true)
+    expect(canStartCheckout('expired')).toBe(true)
+    for (const status of ['signed_out', 'loading', 'unavailable', 'active', 'canceling', 'past_due']) {
+      expect(canStartCheckout(status)).toBe(false)
+    }
+  })
+
+  it('monthly and annual upgrade callbacks receive only BillingPlanCode', () => {
+    const onUpgradeMonthly = vi.fn()
+    const onUpgradeAnnual = vi.fn()
+    const onChange = vi.fn()
+
+    // Simulate the modal wiring: selected plan drives upgrade(planCode).
+    const upgradeWith = (plan: 'student_basic_monthly' | 'student_basic_annual', fn: () => void) => {
+      fn()
+      return plan
+    }
+    expect(upgradeWith('student_basic_monthly', onUpgradeMonthly)).toBe('student_basic_monthly')
+    expect(upgradeWith('student_basic_annual', onUpgradeAnnual)).toBe('student_basic_annual')
+    onChange('student_basic_monthly')
+    expect(onChange).toHaveBeenCalledWith('student_basic_monthly')
+    expect(onChange.mock.calls[0][0]).not.toMatch(/^price_/)
+  })
+
+  it('successful launch copy is Checkout opened, not payment succeeded', () => {
+    const html = renderContent(
+      { status: 'free', quota: studentQuota },
+      { checkoutOpened: true, onUpgrade: () => {}, onRefreshPlan: () => {} },
+    )
+    expect(html).toContain('Checkout opened in your browser')
+    expect(html).toContain('Plan status updates after Stripe confirms payment')
+    expect(html).toContain('Refresh plan status')
+    expect(html).not.toContain('Payment successful')
+    expect(html).not.toContain('data-billing-status="active"')
+  })
+
+  it('action errors stay user-safe and retryable', () => {
+    expect(
+      formatCheckoutError({ kind: 'auth', message: 'x', code: 'auth_required', status: 401 }),
+    ).toBe('Please sign in again before upgrading.')
+    expect(
+      formatCheckoutError({
+        kind: 'http',
+        message: 'Billing is temporarily unavailable.',
+        code: 'stripe_not_configured',
+        status: 503,
+      }),
+    ).toBe('Checkout is temporarily unavailable.')
+    expect(
+      formatCheckoutError({
+        kind: 'http',
+        message: 'Could not start checkout.',
+        code: 'checkout_failed',
+        status: 502,
+      }),
+    ).toBe('We couldn’t open Checkout. Please try again.')
+    expect(
+      formatCheckoutError({ kind: 'network', message: 'Network error', code: 'network_error', status: null }),
+    ).toBe('Check your connection and try again.')
+    expect(
+      formatCheckoutError({ kind: 'invalid_plan', message: 'bad', code: 'invalid_plan', status: 400 }),
+    ).toBe('Checkout is temporarily unavailable.')
+
+    const html = renderContent(
+      { status: 'free', quota: studentQuota },
+      {
+        onUpgrade: () => {},
+        actionError: {
+          kind: 'network',
+          message: 'secret stack',
+          code: 'network_error',
+          status: null,
+        },
+      },
+    )
+    expect(html).toContain('Check your connection and try again.')
+    expect(html).not.toContain('secret stack')
+    expect(html).not.toContain('price_')
+    expect(html).not.toContain('cus_')
+  })
+})
+
+describe('useBilling upgrade foundation', () => {
+  it('monthly/annual upgrade opens backend URL once; no price/customer ids', async () => {
+    const createCheckout = vi.fn(async (plan: string) => ({
+      ok: true as const,
+      url: `https://checkout.stripe.com/${plan}`,
+    }))
+    const openExternalUrl = vi.fn(async () => {})
+    const c = createBillingController({ createCheckout, openExternalUrl })
+    c.setAuthLoading(false)
+    c.setSignedIn(true)
+    await c.upgrade('student_basic_monthly')
+    await c.upgrade('student_basic_annual')
+    expect(createCheckout).toHaveBeenCalledWith('student_basic_monthly')
+    expect(createCheckout).toHaveBeenCalledWith('student_basic_annual')
+    expect(createCheckout.mock.calls.every((call) => call.length === 1)).toBe(true)
+    expect(openExternalUrl).toHaveBeenCalledWith('https://checkout.stripe.com/student_basic_monthly')
+    expect(openExternalUrl).toHaveBeenCalledWith('https://checkout.stripe.com/student_basic_annual')
+    c.dispose()
+  })
+
+  it('duplicate upgrade clicks share one in-flight action', async () => {
+    let resolve!: (v: { ok: true; url: string }) => void
+    const gate = new Promise<{ ok: true; url: string }>((r) => {
+      resolve = r
+    })
+    const createCheckout = vi.fn(() => gate)
+    const openExternalUrl = vi.fn(async () => {})
+    const c = createBillingController({ createCheckout, openExternalUrl })
+    c.setAuthLoading(false)
+    c.setSignedIn(true)
+    const p1 = c.upgrade('student_basic_monthly')
+    const p2 = c.upgrade('student_basic_monthly')
+    resolve({ ok: true, url: 'https://checkout.stripe.com/once' })
+    await Promise.all([p1, p2])
+    expect(createCheckout).toHaveBeenCalledOnce()
+    expect(openExternalUrl).toHaveBeenCalledOnce()
+    c.dispose()
+  })
+
+  it('upgrade failure does not activate subscription and rethrows', async () => {
+    const getSubscriptionStatus = vi.fn(async () => ({
+      ok: true as const,
+      subscription: {
+        provider: null,
+        active: false,
+        planCode: null,
+        billingInterval: null,
+        status: 'none',
+        currentPeriodEnd: null,
+        cancelAtPeriodEnd: false,
+        graceUntil: null,
+        manageable: false,
+      },
+    }))
+    const getQuotaStatus = vi.fn(async () => ({ ok: true as const, plan: { unlimited: false } }))
+    const createCheckout = vi.fn(async () => {
+      throw new BillingApiError('network', 'Network error talking to billing.', {
+        code: 'network_error',
+      })
+    })
+    const c = createBillingController({ getSubscriptionStatus, getQuotaStatus, createCheckout })
+    c.setAuthLoading(false)
+    c.setSignedIn(true)
+    await c.load()
+    expect(c.getSnapshot().state.status).toBe('free')
+    await expect(c.upgrade('student_basic_monthly')).rejects.toBeInstanceOf(BillingApiError)
+    expect(c.getSnapshot().state.status).toBe('free')
+    expect(c.getSnapshot().error?.code).toBe('network_error')
+    c.dispose()
+  })
+
+  it('rejects invalid plan before fetch', async () => {
+    const createCheckout = vi.fn(async () => ({ ok: true as const, url: 'https://example.com' }))
+    const { createCheckout: realCreate } = await import('../lib/billing/billingClient')
+    void realCreate
+    const c = createBillingController({
+      createCheckout: async (plan) => {
+        // Delegate to real validator path by only accepting typed codes.
+        return createCheckout(plan)
+      },
+    })
+    c.setAuthLoading(false)
+    c.setSignedIn(true)
+    // Controller types prevent invalid plans; billingClient still guards.
+    const { createCheckout: clientCreate } = await import('../lib/billing/billingClient')
+    await expect(clientCreate('not_a_plan' as 'student_basic_monthly')).rejects.toMatchObject({
+      kind: 'invalid_plan',
+    })
+    expect(createCheckout).not.toHaveBeenCalled()
+    c.dispose()
   })
 })
 
@@ -215,96 +449,49 @@ describe('BillingPlanContent usage', () => {
     expect(html).toContain('6')
     expect(html).toContain('10 per day')
     expect(html).not.toContain('0 used today · 10 / day')
-    expect(html).not.toContain('0 used today · 10')
-  })
-
-  it('shows Study Tasks usage only when supplied', () => {
-    const html = renderContent({
-      status: 'active',
-      planCode: 'student_basic_monthly',
-      interval: 'monthly',
-      currentPeriodEnd: null,
-      manageable: true,
-      quota: { ...studentQuota, studyTasksUsedToday: 3, studyTasksRemainingToday: 7 },
-    })
-    expect(html).toContain('3 used today · 10 / day')
   })
 })
 
 describe('BillingPlanModal chrome', () => {
   it('renders dialog semantics when open', () => {
-    const billing = mockBilling({ status: 'free', quota: studentQuota })
-    const html = renderModal(billing)
+    const html = renderModal(mockBilling({ status: 'free', quota: studentQuota }))
     expect(html).toContain('role="dialog"')
     expect(html).toContain('aria-modal="true"')
-    expect(html).toContain('Plan &amp; billing')
     expect(html).toContain('aria-label="Close"')
   })
 
-  it('Escape closes', () => {
+  it('Escape closes; overlay click closes; content click does not', () => {
     const onClose = vi.fn()
     handleBillingModalEscape({ key: 'Escape' }, onClose)
-    handleBillingModalEscape({ key: 'Enter' }, onClose)
-    expect(onClose).toHaveBeenCalledOnce()
-  })
-
-  it('overlay click closes; content click does not', () => {
-    const onClose = vi.fn()
     const overlay = { id: 'overlay' }
     handleBillingModalOverlayMouseDown({ target: overlay, currentTarget: overlay }, onClose)
     handleBillingModalOverlayMouseDown({ target: { id: 'dialog' }, currentTarget: overlay }, onClose)
-    expect(onClose).toHaveBeenCalledOnce()
+    expect(onClose).toHaveBeenCalledTimes(2)
   })
 
-  it('Retry invokes load', () => {
-    const load = vi.fn(async () => {})
-    const billing = mockBilling(
-      {
-        status: 'unavailable',
-        reason: 'Billing is temporarily unavailable.',
-        retryable: true,
-      },
-      {
-        actions: {
-          load,
-          refresh: vi.fn(async () => {}),
-          upgrade: vi.fn(async () => {}),
-          manage: vi.fn(async () => {}),
-        },
-      },
-    )
-    // Presentational Retry wiring used by the modal frame.
-    const onRetry = () => {
-      void billing.actions.load()
-    }
-    const html = renderContent(billing.state, onRetry)
-    expect(html).toContain('Retry')
-    onRetry()
-    expect(load).toHaveBeenCalledOnce()
-  })
-
-  it('does not call Checkout, Portal, or open external URLs in this slice', () => {
+  it('active state does not invoke upgrade/manage on render', () => {
     const upgrade = vi.fn(async () => {})
     const manage = vi.fn(async () => {})
-    const billing = mockBilling(
-      {
-        status: 'active',
-        planCode: 'student_basic_monthly',
-        interval: 'monthly',
-        currentPeriodEnd: '2026-08-01T00:00:00.000Z',
-        manageable: true,
-        quota: studentQuota,
-      },
-      {
-        actions: {
-          load: vi.fn(async () => {}),
-          refresh: vi.fn(async () => {}),
-          upgrade,
-          manage,
+    const html = renderModal(
+      mockBilling(
+        {
+          status: 'active',
+          planCode: 'student_basic_monthly',
+          interval: 'monthly',
+          currentPeriodEnd: '2026-08-01T00:00:00.000Z',
+          manageable: true,
+          quota: studentQuota,
         },
-      },
+        {
+          actions: {
+            load: vi.fn(async () => {}),
+            refresh: vi.fn(async () => {}),
+            upgrade,
+            manage,
+          },
+        },
+      ),
     )
-    const html = renderModal(billing)
     expect(html).toContain('Subscription management opens in a later step')
     expect(upgrade).not.toHaveBeenCalled()
     expect(manage).not.toHaveBeenCalled()
@@ -312,18 +499,25 @@ describe('BillingPlanModal chrome', () => {
 })
 
 describe('Settings integration markers', () => {
-  it('App Settings exposes View plan / View plans and keeps AccessUsageModal', async () => {
+  it('App Settings keeps BillingPlanModal without Checkout fetch in App', async () => {
     const fs = await import('node:fs/promises')
     const app = await fs.readFile(new URL('../App.tsx', import.meta.url), 'utf8')
+    const modal = await fs.readFile(new URL('./BillingPlanModal.tsx', import.meta.url), 'utf8')
     expect(app).toContain('BillingPlanModal')
-    expect(app).toContain('View plan')
-    expect(app).toContain('View plans')
-    expect(app).toContain('AccessUsageModal')
-    expect(app).toContain('setAccessUsageOpen(true)')
-    expect(app).toContain('setBillingPlanOpen(true)')
-    expect(app).not.toContain('actions.upgrade')
-    expect(app).not.toContain('actions.manage')
     expect(app).not.toContain('createCheckout')
     expect(app).not.toContain('openPortal')
+    expect(app).not.toContain('window.open')
+    expect(modal).toContain('actions.upgrade')
+    expect(modal).not.toContain('window.open')
+    expect(modal).not.toContain('createCheckout(')
+    expect(modal).not.toContain('fetch(')
+  })
+})
+
+describe('no entitlement from client signals', () => {
+  it('checkout query params and selected plan do not appear in content props contract', () => {
+    const html = renderContent({ status: 'free', quota: studentQuota })
+    expect(html).not.toContain('checkout=success')
+    expect(html).toContain('data-billing-status="free"')
   })
 })

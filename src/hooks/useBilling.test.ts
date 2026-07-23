@@ -169,7 +169,9 @@ describe('createBillingController / useBilling behavior', () => {
     c.setSignedIn(true)
     await c.load()
     expect(c.getSnapshot().state.status).toBe('free')
-    await c.upgrade('student_basic_monthly')
+    await expect(c.upgrade('student_basic_monthly')).rejects.toMatchObject({
+      code: 'checkout_failed',
+    })
     expect(c.getSnapshot().state.status).toBe('free')
     expect(c.getSnapshot().error?.code).toBe('checkout_failed')
     c.dispose()

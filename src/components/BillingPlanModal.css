@@ -167,12 +167,33 @@
   background: #ffffff;
   color: #0f172a;
   border-radius: 10px;
-  min-height: 40px;
-  padding: 8px 10px;
+  min-height: 52px;
+  padding: 10px 12px;
   font: inherit;
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+}
+
+.billing-plan-modal__interval-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.billing-plan-modal__interval-name {
+  font-weight: 650;
+  color: #0b1f3b;
+}
+
+.billing-plan-modal__interval-price {
+  font-weight: 500;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
 }
 
 .billing-plan-modal__interval-btn:focus-visible {
@@ -184,6 +205,21 @@
   border-color: #1e3a5f;
   background: rgba(30, 58, 95, 0.06);
   color: #0b1f3b;
+}
+
+.billing-plan-modal__savings {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: #1e3a5f;
+}
+
+.billing-plan-modal__upgrade {
+  width: 100%;
+}
+
+.billing-plan-modal__checkout-note {
+  padding-top: 2px;
 }
 
 .billing-plan-modal__benefits {

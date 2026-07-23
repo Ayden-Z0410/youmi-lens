@@ -1,13 +1,24 @@
 /**
- * Desktop Billing / Plan modal (Commercialization V2 · Phase 2B-2).
+ * Desktop Billing / Plan modal (Commercialization V2 · Phase 2B-2 / 2B-3).
  *
- * Displays authoritative billing + quota from useBilling. Does not launch
- * Checkout or Customer Portal in this slice.
+ * Displays authoritative billing + quota from useBilling. Phase 2B-3 launches
+ * Stripe Sandbox Checkout via actions.upgrade(planCode) only — no Portal,
+ * no client-side entitlement activation, no checkout-return inference.
  */
 import { useEffect, useId, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { designTokens } from '../design-system/tokens'
-import { useBilling, type UseBillingResult } from '../hooks/useBilling'
+import { useBilling, type BillingHookError, type UseBillingResult } from '../hooks/useBilling'
+import type { BillingPlanCode } from '../lib/billing/billingClient'
 import type { BillingState, NormalizedBillingInterval, NormalizedQuota } from '../lib/billing/billingState'
+import {
+  ANNUAL_SAVINGS_COPY,
+  STUDENT_BASIC_ANNUAL_USD,
+  STUDENT_BASIC_MONTHLY_USD,
+  canStartCheckout,
+  formatCheckoutError,
+  intervalFromPlanCode,
+  planCodeFromInterval,
+} from './billingCheckoutCopy'
 import {
   handleBillingModalEscape,
   handleBillingModalOverlayMouseDown,
@@ -26,6 +37,8 @@ const STUDENT_BASIC_BENEFITS = [
   '6 Recordings per day',
   '10 Study Tasks per day',
 ] as const
+
+const DEFAULT_PLAN: BillingPlanCode = 'student_basic_monthly'
 
 function formatDate(iso: string | null | undefined): string | null {
   if (!iso) return null
@@ -114,21 +127,121 @@ function MetaRow({ label, value }: { label: string; value: string }) {
   )
 }
 
+export type PlanCheckoutPanelProps = {
+  selectedPlan: BillingPlanCode
+  onSelectedPlanChange: (plan: BillingPlanCode) => void
+  onUpgrade: () => void
+  checkoutBusy: boolean
+  checkoutOpened: boolean
+  upgradeLabel: string
+  disabled?: boolean
+}
+
+/** Monthly/annual selector + Upgrade — free and expired purchase paths. */
+export function PlanCheckoutPanel({
+  selectedPlan,
+  onSelectedPlanChange,
+  onUpgrade,
+  checkoutBusy,
+  checkoutOpened,
+  upgradeLabel,
+  disabled = false,
+}: PlanCheckoutPanelProps) {
+  const selectedInterval = intervalFromPlanCode(selectedPlan)
+  const controlsDisabled = disabled || checkoutBusy
+
+  return (
+    <div className="billing-plan-modal__preview">
+      <h3 className="billing-plan-modal__section-title">Student Basic</h3>
+      <div className="billing-plan-modal__interval-toggle" role="group" aria-label="Choose billing interval">
+        <button
+          type="button"
+          className={
+            selectedInterval === 'monthly'
+              ? 'billing-plan-modal__interval-btn billing-plan-modal__interval-btn--selected'
+              : 'billing-plan-modal__interval-btn'
+          }
+          aria-pressed={selectedInterval === 'monthly'}
+          disabled={controlsDisabled}
+          onClick={() => onSelectedPlanChange(planCodeFromInterval('monthly'))}
+        >
+          <span className="billing-plan-modal__interval-name">Student Basic Monthly</span>
+          <span className="billing-plan-modal__interval-price">
+            ${STUDENT_BASIC_MONTHLY_USD.toFixed(2)} / month
+          </span>
+        </button>
+        <button
+          type="button"
+          className={
+            selectedInterval === 'annual'
+              ? 'billing-plan-modal__interval-btn billing-plan-modal__interval-btn--selected'
+              : 'billing-plan-modal__interval-btn'
+          }
+          aria-pressed={selectedInterval === 'annual'}
+          disabled={controlsDisabled}
+          onClick={() => onSelectedPlanChange(planCodeFromInterval('annual'))}
+        >
+          <span className="billing-plan-modal__interval-name">Student Basic Annual</span>
+          <span className="billing-plan-modal__interval-price">
+            ${STUDENT_BASIC_ANNUAL_USD.toFixed(2)} / year
+          </span>
+        </button>
+      </div>
+      {selectedInterval === 'annual' ? (
+        <p className="billing-plan-modal__savings">{ANNUAL_SAVINGS_COPY}</p>
+      ) : null}
+      <ul className="billing-plan-modal__benefits">
+        {STUDENT_BASIC_BENEFITS.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        className="ds-btn ds-btn--primary billing-plan-modal__upgrade"
+        aria-label={checkoutBusy ? 'Opening Checkout' : upgradeLabel}
+        aria-busy={checkoutBusy || undefined}
+        disabled={controlsDisabled}
+        onClick={onUpgrade}
+      >
+        {checkoutBusy ? 'Opening Checkout…' : upgradeLabel}
+      </button>
+      {checkoutOpened ? (
+        <div className="billing-plan-modal__checkout-note" role="status">
+          <p className="billing-plan-modal__copy">
+            Checkout opened in your browser. Plan status updates after Stripe confirms payment.
+          </p>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export type BillingPlanContentProps = {
   state: BillingState
   onRetry?: () => void
-  /** Visual-only free-plan interval highlight (no Checkout). */
-  previewInterval?: NormalizedBillingInterval
-  onPreviewIntervalChange?: (interval: NormalizedBillingInterval) => void
+  selectedPlan?: BillingPlanCode
+  onSelectedPlanChange?: (plan: BillingPlanCode) => void
+  onUpgrade?: () => void
+  onRefreshPlan?: () => void
+  checkoutBusy?: boolean
+  checkoutOpened?: boolean
+  actionError?: BillingHookError | null
 }
 
 /** Presentational body — used by the modal and unit tests. */
 export function BillingPlanContent({
   state,
   onRetry,
-  previewInterval = 'monthly',
-  onPreviewIntervalChange,
+  selectedPlan = DEFAULT_PLAN,
+  onSelectedPlanChange,
+  onUpgrade,
+  onRefreshPlan,
+  checkoutBusy = false,
+  checkoutOpened = false,
+  actionError = null,
 }: BillingPlanContentProps) {
+  const checkoutError = formatCheckoutError(actionError)
+
   if (state.status === 'signed_out') {
     return (
       <div className="billing-plan-modal__panel" data-billing-status="signed_out">
@@ -179,41 +292,24 @@ export function BillingPlanContent({
           <StatusPill label="Free access" tone="neutral" />
         </div>
 
-        <div className="billing-plan-modal__preview">
-          <h3 className="billing-plan-modal__section-title">Student Basic</h3>
-          <div className="billing-plan-modal__interval-toggle" role="group" aria-label="Billing interval preview">
-            <button
-              type="button"
-              className={
-                previewInterval === 'monthly'
-                  ? 'billing-plan-modal__interval-btn billing-plan-modal__interval-btn--selected'
-                  : 'billing-plan-modal__interval-btn'
-              }
-              aria-pressed={previewInterval === 'monthly'}
-              onClick={() => onPreviewIntervalChange?.('monthly')}
-            >
-              Monthly · $4.99
-            </button>
-            <button
-              type="button"
-              className={
-                previewInterval === 'annual'
-                  ? 'billing-plan-modal__interval-btn billing-plan-modal__interval-btn--selected'
-                  : 'billing-plan-modal__interval-btn'
-              }
-              aria-pressed={previewInterval === 'annual'}
-              onClick={() => onPreviewIntervalChange?.('annual')}
-            >
-              Annual · $49.99
-            </button>
-          </div>
-          <ul className="billing-plan-modal__benefits">
-            {STUDENT_BASIC_BENEFITS.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-          <p className="billing-plan-modal__footnote">Upgrade checkout opens in a later step.</p>
-        </div>
+        <PlanCheckoutPanel
+          selectedPlan={selectedPlan}
+          onSelectedPlanChange={(plan) => onSelectedPlanChange?.(plan)}
+          onUpgrade={() => onUpgrade?.()}
+          checkoutBusy={checkoutBusy}
+          checkoutOpened={checkoutOpened}
+          upgradeLabel="Upgrade"
+        />
+        {checkoutError ? (
+          <p className="billing-plan-modal__action-error" role="alert">
+            {checkoutError}
+          </p>
+        ) : null}
+        {checkoutOpened && onRefreshPlan ? (
+          <button type="button" className="ds-btn ds-btn--secondary" onClick={onRefreshPlan} disabled={checkoutBusy}>
+            Refresh plan status
+          </button>
+        ) : null}
 
         <QuotaUsageRows quota={state.quota} />
       </div>
@@ -293,7 +389,7 @@ export function BillingPlanContent({
     )
   }
 
-  // expired
+  // expired — may start a new subscription (not a resume).
   return (
     <div className="billing-plan-modal__panel" data-billing-status="expired">
       <div className="billing-plan-modal__header-row">
@@ -307,8 +403,27 @@ export function BillingPlanContent({
         {state.planCode
           ? `Your ${planLabel(state.planCode)} subscription is no longer active.`
           : 'Your subscription is no longer active.'}{' '}
-        You still have Free access with the quotas below.
+        You still have Free access with the quotas below. Choose a new plan if you want Student Basic
+        again.
       </p>
+      <PlanCheckoutPanel
+        selectedPlan={selectedPlan}
+        onSelectedPlanChange={(plan) => onSelectedPlanChange?.(plan)}
+        onUpgrade={() => onUpgrade?.()}
+        checkoutBusy={checkoutBusy}
+        checkoutOpened={checkoutOpened}
+        upgradeLabel="Choose a new plan"
+      />
+      {checkoutError ? (
+        <p className="billing-plan-modal__action-error" role="alert">
+          {checkoutError}
+        </p>
+      ) : null}
+      {checkoutOpened && onRefreshPlan ? (
+        <button type="button" className="ds-btn ds-btn--secondary" onClick={onRefreshPlan} disabled={checkoutBusy}>
+          Refresh plan status
+        </button>
+      ) : null}
       <QuotaUsageRows quota={state.quota} />
     </div>
   )
@@ -325,7 +440,9 @@ function BillingPlanModalFrame({
 }) {
   const t = designTokens
   const titleId = useId()
-  const [previewInterval, setPreviewInterval] = useState<NormalizedBillingInterval>('monthly')
+  const [selectedPlan, setSelectedPlan] = useState<BillingPlanCode>(DEFAULT_PLAN)
+  const [checkoutBusy, setCheckoutBusy] = useState(false)
+  const [checkoutOpened, setCheckoutOpened] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -349,12 +466,31 @@ function BillingPlanModalFrame({
   const loadBilling = billing.actions.load
   useEffect(() => {
     if (!open) return
+    setCheckoutOpened(false)
+    setCheckoutBusy(false)
     void loadBilling()
   }, [open, loadBilling])
 
   if (!open) return null
 
-  const busy = billing.state.status === 'loading' || billing.loading
+  const allowCheckout = canStartCheckout(billing.state.status)
+  const busy = billing.state.status === 'loading' || billing.loading || checkoutBusy
+
+  const handleUpgrade = () => {
+    if (!allowCheckout || checkoutBusy) return
+    setCheckoutBusy(true)
+    setCheckoutOpened(false)
+    void (async () => {
+      try {
+        await billing.actions.upgrade(selectedPlan)
+        setCheckoutOpened(true)
+      } catch {
+        setCheckoutOpened(false)
+      } finally {
+        setCheckoutBusy(false)
+      }
+    })()
+  }
 
   return (
     <div
@@ -416,10 +552,21 @@ function BillingPlanModalFrame({
                   }
                 : undefined
             }
-            previewInterval={previewInterval}
-            onPreviewIntervalChange={setPreviewInterval}
+            selectedPlan={selectedPlan}
+            onSelectedPlanChange={setSelectedPlan}
+            onUpgrade={allowCheckout ? handleUpgrade : undefined}
+            onRefreshPlan={
+              allowCheckout
+                ? () => {
+                    void billing.actions.refresh()
+                  }
+                : undefined
+            }
+            checkoutBusy={checkoutBusy}
+            checkoutOpened={checkoutOpened}
+            actionError={allowCheckout ? billing.error : null}
           />
-          {billing.error && billing.state.status !== 'unavailable' ? (
+          {!allowCheckout && billing.error && billing.state.status !== 'unavailable' ? (
             <p className="billing-plan-modal__action-error" role="status">
               {billing.error.message}
             </p>

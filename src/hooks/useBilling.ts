@@ -209,6 +209,7 @@ export function createBillingController(deps: BillingControllerDeps = {}) {
         actionError = toHookError(err)
         // Do not mutate subscription toward active on checkout failure or success.
         emit()
+        throw err
       } finally {
         actionLoading = false
         upgradeInFlight = null
