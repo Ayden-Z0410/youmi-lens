@@ -39,6 +39,8 @@ export type UseBillingResult = {
   loading: boolean
   error: BillingHookError | null
   actions: BillingActions
+  /** Sync read of normalized status from the controller (post-await safe). */
+  getStatus: () => BillingState['status']
 }
 
 export type BillingControllerDeps = {
@@ -130,6 +132,7 @@ export function createBillingController(deps: BillingControllerDeps = {}) {
         upgrade,
         manage,
       },
+      getStatus: () => snapshot().state.status,
     }
   }
 
@@ -182,10 +185,20 @@ export function createBillingController(deps: BillingControllerDeps = {}) {
       if (disposed) return
       loadInFlight = null
       await load()
+      if (disposed) return
+      // If authoritative reload failed, surface as refresh failure.
+      if (loadError) {
+        throw new BillingApiError(
+          loadError.kind === 'unknown' ? 'http' : loadError.kind,
+          loadError.message,
+          { status: loadError.status, code: loadError.code },
+        )
+      }
     } catch (err) {
       if (disposed) return
       actionError = toHookError(err)
       emit()
+      throw err
     } finally {
       actionLoading = false
       if (!disposed) emit()
@@ -346,11 +359,15 @@ export function useBilling(): UseBillingResult {
   const manage = useCallback(async () => {
     await controllerRef.current?.manage()
   }, [])
+  const getStatus = useCallback((): BillingState['status'] => {
+    return controllerRef.current?.getSnapshot().state.status ?? 'signed_out'
+  }, [])
 
   return {
     state,
     loading,
     error,
     actions: { load, refresh, upgrade, manage },
+    getStatus,
   }
 }

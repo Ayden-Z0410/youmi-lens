@@ -7,9 +7,15 @@
  */
 import { useEffect, useId, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { designTokens } from '../design-system/tokens'
+import { useAuth } from '../useAuth'
 import { useBilling, type BillingHookError, type UseBillingResult } from '../hooks/useBilling'
+import {
+  useBillingReturnRefresh,
+  type BillingReturnRefreshFeedback,
+} from '../hooks/useBillingReturnRefresh'
 import type { BillingPlanCode } from '../lib/billing/billingClient'
 import type { BillingState, NormalizedBillingInterval, NormalizedQuota } from '../lib/billing/billingState'
+import { markExternalBillingAction } from '../lib/billing/billingReturnCoordinator'
 import {
   ANNUAL_SAVINGS_COPY,
   STUDENT_BASIC_ANNUAL_USD,
@@ -142,6 +148,36 @@ function RefreshPlanButton({
     <button type="button" className="ds-btn ds-btn--secondary" onClick={onRefreshPlan} disabled={disabled}>
       Refresh plan status
     </button>
+  )
+}
+
+function ReturnRefreshFeedback({ feedback }: { feedback: BillingReturnRefreshFeedback }) {
+  if (feedback.status === 'idle') return null
+  if (feedback.status === 'refreshing') {
+    return (
+      <p className="billing-plan-modal__copy" role="status" aria-live="polite">
+        Refreshing plan status…
+      </p>
+    )
+  }
+  if (feedback.status === 'updated') {
+    return (
+      <p className="billing-plan-modal__copy" role="status">
+        Plan status updated.
+      </p>
+    )
+  }
+  if (feedback.status === 'unchanged') {
+    return (
+      <p className="billing-plan-modal__copy" role="status">
+        Plan status is up to date.
+      </p>
+    )
+  }
+  return (
+    <p className="billing-plan-modal__action-error" role="alert">
+      {feedback.message}
+    </p>
   )
 }
 
@@ -288,6 +324,7 @@ export type BillingPlanContentProps = {
   portalOpened?: boolean
   actionError?: BillingHookError | null
   actionErrorKind?: 'checkout' | 'portal' | null
+  returnFeedback?: BillingReturnRefreshFeedback
 }
 
 /** Presentational body — used by the modal and unit tests. */
@@ -305,12 +342,13 @@ export function BillingPlanContent({
   portalOpened = false,
   actionError = null,
   actionErrorKind = null,
+  returnFeedback = { status: 'idle' },
 }: BillingPlanContentProps) {
   const checkoutError =
     actionErrorKind === 'checkout' ? formatCheckoutError(actionError) : null
   const portalError = actionErrorKind === 'portal' ? formatPortalError(actionError) : null
-  const actionBusy = checkoutBusy || portalBusy
-  const showRefresh = Boolean(onRefreshPlan && (checkoutOpened || portalOpened))
+  const actionBusy = checkoutBusy || portalBusy || returnFeedback.status === 'refreshing'
+  const showRefresh = Boolean(onRefreshPlan && (checkoutOpened || portalOpened || returnFeedback.status !== 'idle'))
   const showPortal = canOpenPortal(state) && Boolean(onManage)
 
   if (state.status === 'signed_out') {
@@ -377,6 +415,7 @@ export function BillingPlanContent({
             {checkoutError}
           </p>
         ) : null}
+        <ReturnRefreshFeedback feedback={returnFeedback} />
         <RefreshPlanButton onRefreshPlan={showRefresh ? onRefreshPlan : undefined} disabled={actionBusy} />
         <QuotaUsageRows quota={state.quota} />
       </div>
@@ -418,6 +457,7 @@ export function BillingPlanContent({
             {portalError}
           </p>
         ) : null}
+        <ReturnRefreshFeedback feedback={returnFeedback} />
         <RefreshPlanButton onRefreshPlan={showRefresh ? onRefreshPlan : undefined} disabled={actionBusy} />
       </div>
     )
@@ -454,6 +494,7 @@ export function BillingPlanContent({
             {portalError}
           </p>
         ) : null}
+        <ReturnRefreshFeedback feedback={returnFeedback} />
         <RefreshPlanButton onRefreshPlan={showRefresh ? onRefreshPlan : undefined} disabled={actionBusy} />
       </div>
     )
@@ -495,6 +536,7 @@ export function BillingPlanContent({
             {portalError}
           </p>
         ) : null}
+        <ReturnRefreshFeedback feedback={returnFeedback} />
         <RefreshPlanButton onRefreshPlan={showRefresh ? onRefreshPlan : undefined} disabled={actionBusy} />
       </div>
     )
@@ -545,6 +587,7 @@ export function BillingPlanContent({
           {checkoutError}
         </p>
       ) : null}
+      <ReturnRefreshFeedback feedback={returnFeedback} />
       <RefreshPlanButton onRefreshPlan={showRefresh ? onRefreshPlan : undefined} disabled={actionBusy} />
       <QuotaUsageRows quota={state.quota} />
     </div>
@@ -555,10 +598,12 @@ function BillingPlanModalFrame({
   open,
   onClose,
   billing,
+  returnFeedback,
 }: {
   open: boolean
   onClose: () => void
   billing: UseBillingResult
+  returnFeedback: BillingReturnRefreshFeedback
 }) {
   const t = designTokens
   const titleId = useId()
@@ -603,7 +648,12 @@ function BillingPlanModalFrame({
 
   const allowCheckout = canStartCheckout(billing.state.status)
   const allowPortal = canOpenPortal(billing.state)
-  const busy = billing.state.status === 'loading' || billing.loading || checkoutBusy || portalBusy
+  const busy =
+    billing.state.status === 'loading' ||
+    billing.loading ||
+    checkoutBusy ||
+    portalBusy ||
+    returnFeedback.status === 'refreshing'
 
   const handleUpgrade = () => {
     if (!allowCheckout || checkoutBusy || portalBusy) return
@@ -616,6 +666,7 @@ function BillingPlanModalFrame({
         await billing.actions.upgrade(selectedPlan)
         setCheckoutOpened(true)
         setActionErrorKind(null)
+        markExternalBillingAction('checkout')
       } catch {
         setCheckoutOpened(false)
         setActionErrorKind('checkout')
@@ -636,6 +687,7 @@ function BillingPlanModalFrame({
         await billing.actions.manage()
         setPortalOpened(true)
         setActionErrorKind(null)
+        markExternalBillingAction('portal')
       } catch {
         setPortalOpened(false)
         setActionErrorKind('portal')
@@ -718,6 +770,7 @@ function BillingPlanModalFrame({
             portalOpened={portalOpened}
             actionError={billing.error}
             actionErrorKind={actionErrorKind}
+            returnFeedback={returnFeedback}
           />
         </div>
       </div>
@@ -726,13 +779,29 @@ function BillingPlanModalFrame({
 }
 
 function BillingPlanModalConnected({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { session } = useAuth()
   const billing = useBilling()
-  return <BillingPlanModalFrame open={open} onClose={onClose} billing={billing} />
+  const signedIn = Boolean(session)
+  const { feedback } = useBillingReturnRefresh({
+    signedIn,
+    refresh: billing.actions.refresh,
+    getStatus: billing.getStatus,
+  })
+  return (
+    <BillingPlanModalFrame open={open} onClose={onClose} billing={billing} returnFeedback={feedback} />
+  )
 }
 
 export function BillingPlanModal({ open, onClose, billing }: BillingPlanModalProps) {
   if (billing) {
-    return <BillingPlanModalFrame open={open} onClose={onClose} billing={billing} />
+    return (
+      <BillingPlanModalFrame
+        open={open}
+        onClose={onClose}
+        billing={billing}
+        returnFeedback={{ status: 'idle' }}
+      />
+    )
   }
   return <BillingPlanModalConnected open={open} onClose={onClose} />
 }

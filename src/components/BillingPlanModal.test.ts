@@ -58,6 +58,7 @@ function mockBilling(state: BillingState, over: Partial<UseBillingResult> = {}):
       upgrade: vi.fn(async () => {}),
       manage: vi.fn(async () => {}),
     },
+    getStatus: () => state.status,
     ...over,
   }
 }
@@ -664,6 +665,28 @@ describe('Portal eligibility and action UI', () => {
   })
 })
 
+describe('return refresh feedback', () => {
+  it('shows refreshing / updated / unchanged / error without claiming payment success', () => {
+    const base = {
+      status: 'free' as const,
+      quota: studentQuota,
+    }
+    expect(renderContent(base, { returnFeedback: { status: 'refreshing' } })).toContain(
+      'Refreshing plan status…',
+    )
+    expect(renderContent(base, { returnFeedback: { status: 'updated' } })).toContain('Plan status updated.')
+    expect(renderContent(base, { returnFeedback: { status: 'unchanged' } })).toContain(
+      'Plan status is up to date.',
+    )
+    const errHtml = renderContent(base, {
+      returnFeedback: { status: 'error', message: 'Could not refresh plan status. You can try again manually.' },
+    })
+    expect(errHtml).toContain('Could not refresh plan status')
+    expect(errHtml).not.toContain('Payment successful')
+    expect(errHtml).toContain('data-billing-status="free"')
+  })
+})
+
 describe('Settings integration markers', () => {
   it('App Settings keeps BillingPlanModal without Checkout/Portal fetch in App', async () => {
     const fs = await import('node:fs/promises')
@@ -673,12 +696,17 @@ describe('Settings integration markers', () => {
     expect(app).not.toContain('createCheckout')
     expect(app).not.toContain('openPortal')
     expect(app).not.toContain('window.open')
+    expect(app).not.toContain('useBillingReturnRefresh')
     expect(modal).toContain('actions.upgrade')
     expect(modal).toContain('actions.manage')
+    expect(modal).toContain('markExternalBillingAction')
+    expect(modal).toContain('useBillingReturnRefresh')
     expect(modal).not.toContain('window.open')
     expect(modal).not.toContain('createCheckout(')
     expect(modal).not.toContain('openPortal(')
     expect(modal).not.toContain('fetch(')
+    expect(modal).not.toContain('localStorage')
+    expect(modal).not.toContain('sessionStorage')
   })
 })
 
