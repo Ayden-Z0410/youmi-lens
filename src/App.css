@@ -1679,6 +1679,13 @@ select.input {
   border-color: rgba(6, 27, 52, 0.18);
 }
 
+.settings-footnote-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
 .settings-chip-list {
   display: flex;
   flex-direction: column;

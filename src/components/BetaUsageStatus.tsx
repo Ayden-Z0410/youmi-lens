@@ -45,8 +45,7 @@ const SUBTITLE_COPY =
 
 const SHARED_USAGE_COPY = 'Your usage is shared across iPad and Mac.'
 
-const FOOTER_COPY =
-  'Youmi Lens currently provides free educational access. There are no paid subscriptions or in-app purchases.'
+const FOOTER_COPY = 'Plan and usage are managed from your account settings.'
 
 const CORE_TESTER_COPY =
   'Extended testing access is available for active users. Contact youmilens@gmail.com if you need more capacity for coursework.'

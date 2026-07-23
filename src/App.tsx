@@ -85,6 +85,7 @@ import {
 } from './lib/userProfile'
 import { AccountSettingsModal } from './components/AccountSettingsModal'
 import { AccessUsageModal } from './components/AccessUsageModal'
+import { BillingPlanModal } from './components/BillingPlanModal'
 import { AuthScreens } from './components/AuthScreens'
 import { RecordingAudioPlayer } from './components/RecordingAudioPlayer'
 import { OnboardingUsername } from './components/OnboardingUsername'
@@ -1681,6 +1682,7 @@ function RecordingWorkspace({
   const [liveCaptionPendingSlices, setLiveCaptionPendingSlices] = useState(0)
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false)
   const [accessUsageOpen, setAccessUsageOpen] = useState(false)
+  const [billingPlanOpen, setBillingPlanOpen] = useState(false)
 
   useEffect(() => {
     if (!LIVE_ROUTE_DIAG_ENABLED) return
@@ -4439,6 +4441,16 @@ useEffect(() => {
               <p className="settings-muted-copy">
                 Sign in to share usage across iPad and Mac.
               </p>
+              <p className="settings-card-footnote settings-card-footnote--with-action">
+                <span>Plans require a signed-in account</span>
+                <button
+                  type="button"
+                  className="settings-footnote-action"
+                  onClick={() => setBillingPlanOpen(true)}
+                >
+                  View plans
+                </button>
+              </p>
             </section>
           ) : (
             <section className="workspace-placeholder-card settings-card settings-card--account">
@@ -4516,13 +4528,22 @@ useEffect(() => {
 
               <p className="settings-card-footnote settings-card-footnote--with-action">
                 <span>Shared across iPad and Mac</span>
-                <button
-                  type="button"
-                  className="settings-footnote-action"
-                  onClick={() => setAccessUsageOpen(true)}
-                >
-                  View details
-                </button>
+                <span className="settings-footnote-actions">
+                  <button
+                    type="button"
+                    className="settings-footnote-action"
+                    onClick={() => setBillingPlanOpen(true)}
+                  >
+                    View plan
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-footnote-action"
+                    onClick={() => setAccessUsageOpen(true)}
+                  >
+                    View details
+                  </button>
+                </span>
               </p>
             </section>
           )}
@@ -4605,6 +4626,7 @@ useEffect(() => {
           supabase={supabase}
         />
       ) : null}
+      <BillingPlanModal open={billingPlanOpen} onClose={() => setBillingPlanOpen(false)} />
       {trashConfirmModal ? (
         <div
           role="presentation"
