@@ -47,9 +47,30 @@ function unixToIso(seconds) {
   return new Date(Number(seconds) * 1000).toISOString()
 }
 
+/** Extract the first line item from a Stripe subscription object. */
+function firstSubscriptionItem(sub) {
+  return sub?.items?.data?.[0] ?? null
+}
+
 /** Extract the first line-item price id from a Stripe subscription object. */
 export function priceIdFromSubscription(sub) {
-  return sub?.items?.data?.[0]?.price?.id ?? sub?.plan?.id ?? null
+  return firstSubscriptionItem(sub)?.price?.id ?? sub?.plan?.id ?? null
+}
+
+/**
+ * Billing period start/end in unix seconds. As of newer Stripe API versions
+ * (e.g. 2026-06-24.dahlia, which the webhook payload uses) the top-level
+ * `current_period_start`/`current_period_end` were REMOVED from the Subscription
+ * object and now live on the subscription ITEM. Read the top-level field when
+ * present (older versions / SDK-pinned retrievals) and fall back to the item so
+ * the entitlement window is computed correctly across API versions.
+ */
+export function subscriptionPeriod(sub) {
+  const item = firstSubscriptionItem(sub)
+  return {
+    start: sub?.current_period_start ?? item?.current_period_start ?? null,
+    end: sub?.current_period_end ?? item?.current_period_end ?? null,
+  }
 }
 
 /**
@@ -60,8 +81,9 @@ export function deriveSubscriptionRecord(sub, { nowMs = Date.now(), graceDays } 
   const status = mapStripeStatus(sub?.status)
   const priceId = priceIdFromSubscription(sub)
   const planCode = planCodeForPriceId(priceId)
-  const currentPeriodStart = unixToIso(sub?.current_period_start)
-  const currentPeriodEnd = unixToIso(sub?.current_period_end)
+  const period = subscriptionPeriod(sub)
+  const currentPeriodStart = unixToIso(period.start)
+  const currentPeriodEnd = unixToIso(period.end)
   const cancelAtPeriodEnd = Boolean(sub?.cancel_at_period_end)
 
   // Grace is measured from the already-paid current_period_end (never invents an

@@ -83,6 +83,28 @@ describe('deriveSubscriptionRecord', () => {
     expect(rec.billing_interval).toBe('year')
   })
 
+  it('reads the billing period from the subscription ITEM when top-level fields are absent', () => {
+    // Newer Stripe API versions (e.g. 2026-06-24.dahlia, used by webhook payloads)
+    // removed current_period_start/end from the Subscription object; they now live
+    // on the item. The record must still compute the correct window (regression:
+    // otherwise the entitlement projects as inactive/revoked with a past expiry).
+    const itemOnly = {
+      id: 'sub_item_only',
+      status: 'active',
+      customer: 'cus_123',
+      cancel_at_period_end: false,
+      // NO top-level current_period_start / current_period_end
+      items: { data: [{ price: { id: 'price_annual' }, current_period_start: START, current_period_end: END }] },
+      metadata: { user_id: 'user-1' },
+    }
+    const rec = deriveSubscriptionRecord(itemOnly, { nowMs: NOW })
+    expect(rec.current_period_start).toBe(new Date(START * 1000).toISOString())
+    expect(rec.current_period_end).toBe(new Date(END * 1000).toISOString())
+    // And it projects to an ACTIVE grant (the bug produced active:false / revoked).
+    expect(entitlementProjection(rec, NOW).active).toBe(true)
+    expect(entitlementProjection(rec, NOW).expiresAt).toBe(new Date(END * 1000).toISOString())
+  })
+
   it('sets grace_until from period_end when a grace window is configured', () => {
     const rec = deriveSubscriptionRecord(stripeSub({ status: 'past_due' }), { nowMs: NOW, graceDays: 3 })
     expect(rec.status).toBe('past_due')
