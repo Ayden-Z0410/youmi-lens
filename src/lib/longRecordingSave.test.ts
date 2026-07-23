@@ -28,6 +28,18 @@ describe('long-recording save flow (src/App.tsx)', () => {
     expect(appSrc).toContain('upload_failed_preserved_locally')
   })
 
+  it('auto-retries transient upload interruptions (bounded, idempotent)', () => {
+    expect(appSrc).toContain('computeUploadRetryPlan(')
+    expect(appSrc).toContain('isTransientUploadError(')
+    expect(appSrc).toContain('upload_retry')
+  })
+
+  it('does not tell the user to "Stop & Save again" (an invalid retry) on upload failure', () => {
+    // the corrected fallback message must not promise the invalid re-record path
+    expect(appSrc).not.toContain('try Stop & Save again when you’re back online')
+    expect(appSrc).toContain('Export local backup') // points at the real recovery
+  })
+
   it('keeps the existing recording_too_long → local fallback intact', () => {
     expect(appSrc).toContain('recording_too_long')
     expect(appSrc).toContain("'Local save fallback'")

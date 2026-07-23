@@ -49,6 +49,7 @@ import { getSupabase, isSupabaseConfigured } from './lib/supabase'
 import { summarizeRecording, transcribeRecording, translateLiveCaption } from './lib/aiClient'
 import { getAiApiBase } from './lib/ai/apiBase'
 import { openExternalContact } from './lib/openExternalContact'
+import { computeUploadRetryPlan, isTransientUploadError } from './lib/uploadRetry'
 import {
   hostedRecordingAiStatusLabel,
   liveCaptionBlockedMessage,
@@ -3060,18 +3061,34 @@ const [editLectureModal, setEditLectureModal] = useState<{
         let path: string
         let serverSavedRecording = false
         try {
-          const saveResult = await withTimeout(
-            uploadLectureAudioViaServer(supabase!, recordingId, blob, mime, durationSec, {
-              course: courseVal,
-              title: titleVal,
-              liveTranscript: liveTranscriptCanonical,
-              liveTranscriptRaw,
-            }),
-            SAVE_UPLOAD_TIMEOUT_MS,
-            'Audio upload',
-          )
-          path = saveResult.storagePath
-          serverSavedRecording = Boolean(saveResult.recording)
+          // Phase 2D-1: bounded, idempotent auto-retry for transient upload
+          // interruptions. The storage path is stable per recording UUID and the
+          // DB insert is idempotent, so re-attempting cannot duplicate the lecture
+          // or the storage object. Non-transient outcomes are re-thrown to the
+          // failure handling below (which preserves the audio locally).
+          let saveResult: Awaited<ReturnType<typeof uploadLectureAudioViaServer>> | undefined
+          for (let attempt = 1; ; attempt++) {
+            try {
+              saveResult = await withTimeout(
+                uploadLectureAudioViaServer(supabase!, recordingId, blob, mime, durationSec, {
+                  course: courseVal,
+                  title: titleVal,
+                  liveTranscript: liveTranscriptCanonical,
+                  liveTranscriptRaw,
+                }),
+                SAVE_UPLOAD_TIMEOUT_MS,
+                'Audio upload',
+              )
+              break
+            } catch (attemptErr) {
+              const plan = computeUploadRetryPlan(attempt)
+              if (!plan.retry || !isTransientUploadError(attemptErr)) throw attemptErr
+              console.warn('[capture] upload_retry', JSON.stringify({ recordingId, attempt, delayMs: plan.delayMs }))
+              await new Promise((r) => window.setTimeout(r, plan.delayMs))
+            }
+          }
+          path = saveResult!.storagePath
+          serverSavedRecording = Boolean(saveResult!.recording)
         } catch (upErr) {
           const msg =
             upErr instanceof SaveRecordingRemoteError
@@ -3161,7 +3178,7 @@ const [editLectureModal, setEditLectureModal] = useState<{
               kind: 'list_refresh_warn',
               recordingId,
               message:
-                'Your recording is safe — it’s saved on this device and appears in your library. The cloud upload didn’t finish, so processing is pending; try Stop & Save again when you’re back online. Nothing was lost.',
+                'Your recording is safe — the audio is saved on this device and nothing was lost. The upload to the cloud didn’t complete (even after retrying), so this lecture isn’t transcribed yet. Keep a copy now with “Export local backup” below; full processing resumes once a cloud upload succeeds.',
               at: Date.now(),
             })
           } catch (locFallbackErr) {
