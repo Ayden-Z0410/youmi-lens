@@ -52,7 +52,6 @@ import { openExternalContact } from './lib/openExternalContact'
 import {
   hostedRecordingAiStatusLabel,
   liveCaptionBlockedMessage,
-  recordingTooLargeUserMessage,
   userFacingGenericProcessingFailure,
   userFacingHostedJobFailure,
   userFacingSummarizeFailure,
@@ -559,7 +558,6 @@ const LC_USE_LOCAL_KEY = 'lc_use_local_without_cloud'
 type LiveTranslateTarget = 'zh' | 'en' | 'off'
 const SUPPORTED_LIVE_LANG = 'en-US'
 const SUPPORTED_TRANSLATE_TARGET: LiveTranslateTarget = 'zh'
-const MAX_WHISPER_BYTES = 25 * 1024 * 1024
 
 const SAVE_UPLOAD_TIMEOUT_MS = 180_000
 const SAVE_DB_TIMEOUT_MS = 45_000
@@ -2977,17 +2975,14 @@ const [editLectureModal, setEditLectureModal] = useState<{
             ].join('\n')
       const liveTranscriptRaw = liveText
       const { canonical: liveTranscriptCanonical } = canonicalizeLectureTranscript(liveTranscriptRaw)
-      if (blob.size > MAX_WHISPER_BYTES) {
-        endCapture({
-          kind: 'failure',
-          recordingId,
-          outcome: 'other',
-          message: recordingTooLargeUserMessage((blob.size / 1024 / 1024).toFixed(1)),
-          at: Date.now(),
-        })
-        ledgerClear(recordingId)
-        return
-      }
+      // Phase 2D: NO client-side size gate. The full recording is persisted to
+      // durable storage (Supabase Storage; server cap 500MB) and transcribed by
+      // Paraformer from a signed URL — neither has a 25MB per-file limit, so a
+      // 45–120 min lecture saves and processes normally. The old 25MB byte-size
+      // guard rejected + DISCARDED the audio here (losing ~20 min / ~57MB
+      // lectures) before anything was persisted; that violated "recording must
+      // not be lost". Size is a downstream transcription concern (BYOK OpenAI
+      // Whisper only), handled after the audio is safely persisted.
 
       const courseVal = course.trim() || 'Course'
       const titleVal = title.trim() || `Lecture ${formatDate(Date.now())}`
@@ -3137,18 +3132,47 @@ const [editLectureModal, setEditLectureModal] = useState<{
             return
           }
 
+          // Phase 2D: upload/storage failed (e.g. network interruption). NEVER
+          // discard the audio — fall back to a durable LOCAL save so the lecture
+          // is preserved and stays recoverable/retryable without re-recording.
           let friendly = msg
           if (/bucket not found/i.test(msg)) {
             friendly =
               'Storage bucket missing: in Supabase go to Storage → New bucket, name it exactly lecture-audio, keep it private. Or run the SQL in project file supabase-setup.sql (creates bucket + RLS). Then try Stop & save again.'
           }
-          endCapture({
-            kind: 'failure',
-            recordingId,
-            outcome: 'storage_failed',
-            message: friendly,
-            at: Date.now(),
-          })
+          try {
+            await withTimeout(
+              saveRecordingLocal({
+                id: recordingId,
+                course: courseVal,
+                title: titleVal,
+                createdAt: Date.now(),
+                durationSec,
+                mime,
+                audioBlob: blob,
+                liveTranscript: liveTranscriptCanonical || undefined,
+                liveTranscriptRaw: liveTranscriptRaw || undefined,
+              }),
+              SAVE_DB_TIMEOUT_MS,
+              'Local save fallback (upload failed)',
+            )
+            console.warn('[capture] upload_failed_preserved_locally', JSON.stringify({ recordingId, durationSec }))
+            endCapture({
+              kind: 'list_refresh_warn',
+              recordingId,
+              message:
+                'Your recording is safe — it’s saved on this device and appears in your library. The cloud upload didn’t finish, so processing is pending; try Stop & Save again when you’re back online. Nothing was lost.',
+              at: Date.now(),
+            })
+          } catch (locFallbackErr) {
+            endCapture({
+              kind: 'failure',
+              recordingId,
+              outcome: 'storage_failed',
+              message: friendly,
+              at: Date.now(),
+            })
+          }
           ledgerClear(recordingId)
           return
         }
