@@ -48,6 +48,8 @@ CREATE TRIGGER stripe_customers_updated_at
 ALTER TABLE public.stripe_customers ENABLE ROW LEVEL SECURITY;
 -- No client policies: server (service role) reads/writes only. The mapping is
 -- never trusted from, nor exposed to, the client.
+REVOKE ALL ON TABLE public.stripe_customers FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.stripe_customers TO service_role;
 
 -- ----------------------------------------------------------------------------
 -- 2. subscriptions — canonical Stripe billing lifecycle (extensible provider).
@@ -103,8 +105,11 @@ ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "subscriptions_select_own" ON public.subscriptions;
 CREATE POLICY "subscriptions_select_own"
   ON public.subscriptions FOR SELECT
-  USING (auth.uid() = user_id);
+  USING ((select auth.uid()) = user_id);
 -- No INSERT/UPDATE/DELETE policies: service role only.
+REVOKE ALL ON TABLE public.subscriptions FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON TABLE public.subscriptions TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.subscriptions TO service_role;
 
 -- ----------------------------------------------------------------------------
 -- 3. stripe_webhook_events — at-least-once delivery idempotency ledger.
@@ -133,6 +138,8 @@ CREATE TRIGGER stripe_webhook_events_updated_at
 
 ALTER TABLE public.stripe_webhook_events ENABLE ROW LEVEL SECURITY;
 -- No policies: Stripe webhook metadata is backend service-role only.
+REVOKE ALL ON TABLE public.stripe_webhook_events FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.stripe_webhook_events TO service_role;
 
 -- ----------------------------------------------------------------------------
 -- 4. user_entitlements — make the entitlement source PROVIDER-NEUTRAL.
@@ -334,3 +341,13 @@ GRANT EXECUTE ON FUNCTION public.project_stripe_entitlement(uuid, text, text, ti
 -- SELECT product_id, provider, billing_interval, plan_type FROM public.billing_products
 --   WHERE provider='stripe' ORDER BY product_id;
 -- ============================================================================
+
+-- ROLLBACK IMPLICATIONS
+-- ---------------------
+-- This migration is additive, but reversing it after Stripe writes begin is not
+-- a simple DROP: first stop Stripe webhook/refresh writes and export the Stripe
+-- lifecycle + entitlement rows. Stripe entitlements must be removed or archived
+-- before source_transaction_id can safely become NOT NULL again. Only then may
+-- the projection function, Stripe tables/index, provider-neutral columns, and
+-- widened CHECK constraints be removed. Never roll back by deleting or rewriting
+-- existing Apple transaction-backed entitlement rows.
