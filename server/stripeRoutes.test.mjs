@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { buildCheckoutSessionParams, handleCheckout, handlePortal, handleSubscriptionStatus } from './stripeRoutes.mjs'
+import {
+  buildCheckoutSessionParams,
+  handleCheckout,
+  handlePortal,
+  handleSubscriptionStatus,
+  shouldBlockCheckoutForSubscription,
+} from './stripeRoutes.mjs'
 import { getOrCreateStripeCustomer, getStripeCustomerId, linkStripeCustomer } from './stripeCustomers.mjs'
 import { safeRedirectUrl } from './stripeConfig.mjs'
 
@@ -76,6 +82,33 @@ describe('checkout / portal / status authentication', () => {
     const res = makeRes()
     await handleSubscriptionStatus({ headers: {} }, res)
     expect(res.statusCode).toBe(401)
+  })
+})
+
+describe('shouldBlockCheckoutForSubscription (active-subscriber guard)', () => {
+  it('blocks active and canceling (still active) subscribers', () => {
+    expect(shouldBlockCheckoutForSubscription({ active: true, status: 'active', manageable: true })).toBe(true)
+    expect(
+      shouldBlockCheckoutForSubscription({
+        active: true,
+        status: 'active',
+        cancelAtPeriodEnd: true,
+        manageable: true,
+      }),
+    ).toBe(true)
+  })
+
+  it('blocks manageable past_due even when access is inactive', () => {
+    expect(
+      shouldBlockCheckoutForSubscription({ active: false, status: 'past_due', manageable: true }),
+    ).toBe(true)
+  })
+
+  it('allows free/none and expired with no active paid access', () => {
+    expect(shouldBlockCheckoutForSubscription({ active: false, status: 'none', manageable: false })).toBe(false)
+    expect(shouldBlockCheckoutForSubscription({ active: false, status: 'expired', manageable: true })).toBe(false)
+    expect(shouldBlockCheckoutForSubscription({ active: false, status: 'canceled', manageable: true })).toBe(false)
+    expect(shouldBlockCheckoutForSubscription({ active: false, status: 'past_due', manageable: false })).toBe(false)
   })
 })
 
