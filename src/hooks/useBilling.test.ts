@@ -151,7 +151,57 @@ describe('createBillingController / useBilling behavior', () => {
     gate.resolve({ ok: true, url: 'https://billing.stripe.com/portal' })
     await Promise.all([p1, p2])
     expect(openPortal).toHaveBeenCalledOnce()
+    expect(openPortal.mock.calls[0]?.length ?? 0).toBe(0)
     expect(openExternalUrl).toHaveBeenCalledWith('https://billing.stripe.com/portal')
+    c.dispose()
+  })
+
+  it('manage failure preserves free/active state and rethrows', async () => {
+    const getSubscriptionStatus = vi.fn(async () => ({
+      ok: true as const,
+      subscription: emptySub({
+        provider: 'stripe',
+        active: true,
+        status: 'active',
+        planCode: 'student_basic_monthly',
+        billingInterval: 'month',
+        manageable: true,
+      }),
+    }))
+    const getQuotaStatus = vi.fn(async () => ({ ok: true as const, plan: { unlimited: false } }))
+    const openPortal = vi.fn(async () => {
+      throw new BillingApiError('http', 'Could not open the billing portal.', {
+        status: 502,
+        code: 'portal_failed',
+      })
+    })
+    const c = createBillingController({ getSubscriptionStatus, getQuotaStatus, openPortal })
+    c.setAuthLoading(false)
+    c.setSignedIn(true)
+    await c.load()
+    expect(c.getSnapshot().state.status).toBe('active')
+    await expect(c.manage()).rejects.toMatchObject({ code: 'portal_failed' })
+    expect(c.getSnapshot().state.status).toBe('active')
+    expect(c.getSnapshot().error?.code).toBe('portal_failed')
+    c.dispose()
+  })
+
+  it('blocks manage while upgrade is in flight and vice versa', async () => {
+    let resolveCheckout!: (v: { ok: true; url: string }) => void
+    const checkoutGate = new Promise<{ ok: true; url: string }>((r) => {
+      resolveCheckout = r
+    })
+    const createCheckout = vi.fn(() => checkoutGate)
+    const openPortal = vi.fn(async () => ({ ok: true as const, url: 'https://billing.stripe.com/p' }))
+    const openExternalUrl = vi.fn(async () => {})
+    const c = createBillingController({ createCheckout, openPortal, openExternalUrl })
+    c.setAuthLoading(false)
+    c.setSignedIn(true)
+    const upgradeP = c.upgrade('student_basic_monthly')
+    await c.manage()
+    expect(openPortal).not.toHaveBeenCalled()
+    resolveCheckout({ ok: true, url: 'https://checkout.stripe.com/c' })
+    await upgradeP
     c.dispose()
   })
 

@@ -194,6 +194,7 @@ export function createBillingController(deps: BillingControllerDeps = {}) {
 
   async function upgrade(planCode: BillingPlanCode): Promise<void> {
     if (disposed) return
+    if (manageInFlight) return
     if (upgradeInFlight) return upgradeInFlight
 
     upgradeInFlight = (async () => {
@@ -222,6 +223,7 @@ export function createBillingController(deps: BillingControllerDeps = {}) {
 
   async function manage(): Promise<void> {
     if (disposed) return
+    if (upgradeInFlight) return
     if (manageInFlight) return manageInFlight
 
     manageInFlight = (async () => {
@@ -236,6 +238,7 @@ export function createBillingController(deps: BillingControllerDeps = {}) {
         if (disposed) return
         actionError = toHookError(err)
         emit()
+        throw err
       } finally {
         actionLoading = false
         manageInFlight = null

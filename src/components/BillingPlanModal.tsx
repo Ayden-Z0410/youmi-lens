@@ -1,9 +1,9 @@
 /**
- * Desktop Billing / Plan modal (Commercialization V2 · Phase 2B-2 / 2B-3).
+ * Desktop Billing / Plan modal (Commercialization V2 · Phase 2B-2 / 2B-3 / 2B-4).
  *
- * Displays authoritative billing + quota from useBilling. Phase 2B-3 launches
- * Stripe Sandbox Checkout via actions.upgrade(planCode) only — no Portal,
- * no client-side entitlement activation, no checkout-return inference.
+ * Displays authoritative billing + quota from useBilling.
+ * Checkout via actions.upgrade(planCode); Portal via actions.manage().
+ * No client-side entitlement activation; no return/focus/deep-link inference.
  */
 import { useEffect, useId, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { designTokens } from '../design-system/tokens'
@@ -14,10 +14,13 @@ import {
   ANNUAL_SAVINGS_COPY,
   STUDENT_BASIC_ANNUAL_USD,
   STUDENT_BASIC_MONTHLY_USD,
+  canOpenPortal,
   canStartCheckout,
   formatCheckoutError,
+  formatPortalError,
   intervalFromPlanCode,
   planCodeFromInterval,
+  portalActionLabel,
 } from './billingCheckoutCopy'
 import {
   handleBillingModalEscape,
@@ -127,6 +130,21 @@ function MetaRow({ label, value }: { label: string; value: string }) {
   )
 }
 
+function RefreshPlanButton({
+  onRefreshPlan,
+  disabled,
+}: {
+  onRefreshPlan?: () => void
+  disabled?: boolean
+}) {
+  if (!onRefreshPlan) return null
+  return (
+    <button type="button" className="ds-btn ds-btn--secondary" onClick={onRefreshPlan} disabled={disabled}>
+      Refresh plan status
+    </button>
+  )
+}
+
 export type PlanCheckoutPanelProps = {
   selectedPlan: BillingPlanCode
   onSelectedPlanChange: (plan: BillingPlanCode) => void
@@ -216,16 +234,60 @@ export function PlanCheckoutPanel({
   )
 }
 
+export type ManagePortalPanelProps = {
+  label: string
+  onManage: () => void
+  portalBusy: boolean
+  portalOpened: boolean
+  disabled?: boolean
+}
+
+export function ManagePortalPanel({
+  label,
+  onManage,
+  portalBusy,
+  portalOpened,
+  disabled = false,
+}: ManagePortalPanelProps) {
+  const controlsDisabled = disabled || portalBusy
+  return (
+    <div className="billing-plan-modal__manage">
+      <button
+        type="button"
+        className="ds-btn ds-btn--secondary billing-plan-modal__manage-btn"
+        aria-label={portalBusy ? 'Opening subscription management' : label}
+        aria-busy={portalBusy || undefined}
+        disabled={controlsDisabled}
+        onClick={onManage}
+      >
+        {portalBusy ? 'Opening subscription management…' : label}
+      </button>
+      {portalOpened ? (
+        <div className="billing-plan-modal__checkout-note" role="status">
+          <p className="billing-plan-modal__copy">
+            Subscription management opened in your browser. After making changes, return here and
+            refresh your plan status.
+          </p>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export type BillingPlanContentProps = {
   state: BillingState
   onRetry?: () => void
   selectedPlan?: BillingPlanCode
   onSelectedPlanChange?: (plan: BillingPlanCode) => void
   onUpgrade?: () => void
+  onManage?: () => void
   onRefreshPlan?: () => void
   checkoutBusy?: boolean
   checkoutOpened?: boolean
+  portalBusy?: boolean
+  portalOpened?: boolean
   actionError?: BillingHookError | null
+  actionErrorKind?: 'checkout' | 'portal' | null
 }
 
 /** Presentational body — used by the modal and unit tests. */
@@ -235,12 +297,21 @@ export function BillingPlanContent({
   selectedPlan = DEFAULT_PLAN,
   onSelectedPlanChange,
   onUpgrade,
+  onManage,
   onRefreshPlan,
   checkoutBusy = false,
   checkoutOpened = false,
+  portalBusy = false,
+  portalOpened = false,
   actionError = null,
+  actionErrorKind = null,
 }: BillingPlanContentProps) {
-  const checkoutError = formatCheckoutError(actionError)
+  const checkoutError =
+    actionErrorKind === 'checkout' ? formatCheckoutError(actionError) : null
+  const portalError = actionErrorKind === 'portal' ? formatPortalError(actionError) : null
+  const actionBusy = checkoutBusy || portalBusy
+  const showRefresh = Boolean(onRefreshPlan && (checkoutOpened || portalOpened))
+  const showPortal = canOpenPortal(state) && Boolean(onManage)
 
   if (state.status === 'signed_out') {
     return (
@@ -299,18 +370,14 @@ export function BillingPlanContent({
           checkoutBusy={checkoutBusy}
           checkoutOpened={checkoutOpened}
           upgradeLabel="Upgrade"
+          disabled={portalBusy}
         />
         {checkoutError ? (
           <p className="billing-plan-modal__action-error" role="alert">
             {checkoutError}
           </p>
         ) : null}
-        {checkoutOpened && onRefreshPlan ? (
-          <button type="button" className="ds-btn ds-btn--secondary" onClick={onRefreshPlan} disabled={checkoutBusy}>
-            Refresh plan status
-          </button>
-        ) : null}
-
+        <RefreshPlanButton onRefreshPlan={showRefresh ? onRefreshPlan : undefined} disabled={actionBusy} />
         <QuotaUsageRows quota={state.quota} />
       </div>
     )
@@ -337,7 +404,21 @@ export function BillingPlanContent({
           {renews ? <MetaRow label="Renews" value={renews} /> : null}
         </div>
         <QuotaUsageRows quota={state.quota} />
-        <p className="billing-plan-modal__footnote">Subscription management opens in a later step.</p>
+        {showPortal ? (
+          <ManagePortalPanel
+            label={portalActionLabel('active')}
+            onManage={() => onManage?.()}
+            portalBusy={portalBusy}
+            portalOpened={portalOpened}
+            disabled={checkoutBusy}
+          />
+        ) : null}
+        {portalError ? (
+          <p className="billing-plan-modal__action-error" role="alert">
+            {portalError}
+          </p>
+        ) : null}
+        <RefreshPlanButton onRefreshPlan={showRefresh ? onRefreshPlan : undefined} disabled={actionBusy} />
       </div>
     )
   }
@@ -359,6 +440,21 @@ export function BillingPlanContent({
             : 'Access remains available through the end of the current billing period.'}
         </p>
         <QuotaUsageRows quota={state.quota} />
+        {showPortal ? (
+          <ManagePortalPanel
+            label={portalActionLabel('canceling')}
+            onManage={() => onManage?.()}
+            portalBusy={portalBusy}
+            portalOpened={portalOpened}
+            disabled={checkoutBusy}
+          />
+        ) : null}
+        {portalError ? (
+          <p className="billing-plan-modal__action-error" role="alert">
+            {portalError}
+          </p>
+        ) : null}
+        <RefreshPlanButton onRefreshPlan={showRefresh ? onRefreshPlan : undefined} disabled={actionBusy} />
       </div>
     )
   }
@@ -385,11 +481,26 @@ export function BillingPlanContent({
           {grace ? <MetaRow label="Grace until" value={grace} /> : null}
         </div>
         <QuotaUsageRows quota={state.quota} />
+        {showPortal ? (
+          <ManagePortalPanel
+            label={portalActionLabel('past_due')}
+            onManage={() => onManage?.()}
+            portalBusy={portalBusy}
+            portalOpened={portalOpened}
+            disabled={checkoutBusy}
+          />
+        ) : null}
+        {portalError ? (
+          <p className="billing-plan-modal__action-error" role="alert">
+            {portalError}
+          </p>
+        ) : null}
+        <RefreshPlanButton onRefreshPlan={showRefresh ? onRefreshPlan : undefined} disabled={actionBusy} />
       </div>
     )
   }
 
-  // expired — may start a new subscription (not a resume).
+  // expired — Checkout for a new plan; Portal only when manageable.
   return (
     <div className="billing-plan-modal__panel" data-billing-status="expired">
       <div className="billing-plan-modal__header-row">
@@ -406,6 +517,20 @@ export function BillingPlanContent({
         You still have Free access with the quotas below. Choose a new plan if you want Student Basic
         again.
       </p>
+      {showPortal ? (
+        <ManagePortalPanel
+          label={portalActionLabel('expired')}
+          onManage={() => onManage?.()}
+          portalBusy={portalBusy}
+          portalOpened={portalOpened}
+          disabled={checkoutBusy}
+        />
+      ) : null}
+      {portalError ? (
+        <p className="billing-plan-modal__action-error" role="alert">
+          {portalError}
+        </p>
+      ) : null}
       <PlanCheckoutPanel
         selectedPlan={selectedPlan}
         onSelectedPlanChange={(plan) => onSelectedPlanChange?.(plan)}
@@ -413,17 +538,14 @@ export function BillingPlanContent({
         checkoutBusy={checkoutBusy}
         checkoutOpened={checkoutOpened}
         upgradeLabel="Choose a new plan"
+        disabled={portalBusy}
       />
       {checkoutError ? (
         <p className="billing-plan-modal__action-error" role="alert">
           {checkoutError}
         </p>
       ) : null}
-      {checkoutOpened && onRefreshPlan ? (
-        <button type="button" className="ds-btn ds-btn--secondary" onClick={onRefreshPlan} disabled={checkoutBusy}>
-          Refresh plan status
-        </button>
-      ) : null}
+      <RefreshPlanButton onRefreshPlan={showRefresh ? onRefreshPlan : undefined} disabled={actionBusy} />
       <QuotaUsageRows quota={state.quota} />
     </div>
   )
@@ -443,6 +565,9 @@ function BillingPlanModalFrame({
   const [selectedPlan, setSelectedPlan] = useState<BillingPlanCode>(DEFAULT_PLAN)
   const [checkoutBusy, setCheckoutBusy] = useState(false)
   const [checkoutOpened, setCheckoutOpened] = useState(false)
+  const [portalBusy, setPortalBusy] = useState(false)
+  const [portalOpened, setPortalOpened] = useState(false)
+  const [actionErrorKind, setActionErrorKind] = useState<'checkout' | 'portal' | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -468,26 +593,54 @@ function BillingPlanModalFrame({
     if (!open) return
     setCheckoutOpened(false)
     setCheckoutBusy(false)
+    setPortalOpened(false)
+    setPortalBusy(false)
+    setActionErrorKind(null)
     void loadBilling()
   }, [open, loadBilling])
 
   if (!open) return null
 
   const allowCheckout = canStartCheckout(billing.state.status)
-  const busy = billing.state.status === 'loading' || billing.loading || checkoutBusy
+  const allowPortal = canOpenPortal(billing.state)
+  const busy = billing.state.status === 'loading' || billing.loading || checkoutBusy || portalBusy
 
   const handleUpgrade = () => {
-    if (!allowCheckout || checkoutBusy) return
+    if (!allowCheckout || checkoutBusy || portalBusy) return
     setCheckoutBusy(true)
     setCheckoutOpened(false)
+    setPortalOpened(false)
+    setActionErrorKind(null)
     void (async () => {
       try {
         await billing.actions.upgrade(selectedPlan)
         setCheckoutOpened(true)
+        setActionErrorKind(null)
       } catch {
         setCheckoutOpened(false)
+        setActionErrorKind('checkout')
       } finally {
         setCheckoutBusy(false)
+      }
+    })()
+  }
+
+  const handleManage = () => {
+    if (!allowPortal || portalBusy || checkoutBusy) return
+    setPortalBusy(true)
+    setPortalOpened(false)
+    setCheckoutOpened(false)
+    setActionErrorKind(null)
+    void (async () => {
+      try {
+        await billing.actions.manage()
+        setPortalOpened(true)
+        setActionErrorKind(null)
+      } catch {
+        setPortalOpened(false)
+        setActionErrorKind('portal')
+      } finally {
+        setPortalBusy(false)
       }
     })()
   }
@@ -555,22 +708,17 @@ function BillingPlanModalFrame({
             selectedPlan={selectedPlan}
             onSelectedPlanChange={setSelectedPlan}
             onUpgrade={allowCheckout ? handleUpgrade : undefined}
-            onRefreshPlan={
-              allowCheckout
-                ? () => {
-                    void billing.actions.refresh()
-                  }
-                : undefined
-            }
+            onManage={allowPortal ? handleManage : undefined}
+            onRefreshPlan={() => {
+              void billing.actions.refresh()
+            }}
             checkoutBusy={checkoutBusy}
             checkoutOpened={checkoutOpened}
-            actionError={allowCheckout ? billing.error : null}
+            portalBusy={portalBusy}
+            portalOpened={portalOpened}
+            actionError={billing.error}
+            actionErrorKind={actionErrorKind}
           />
-          {!allowCheckout && billing.error && billing.state.status !== 'unavailable' ? (
-            <p className="billing-plan-modal__action-error" role="status">
-              {billing.error.message}
-            </p>
-          ) : null}
         </div>
       </div>
     </div>

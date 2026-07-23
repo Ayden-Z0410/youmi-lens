@@ -15,7 +15,7 @@ import {
   formatCheckoutError,
   planCodeFromInterval,
 } from './billingCheckoutCopy'
-import { BillingPlanContent, BillingPlanModal, PlanCheckoutPanel } from './BillingPlanModal'
+import { BillingPlanContent, BillingPlanModal, ManagePortalPanel, PlanCheckoutPanel } from './BillingPlanModal'
 import {
   handleBillingModalEscape,
   handleBillingModalOverlayMouseDown,
@@ -109,7 +109,7 @@ describe('BillingPlanContent states', () => {
     expect(html).not.toContain('Payment successful')
   })
 
-  it('active monthly has no Checkout purchase', () => {
+  it('active monthly has no Checkout purchase; Manage when manageable', () => {
     const html = renderContent({
       status: 'active',
       planCode: 'student_basic_monthly',
@@ -117,12 +117,13 @@ describe('BillingPlanContent states', () => {
       currentPeriodEnd: '2026-08-15T00:00:00.000Z',
       manageable: true,
       quota: studentQuota,
-    })
+    }, { onManage: () => {} })
     expect(html).toContain('data-billing-interval="monthly"')
     expect(html).toContain('Active')
+    expect(html).toContain('Manage subscription')
     expect(html).not.toContain('Upgrade')
     expect(html).not.toContain('Choose a new plan')
-    expect(html).not.toContain('Opening Checkout')
+    expect(html).not.toContain('Subscription management opens in a later step')
   })
 
   it('active annual has no Checkout purchase', () => {
@@ -133,8 +134,9 @@ describe('BillingPlanContent states', () => {
       currentPeriodEnd: '2027-01-01T00:00:00.000Z',
       manageable: true,
       quota: studentQuota,
-    })
+    }, { onManage: () => {} })
     expect(html).toContain('data-billing-interval="annual"')
+    expect(html).toContain('Manage subscription')
     expect(html).not.toContain('Upgrade')
     expect(html).not.toContain('Choose a new plan')
   })
@@ -147,8 +149,9 @@ describe('BillingPlanContent states', () => {
       accessThrough: '2026-08-15T00:00:00.000Z',
       manageable: true,
       quota: studentQuota,
-    })
+    }, { onManage: () => {} })
     expect(html).toContain('Cancellation scheduled')
+    expect(html).toContain('Manage subscription')
     expect(html).not.toContain('Upgrade')
     expect(html).not.toContain('Choose a new plan')
   })
@@ -163,8 +166,9 @@ describe('BillingPlanContent states', () => {
       accessActive: true,
       manageable: true,
       quota: studentQuota,
-    })
+    }, { onManage: () => {} })
     expect(html).toContain('Payment issue')
+    expect(html).toContain('Resolve billing issue')
     expect(html).not.toContain('Upgrade')
     expect(html).not.toContain('Choose a new plan')
   })
@@ -179,8 +183,9 @@ describe('BillingPlanContent states', () => {
       accessActive: false,
       manageable: true,
       quota: emptyQuota,
-    })
+    }, { onManage: () => {} })
     expect(html).toContain('access is currently limited')
+    expect(html).toContain('Resolve billing issue')
     expect(html).not.toContain('Upgrade')
   })
 
@@ -334,6 +339,7 @@ describe('checkout action restrictions', () => {
       { status: 'free', quota: studentQuota },
       {
         onUpgrade: () => {},
+        actionErrorKind: 'checkout',
         actionError: {
           kind: 'network',
           message: 'secret stack',
@@ -492,14 +498,174 @@ describe('BillingPlanModal chrome', () => {
         },
       ),
     )
-    expect(html).toContain('Subscription management opens in a later step')
+    expect(html).toContain('Manage subscription')
     expect(upgrade).not.toHaveBeenCalled()
     expect(manage).not.toHaveBeenCalled()
   })
 })
 
+describe('Portal eligibility and action UI', () => {
+  it('shows Manage only when manageable is true', () => {
+    const withManage = renderContent(
+      {
+        status: 'active',
+        planCode: 'student_basic_monthly',
+        interval: 'monthly',
+        currentPeriodEnd: null,
+        manageable: true,
+        quota: studentQuota,
+      },
+      { onManage: () => {} },
+    )
+    const withoutManage = renderContent({
+      status: 'active',
+      planCode: 'student_basic_monthly',
+      interval: 'monthly',
+      currentPeriodEnd: null,
+      manageable: false,
+      quota: studentQuota,
+    }, { onManage: () => {} })
+    expect(withManage).toContain('Manage subscription')
+    expect(withoutManage).not.toContain('Manage subscription')
+  })
+
+  it('canceling and past_due respect manageable', () => {
+    expect(
+      renderContent(
+        {
+          status: 'canceling',
+          planCode: 'student_basic_monthly',
+          interval: 'monthly',
+          accessThrough: null,
+          manageable: false,
+          quota: studentQuota,
+        },
+        { onManage: () => {} },
+      ),
+    ).not.toContain('Manage subscription')
+    expect(
+      renderContent(
+        {
+          status: 'past_due',
+          planCode: 'student_basic_monthly',
+          interval: 'monthly',
+          currentPeriodEnd: null,
+          graceUntil: null,
+          accessActive: true,
+          manageable: false,
+          quota: studentQuota,
+        },
+        { onManage: () => {} },
+      ),
+    ).not.toContain('Resolve billing issue')
+  })
+
+  it('free/signed_out/loading/unavailable never show Portal', () => {
+    expect(renderContent({ status: 'free', quota: studentQuota }, { onManage: () => {} })).not.toContain(
+      'Manage subscription',
+    )
+    expect(renderContent({ status: 'signed_out' }, { onManage: () => {} })).not.toContain('Manage subscription')
+    expect(renderContent({ status: 'loading' }, { onManage: () => {} })).not.toContain('Manage subscription')
+    expect(
+      renderContent(
+        { status: 'unavailable', reason: 'x', retryable: true },
+        { onManage: () => {}, onRetry: () => {} },
+      ),
+    ).not.toContain('Manage subscription')
+  })
+
+  it('expired shows Manage billing only when manageable; Checkout remains', () => {
+    const manageable = renderContent(
+      {
+        status: 'expired',
+        planCode: 'student_basic_annual',
+        interval: 'annual',
+        currentPeriodEnd: null,
+        manageable: true,
+        quota: studentQuota,
+      },
+      { onManage: () => {}, onUpgrade: () => {} },
+    )
+    const notManageable = renderContent(
+      {
+        status: 'expired',
+        planCode: 'student_basic_annual',
+        interval: 'annual',
+        currentPeriodEnd: null,
+        manageable: false,
+        quota: studentQuota,
+      },
+      { onManage: () => {}, onUpgrade: () => {} },
+    )
+    expect(manageable).toContain('Manage billing')
+    expect(manageable).toContain('Choose a new plan')
+    expect(notManageable).not.toContain('Manage billing')
+    expect(notManageable).toContain('Choose a new plan')
+  })
+
+  it('portal opened copy does not claim subscription changed', () => {
+    const html = renderContent(
+      {
+        status: 'active',
+        planCode: 'student_basic_annual',
+        interval: 'annual',
+        currentPeriodEnd: '2027-01-01T00:00:00.000Z',
+        manageable: true,
+        quota: studentQuota,
+      },
+      { onManage: () => {}, portalOpened: true, onRefreshPlan: () => {} },
+    )
+    expect(html).toContain('Subscription management opened in your browser')
+    expect(html).toContain('Refresh plan status')
+    expect(html).not.toContain('Subscription updated')
+    expect(html).not.toContain('Cancellation complete')
+    expect(html).not.toContain('Payment fixed')
+  })
+
+  it('portal action error preserves active display and stays user-safe', () => {
+    const html = renderContent(
+      {
+        status: 'active',
+        planCode: 'student_basic_monthly',
+        interval: 'monthly',
+        currentPeriodEnd: null,
+        manageable: true,
+        quota: studentQuota,
+      },
+      {
+        onManage: () => {},
+        actionErrorKind: 'portal',
+        actionError: {
+          kind: 'http',
+          message: 'raw cus_abc stack',
+          code: 'no_customer',
+          status: 409,
+        },
+      },
+    )
+    expect(html).toContain('data-billing-status="active"')
+    expect(html).toContain('We couldn’t find a billing profile for this account.')
+    expect(html).not.toContain('cus_')
+    expect(html).not.toContain('raw cus_abc')
+  })
+
+  it('portal busy disables management control', () => {
+    const html = renderToStaticMarkup(
+      createElement(ManagePortalPanel, {
+        label: 'Manage subscription',
+        onManage: () => {},
+        portalBusy: true,
+        portalOpened: false,
+      }),
+    )
+    expect(html).toContain('Opening subscription management…')
+    expect(html).toContain('aria-busy="true"')
+    expect(html).toContain('disabled')
+  })
+})
+
 describe('Settings integration markers', () => {
-  it('App Settings keeps BillingPlanModal without Checkout fetch in App', async () => {
+  it('App Settings keeps BillingPlanModal without Checkout/Portal fetch in App', async () => {
     const fs = await import('node:fs/promises')
     const app = await fs.readFile(new URL('../App.tsx', import.meta.url), 'utf8')
     const modal = await fs.readFile(new URL('./BillingPlanModal.tsx', import.meta.url), 'utf8')
@@ -508,8 +674,10 @@ describe('Settings integration markers', () => {
     expect(app).not.toContain('openPortal')
     expect(app).not.toContain('window.open')
     expect(modal).toContain('actions.upgrade')
+    expect(modal).toContain('actions.manage')
     expect(modal).not.toContain('window.open')
     expect(modal).not.toContain('createCheckout(')
+    expect(modal).not.toContain('openPortal(')
     expect(modal).not.toContain('fetch(')
   })
 })

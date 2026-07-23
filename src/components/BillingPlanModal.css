@@ -218,6 +218,17 @@
   width: 100%;
 }
 
+.billing-plan-modal__manage {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.billing-plan-modal__manage-btn {
+  width: 100%;
+}
+
 .billing-plan-modal__checkout-note {
   padding-top: 2px;
 }
