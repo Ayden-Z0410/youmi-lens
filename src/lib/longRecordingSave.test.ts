@@ -22,10 +22,25 @@ describe('long-recording save flow (src/App.tsx)', () => {
     expect(appSrc).toContain('uploadLectureAudioViaServer(')
   })
 
-  it('preserves the audio locally when the cloud upload fails (Scenario C)', () => {
-    // the storage-failure branch now falls back to a durable local save
-    expect(appSrc).toContain("'Local save fallback (upload failed)'")
-    expect(appSrc).toContain('upload_failed_preserved_locally')
+  it('preserves the audio as a durable per-user PENDING UPLOAD when the cloud upload fails (Scenario C)', () => {
+    // the storage-failure branch now saves a per-user pending record (survives
+    // restart, owner-only, retryable) instead of an invisible local row
+    expect(appSrc).toContain('savePendingUpload({')
+    expect(appSrc).toContain('userId: userId!')
+    expect(appSrc).toContain('upload_failed_pending_saved')
+  })
+
+  it('exposes a real user retry that reuses the same recording id (idempotent, no duplicates)', () => {
+    expect(appSrc).toContain('handleRetryPendingUpload')
+    // same UUID → same storage path + idempotent insert; local copy dropped only after success
+    expect(appSrc).toContain('uploadLectureAudioViaServer(supabase, id,')
+    expect(appSrc).toContain('await deletePendingUpload(id)')
+  })
+
+  it('merges per-user pending uploads into Courses, de-duped against cloud', () => {
+    expect(appSrc).toContain('listPendingUploads(userId)')
+    expect(appSrc).toContain('visiblePendingUploads(')
+    expect(appSrc).toContain('Pending uploads ·')
   })
 
   it('auto-retries transient upload interruptions (bounded, idempotent)', () => {
@@ -35,9 +50,9 @@ describe('long-recording save flow (src/App.tsx)', () => {
   })
 
   it('does not tell the user to "Stop & Save again" (an invalid retry) on upload failure', () => {
-    // the corrected fallback message must not promise the invalid re-record path
+    // the corrected message points at the real in-app Retry, not an invalid path
     expect(appSrc).not.toContain('try Stop & Save again when you’re back online')
-    expect(appSrc).toContain('Export local backup') // points at the real recovery
+    expect(appSrc).toContain('tap Retry when you’re back online')
   })
 
   it('keeps the existing recording_too_long → local fallback intact', () => {

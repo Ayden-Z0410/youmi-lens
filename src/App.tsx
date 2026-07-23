@@ -43,7 +43,19 @@ import {
   restoreRecordingFromTrashLocal,
   saveRecordingLocal,
   updateRecordingLocal,
+  savePendingUpload,
+  getPendingUploadWithBlob,
+  listPendingUploads,
+  updatePendingUpload,
+  deletePendingUpload,
 } from './lib/db'
+import {
+  visiblePendingUploads,
+  sanitizeUploadErrorCategory,
+  pendingStatusLabel,
+  pendingStatusDetail,
+  type PendingUploadMeta,
+} from './lib/pendingUploads'
 import { buildLocalBackupZip, importLocalBackupZip } from './lib/localBackup'
 import { getSupabase, isSupabaseConfigured } from './lib/supabase'
 import { summarizeRecording, transcribeRecording, translateLiveCaption } from './lib/aiClient'
@@ -2432,6 +2444,8 @@ function RecordingWorkspace({
   ])
 
   const [recordings, setRecordings] = useState<Recording[]>([])
+  /** Durable pending/failed cloud uploads for the current user (Phase 2D-2). */
+  const [pendingUploads, setPendingUploads] = useState<PendingUploadMeta[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<RecordingDetail | null>(null)
 
@@ -2645,8 +2659,108 @@ const [editLectureModal, setEditLectureModal] = useState<{
       ? await listRecordingsLocal()
       : await listRecordings(supabase!, userId!)
     setRecordings(list)
+    // Durable pending/failed cloud uploads for THIS user, de-duped against cloud
+    // (so a successfully-retried recording never shows twice). Best-effort: never
+    // block the main list. Local-only mode has no pending cloud uploads.
+    if (!localOnly && userId) {
+      try {
+        const mine = await listPendingUploads(userId)
+        setPendingUploads(visiblePendingUploads(mine, userId, new Set(list.map((r) => r.id))))
+      } catch {
+        /* ignore */
+      }
+    } else {
+      setPendingUploads([])
+    }
     return list
   }, [localOnly, supabase, userId])
+
+  /**
+   * Phase 2D-2: real user retry for a pending/failed upload. Reuses the SAME
+   * recording UUID → same stable storage path + idempotent DB insert, so it can
+   * never create a duplicate lecture, storage object, or quota charge. Local audio
+   * is preserved until cloud persistence is confirmed, then cleaned up.
+   */
+  const handleRetryPendingUpload = useCallback(
+    async (id: string) => {
+      if (localOnly || !supabase || !userId) return
+      const rec = await getPendingUploadWithBlob(id)
+      if (!rec) {
+        await refreshList()
+        return
+      }
+      await updatePendingUpload(id, { state: 'uploading', updatedAt: Date.now() })
+      setPendingUploads((prev) => prev.map((p) => (p.id === id ? { ...p, state: 'uploading' } : p)))
+      try {
+        let saveResult: Awaited<ReturnType<typeof uploadLectureAudioViaServer>> | undefined
+        for (let attempt = 1; ; attempt++) {
+          try {
+            saveResult = await withTimeout(
+              uploadLectureAudioViaServer(supabase, id, rec.audioBlob, rec.mime, rec.durationSec, {
+                course: rec.course,
+                title: rec.title,
+                liveTranscript: rec.liveTranscript ?? '',
+                liveTranscriptRaw: rec.liveTranscriptRaw ?? '',
+              }),
+              SAVE_UPLOAD_TIMEOUT_MS,
+              'Retry upload',
+            )
+            break
+          } catch (attemptErr) {
+            const plan = computeUploadRetryPlan(attempt)
+            if (!plan.retry || !isTransientUploadError(attemptErr)) throw attemptErr
+            await new Promise((r) => window.setTimeout(r, plan.delayMs))
+          }
+        }
+        if (!saveResult!.recording) {
+          await insertLectureRecordingRow({
+            supabase,
+            userId,
+            id,
+            course: rec.course,
+            title: rec.title,
+            durationSec: rec.durationSec,
+            mime: rec.mime,
+            storagePath: saveResult!.storagePath,
+            liveTranscript: rec.liveTranscript ?? '',
+            liveTranscriptRaw: rec.liveTranscriptRaw ?? '',
+          })
+        }
+        // Cloud persistence confirmed → the local fallback copy is now safe to drop.
+        await deletePendingUpload(id)
+        try {
+          const { data } = await supabase.auth.getSession()
+          const tok = data.session?.access_token
+          if (tok) await requestHostedRecordingAi({ accessToken: tok, recordingId: id })
+        } catch {
+          /* processing can be started later from the lecture; upload already safe */
+        }
+        await refreshList()
+        setSelectedId(id)
+      } catch (err) {
+        await updatePendingUpload(id, {
+          state: 'upload_failed',
+          lastErrorCategory: sanitizeUploadErrorCategory(err),
+          attempts: (rec.attempts ?? 1) + 1,
+          updatedAt: Date.now(),
+        })
+        await refreshList()
+      }
+    },
+    [localOnly, supabase, userId, refreshList],
+  )
+
+  const handleDeletePendingUpload = useCallback(
+    async (id: string) => {
+      const ok = window.confirm(
+        'Delete this recording?\n\nThis is the only copy, saved on this device — it has NOT been uploaded to the cloud. Deleting permanently removes the audio and cannot be undone.',
+      )
+      if (!ok) return
+      await deletePendingUpload(id)
+      await refreshList()
+    },
+    [refreshList],
+  )
 
   const [draggingRecordingId, setDraggingRecordingId] = useState<string | null>(null)
   const [dropTargetFolderId, setDropTargetFolderId] = useState<LibraryDropId | null>(null)
@@ -3158,30 +3272,47 @@ const [editLectureModal, setEditLectureModal] = useState<{
               'Storage bucket missing: in Supabase go to Storage → New bucket, name it exactly lecture-audio, keep it private. Or run the SQL in project file supabase-setup.sql (creates bucket + RLS). Then try Stop & save again.'
           }
           try {
+            // Phase 2D-2: preserve as a DURABLE, per-user PENDING UPLOAD (keyed by
+            // the stable recording UUID + authenticated userId). It survives app
+            // restart, is shown only to its owner in Courses → "Pending uploads",
+            // and has a real Retry action — no re-recording, no data loss.
             await withTimeout(
-              saveRecordingLocal({
+              savePendingUpload({
                 id: recordingId,
+                userId: userId!,
                 course: courseVal,
                 title: titleVal,
-                createdAt: Date.now(),
                 durationSec,
                 mime,
-                audioBlob: blob,
+                lang: liveLang,
+                translateTarget,
                 liveTranscript: liveTranscriptCanonical || undefined,
                 liveTranscriptRaw: liveTranscriptRaw || undefined,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                state: 'upload_failed',
+                lastErrorCategory: sanitizeUploadErrorCategory(upErr),
+                attempts: 1,
+                cloudUploaded: false,
+                audioBlob: blob,
               }),
               SAVE_DB_TIMEOUT_MS,
-              'Local save fallback (upload failed)',
+              'Preserve failed upload (pending)',
             )
-            console.warn('[capture] upload_failed_preserved_locally', JSON.stringify({ recordingId, durationSec }))
+            console.warn('[capture] upload_failed_pending_saved', JSON.stringify({ recordingId, durationSec, category: sanitizeUploadErrorCategory(upErr) }))
+            try {
+              await refreshList()
+            } catch {
+              /* best-effort refresh */
+            }
             endCapture({
               kind: 'list_refresh_warn',
               recordingId,
               message:
-                'Your recording is safe — the audio is saved on this device and nothing was lost. The upload to the cloud didn’t complete (even after retrying), so this lecture isn’t transcribed yet. Keep a copy now with “Export local backup” below; full processing resumes once a cloud upload succeeds.',
+                'Your recording is safe — the audio is saved on this device and nothing was lost. The upload didn’t finish, so it’s waiting in Courses under “Pending uploads”. Open Courses and tap Retry when you’re back online — no need to re-record.',
               at: Date.now(),
             })
-          } catch (locFallbackErr) {
+          } catch {
             endCapture({
               kind: 'failure',
               recordingId,
@@ -4389,6 +4520,59 @@ useEffect(() => {
                   </p>
                 </div>
               </div>
+              {pendingUploads.length > 0 && (
+                <div
+                  role="region"
+                  aria-label="Pending uploads"
+                  style={{
+                    margin: '0 0 14px',
+                    border: '1px solid rgba(6,27,52,0.14)',
+                    background: 'rgba(255,255,255,0.72)',
+                    borderRadius: 12,
+                    padding: '12px 14px',
+                  }}
+                >
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: '#334155' }}>
+                    Pending uploads · {pendingUploads.length}
+                  </div>
+                  <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 12 }}>
+                    {pendingUploads.map((p) => (
+                      <li
+                        key={p.id}
+                        style={{ display: 'flex', gap: 12, alignItems: 'flex-start', justifyContent: 'space-between' }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 14 }}>{p.title}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                            {p.course} · {Math.max(1, Math.round(p.durationSec / 60))} min · {pendingStatusLabel(p)}
+                          </div>
+                          <div style={{ fontSize: 12, color: '#8492a6', marginTop: 4, lineHeight: 1.45 }}>
+                            {pendingStatusDetail(p)}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                          <button
+                            type="button"
+                            className="btn small"
+                            disabled={p.state === 'uploading'}
+                            onClick={() => void handleRetryPendingUpload(p.id)}
+                          >
+                            {p.state === 'uploading' ? 'Uploading…' : 'Retry upload'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn ghost small"
+                            disabled={p.state === 'uploading'}
+                            onClick={() => void handleDeletePendingUpload(p.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {courseView.type === 'recentlyDeleted' ? (
                 <div className="courses-trash-panel">
                   <h3>Recently Deleted</h3>

@@ -1,11 +1,18 @@
 import type { Recording, RecordingDetail } from '../types'
+import type { PendingUploadMeta } from './pendingUploads'
 
 const DB_NAME = 'lecture-companion'
-const DB_VERSION = 3
+// v4 (Phase 2D-2): add the additive `pending_uploads` store for cloud recordings
+// whose upload failed. The existing `recordings`/`recordings_trash` stores are
+// untouched, so local-only mode behaviour is unchanged.
+const DB_VERSION = 4
 const STORE = 'recordings'
 const TRASH_STORE = 'recordings_trash'
+const PENDING_STORE = 'pending_uploads'
 
 export type RecordingWithBlob = Recording & { audioBlob: Blob }
+/** Durable cloud pending/failed upload: metadata (incl. userId) + the audio blob. */
+export type PendingUploadRow = PendingUploadMeta & { audioBlob: Blob }
 
 type Row = RecordingWithBlob
 
@@ -22,7 +29,80 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(TRASH_STORE)) {
         db.createObjectStore(TRASH_STORE, { keyPath: 'id' })
       }
+      if (!db.objectStoreNames.contains(PENDING_STORE)) {
+        db.createObjectStore(PENDING_STORE, { keyPath: 'id' })
+      }
     }
+  })
+}
+
+// ── Pending cloud uploads (Phase 2D-2) ───────────────────────────────────────
+// A cloud recording whose upload failed is preserved here — keyed by the stable
+// recording UUID and tagged with the authenticated userId — so it stays durably
+// recoverable and retryable across restarts, and is only ever shown to its owner.
+
+export async function savePendingUpload(row: PendingUploadRow): Promise<void> {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PENDING_STORE, 'readwrite')
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    tx.objectStore(PENDING_STORE).put(row)
+  })
+}
+
+export async function getPendingUploadWithBlob(id: string): Promise<PendingUploadRow | null> {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PENDING_STORE, 'readonly')
+    const req = tx.objectStore(PENDING_STORE).get(id)
+    req.onsuccess = () => resolve((req.result as PendingUploadRow | undefined) ?? null)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+/** All pending uploads for one authenticated user (metadata only; no blobs). */
+export async function listPendingUploads(userId: string): Promise<PendingUploadMeta[]> {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PENDING_STORE, 'readonly')
+    const req = tx.objectStore(PENDING_STORE).getAll()
+    req.onsuccess = () => {
+      const rows = (req.result as PendingUploadRow[]) ?? []
+      const mine = rows
+        .filter((r) => r.userId === userId)
+        .map(({ audioBlob: _b, ...meta }) => {
+          void _b
+          return meta
+        })
+      resolve(mine)
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
+export async function updatePendingUpload(
+  id: string,
+  patch: Partial<Pick<PendingUploadMeta, 'state' | 'lastErrorCategory' | 'attempts' | 'updatedAt' | 'cloudUploaded'>>,
+): Promise<void> {
+  const existing = await getPendingUploadWithBlob(id)
+  if (!existing) return
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PENDING_STORE, 'readwrite')
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    tx.objectStore(PENDING_STORE).put({ ...existing, ...patch })
+  })
+}
+
+export async function deletePendingUpload(id: string): Promise<void> {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PENDING_STORE, 'readwrite')
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    tx.objectStore(PENDING_STORE).delete(id)
   })
 }
 
