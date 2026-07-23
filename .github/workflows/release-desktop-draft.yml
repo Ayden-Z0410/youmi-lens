@@ -1,0 +1,86 @@
+name: Desktop Release (DRAFT / dry-run)
+
+# Phase 2E — smallest safe release workflow for the in-app updater.
+#
+# SAFETY:
+#   - Manual trigger only (workflow_dispatch).
+#   - Publishes a DRAFT GitHub Release (never public until a human reviews it).
+#   - Produces the signed Tauri v2 updater artifacts + latest.json manifest.
+#   - Old releases are preserved (a new draft never deletes prior releases),
+#     so rollback is always possible.
+#   - No secret is printed. Signing/notarization/updater keys come from GitHub
+#     Actions secrets ONLY (never committed).
+#
+# This does NOT touch the backend, Supabase, quota/billing/Stripe, or the iPad.
+# It does NOT update the website; the fresh-install download links are updated
+# in a separate, reviewed step (see docs/desktop-updater.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = build + sign artifacts but do NOT create a release"
+        required: false
+        default: "true"
+
+permissions:
+  contents: write # required to create the draft release + upload assets
+
+jobs:
+  version-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      # Fail fast if package.json / tauri.conf.json / Cargo.toml disagree, and
+      # (when tag-triggered) if the tag doesn't match the app version.
+      - run: node scripts/check-versions.mjs
+
+  build:
+    needs: version-gate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest # universal / Apple Silicon + Intel per tauri.conf
+            args: ""
+          - os: windows-latest # NSIS + MSI updater artifacts
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - run: npm ci
+      - run: npm run check:versions
+      - run: npm run test
+      # tauri-action builds, SIGNS the updater artifacts with the updater private
+      # key, produces per-platform .sig files + latest.json, and (unless dry-run)
+      # uploads them to a DRAFT release. Apple signing/notarization + updater keys
+      # are injected from secrets only.
+      - name: Build & sign (draft)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # Updater signing (from `tauri signer generate`) — secrets only:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_KEY_PASSWORD }}
+          # Apple signing + notarization (macOS) — preserve existing identity:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          # Draft release; the updater manifest asset is `latest.json`, matching the
+          # endpoint in tauri.conf.json (releases/latest/download/latest.json).
+          tagName: v__VERSION__
+          releaseName: "Youmi Lens v__VERSION__"
+          releaseDraft: true
+          prerelease: false
+          # dry-run: build+sign only, do not create/publish the draft.
+          args: ${{ inputs.dry_run == 'true' && '--no-bundle' || matrix.args }}

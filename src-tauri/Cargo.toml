@@ -25,6 +25,9 @@ tauri = { version = "2.10.3", features = ["devtools", "macos-private-api"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-log = "2"
+# In-app auto update (Phase 2E): official Tauri v2 updater + process (relaunch).
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 # "deep-link" feature forwards CLI/deep-link args from killed secondary instances into tauri-plugin-deep-link on the primary app (Windows/Linux; pairs with .plugin order below).
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 

@@ -96,6 +96,7 @@ import {
   type UserProfileRow,
 } from './lib/userProfile'
 import { AccountSettingsModal } from './components/AccountSettingsModal'
+import { UpdaterEntry } from './components/UpdaterEntry'
 import { AccessUsageModal } from './components/AccessUsageModal'
 import { BillingPlanModal } from './components/BillingPlanModal'
 import { AuthScreens } from './components/AuthScreens'
@@ -5271,6 +5272,12 @@ useEffect(() => {
               </button>
             </nav>
           </div>
+          <UpdaterEntry
+            recordingSafety={{
+              recorderStatus: recorder.status as 'idle' | 'recording' | 'paused',
+              saveInFlight: saveOrFinishBusy,
+            }}
+          />
           <div className="yl-sidebar-divider record-sidebar-admin-hidden" aria-hidden />
           <div
             id="yl-library"

@@ -319,6 +319,15 @@ pub fn run() {
   builder = builder.plugin(tauri_plugin_deep_link::init());
   builder = builder.plugin(tauri_plugin_shell::init());
 
+  // In-app auto update (Phase 2E): official Tauri v2 updater + process (relaunch).
+  // Desktop only. The frontend drives check/download/install via the JS plugin;
+  // install/restart is gated by the recording-safety rule in the UI layer.
+  #[cfg(all(not(target_os = "android"), not(target_os = "ios")))]
+  {
+    builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    builder = builder.plugin(tauri_plugin_process::init());
+  }
+
   #[cfg(all(not(target_os = "android"), not(target_os = "ios")))]
   {
     builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {

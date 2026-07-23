@@ -44,6 +44,12 @@
     }
   },
   "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Ayden-Z0410/youmi-lens/releases/latest/download/latest.json"
+      ],
+      "pubkey": "UPDATER_PUBLIC_KEY_PLACEHOLDER_RUN_TAURI_SIGNER_GENERATE"
+    },
     "deep-link": {
       "desktop": {
         "schemes": ["lecturecompanion"]
@@ -52,6 +58,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
