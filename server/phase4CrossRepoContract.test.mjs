@@ -15,7 +15,14 @@ function ipad(path) {
   return readFileSync(join(IPAD_REPO, path), 'utf8')
 }
 
-describe.skipIf(!IPAD_AVAILABLE)('Phase 4 backend/iPad IAP API contract', () => {
+describe('Phase 4 backend/iPad IAP API contract', () => {
+  // CI / machines without the sibling iPad checkout cannot run this suite.
+  // Desktop release builds must still pass `npm test` without that path.
+  if (!IPAD_AVAILABLE) {
+    it.skip(`skipped: iPad repo not found at ${IPAD_REPO}`, () => {})
+    return
+  }
+
   const routes = backend('./iapRoutes.mjs')
   const apple = backend('./iapApple.mjs')
   const purchases = ipad('lib/purchases.ts')
