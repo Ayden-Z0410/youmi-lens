@@ -79,8 +79,9 @@ export function transcribeNeedsSetupMessage(
   return 'Youmi AI is not ready. Please try again in a moment.'
 }
 
+/** Informational only — must never gate or discard a recording (Phase 2D-4). */
 export function recordingTooLargeUserMessage(mb: string): string {
-  return `This recording is about ${mb} MB. For now, shorter sessions (under about 25 MB) work best. Try a shorter clip or lower recording quality.`
+  return `This recording is about ${mb} MB. It is saved normally; large files may take longer to upload or process.`
 }
 
 /** Collapse technical failures to a safe line for the product UI (detail still in console from caller). */

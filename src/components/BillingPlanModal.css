@@ -1,0 +1,295 @@
+/* Billing / Plan modal — restrained Youmi Lens surfaces (Phase 2B-2). */
+
+.billing-plan-modal__titlebar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 24px 24px 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.billing-plan-modal__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.billing-plan-modal__close {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.billing-plan-modal__close:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #3d6a9e;
+}
+
+.billing-plan-modal__body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 20px 24px 24px;
+}
+
+.billing-plan-modal__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.billing-plan-modal__eyebrow {
+  margin: 0 0 4px;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.billing-plan-modal__headline {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #0b1f3b;
+}
+
+.billing-plan-modal__copy {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: #64748b;
+}
+
+.billing-plan-modal__header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.billing-plan-modal__pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+  background: #f5f7fa;
+  color: #0b1f3b;
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.billing-plan-modal__pill--ok {
+  background: rgba(15, 118, 110, 0.1);
+  border-color: rgba(15, 118, 110, 0.28);
+  color: #0f766e;
+}
+
+.billing-plan-modal__pill--warn {
+  background: rgba(61, 106, 158, 0.1);
+  border-color: rgba(61, 106, 158, 0.28);
+  color: #1e3a5f;
+}
+
+.billing-plan-modal__pill--danger {
+  background: rgba(185, 28, 28, 0.08);
+  border-color: rgba(185, 28, 28, 0.25);
+  color: #b91c1c;
+}
+
+.billing-plan-modal__pill-text::before {
+  /* Status also conveyed by text label; color is secondary. */
+  content: none;
+}
+
+.billing-plan-modal__meta {
+  display: grid;
+  gap: 8px;
+}
+
+.billing-plan-modal__meta-row,
+.billing-plan-modal__usage-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.billing-plan-modal__meta-label,
+.billing-plan-modal__usage-label {
+  color: #64748b;
+}
+
+.billing-plan-modal__meta-value,
+.billing-plan-modal__usage-value {
+  color: #0f172a;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.billing-plan-modal__section-title {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #0b1f3b;
+}
+
+.billing-plan-modal__preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f5f7fa;
+}
+
+.billing-plan-modal__interval-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.billing-plan-modal__interval-btn {
+  appearance: none;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #0f172a;
+  border-radius: 10px;
+  min-height: 52px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+}
+
+.billing-plan-modal__interval-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.billing-plan-modal__interval-name {
+  font-weight: 650;
+  color: #0b1f3b;
+}
+
+.billing-plan-modal__interval-price {
+  font-weight: 500;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.billing-plan-modal__interval-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #3d6a9e;
+}
+
+.billing-plan-modal__interval-btn--selected {
+  border-color: #1e3a5f;
+  background: rgba(30, 58, 95, 0.06);
+  color: #0b1f3b;
+}
+
+.billing-plan-modal__savings {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: #1e3a5f;
+}
+
+.billing-plan-modal__upgrade {
+  width: 100%;
+}
+
+.billing-plan-modal__manage {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.billing-plan-modal__manage-btn {
+  width: 100%;
+}
+
+.billing-plan-modal__checkout-note {
+  padding-top: 2px;
+}
+
+.billing-plan-modal__benefits {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: #0f172a;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.billing-plan-modal__footnote {
+  margin: 0;
+  font-size: 0.7rem;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.billing-plan-modal__usage {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.billing-plan-modal__skeleton {
+  display: grid;
+  gap: 10px;
+}
+
+.billing-plan-modal__skeleton-line {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #e2e8f0 0%, #f5f7fa 50%, #e2e8f0 100%);
+  background-size: 200% 100%;
+}
+
+.billing-plan-modal__skeleton-line--short {
+  width: 55%;
+}
+
+.billing-plan-modal__action-error {
+  margin: 12px 0 0;
+  color: #b91c1c;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 520px) {
+  .billing-plan-modal__interval-toggle {
+    grid-template-columns: 1fr;
+  }
+
+  .billing-plan-modal__usage-row,
+  .billing-plan-modal__meta-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .billing-plan-modal__meta-value,
+  .billing-plan-modal__usage-value {
+    text-align: left;
+  }
+}

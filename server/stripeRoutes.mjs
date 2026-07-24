@@ -60,6 +60,21 @@ async function requireUser(req, res) {
   return user
 }
 
+/**
+ * Defense-in-depth: block new Checkout when an existing paid relationship must
+ * be managed (Portal), not replaced. Uses authoritative buildSubscriptionStatus
+ * only — no schema/product changes.
+ *
+ * Block: active access, canceling (still active), past_due when manageable.
+ * Allow: free/none, expired/canceled with no active paid access.
+ */
+export function shouldBlockCheckoutForSubscription(subscription) {
+  if (!subscription || typeof subscription !== 'object') return false
+  if (subscription.active === true) return true
+  if (subscription.status === 'past_due' && subscription.manageable === true) return true
+  return false
+}
+
 // ── POST /api/billing/checkout ───────────────────────────────────────────────
 export async function handleCheckout(req, res) {
   const user = await requireUser(req, res)
@@ -84,6 +99,17 @@ export async function handleCheckout(req, res) {
   }
 
   try {
+    const subscription = await buildSubscriptionStatus(db, user.userId, Date.now())
+    if (shouldBlockCheckoutForSubscription(subscription)) {
+      res.status(409).json({
+        ok: false,
+        error: 'subscription_already_exists',
+        message:
+          'You already have a subscription. Refresh your plan status or manage your existing subscription.',
+      })
+      return
+    }
+
     const customerId = await getOrCreateStripeCustomer(db, stripe, { userId: user.userId, email: user.email })
     const urls = getCheckoutUrls()
     const session = await stripe.checkout.sessions.create(
