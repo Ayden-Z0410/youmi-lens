@@ -150,13 +150,16 @@ export interface RecordingSafetyState {
   recorderStatus: 'idle' | 'recording' | 'paused'
   /** true while a Stop&Save (local persist / upload) is in flight */
   saveInFlight: boolean
+  /** true while an unfinished durable session is being finalized after recovery */
+  recoveringSession?: boolean
 }
 
 /**
  * Whether it is safe to install + restart for an update right now. Blocks while a
- * lecture is recording, paused-but-unfinished, or being persisted — the update is
- * kept ready for later. (Durable pending uploads may continue after restart, so
- * they do not block; only live/in-memory capture does.)
+ * lecture is recording, paused-but-unfinished, being persisted, or recovering an
+ * unfinished durable session — the update is kept ready for later. (Durable pending
+ * uploads may continue after restart, so they do not block; only live/in-progress
+ * capture and finalization do.)
  */
 export function canInstallUpdate(rec: RecordingSafetyState): { ok: true } | { ok: false; reason: string } {
   if (rec.recorderStatus === 'recording') {
@@ -167,6 +170,9 @@ export function canInstallUpdate(rec: RecordingSafetyState): { ok: true } | { ok
   }
   if (rec.saveInFlight) {
     return { ok: false, reason: 'Your recording is still saving. The update will install once it finishes.' }
+  }
+  if (rec.recoveringSession) {
+    return { ok: false, reason: 'An unfinished recording is being saved. The update will install once it finishes.' }
   }
   return { ok: true }
 }

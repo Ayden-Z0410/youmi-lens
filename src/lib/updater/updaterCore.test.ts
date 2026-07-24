@@ -95,6 +95,11 @@ describe('recording-safety gate', () => {
   it('blocks install while a Stop&Save is in flight', () => {
     expect(canInstallUpdate({ recorderStatus: 'idle', saveInFlight: true })).toMatchObject({ ok: false })
   })
+  it('blocks install while recovering an unfinished durable session', () => {
+    expect(
+      canInstallUpdate({ recorderStatus: 'idle', saveInFlight: false, recoveringSession: true }),
+    ).toMatchObject({ ok: false })
+  })
   it('allows install when idle and nothing is saving', () => {
     expect(canInstallUpdate({ recorderStatus: 'idle', saveInFlight: false })).toEqual({ ok: true })
   })

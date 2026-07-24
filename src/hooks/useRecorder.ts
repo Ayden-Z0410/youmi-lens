@@ -1,11 +1,24 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { flushSync } from 'react-dom'
 import { logMediaEnvironmentOnce } from '../lib/mediaEnvDebug'
+import {
+  buildMediaRecorderOptions,
+  selectSpeechBitrateBps,
+  SPEECH_AUDIO_BITS_PER_SECOND,
+} from '../lib/recordingBitrate'
+import {
+  appendRecordingChunk,
+  assembleRecordingBlob,
+  createRecordingSession,
+  deleteRecordingSession,
+  heartbeatRecordingSession,
+  updateRecordingSessionStatus,
+} from '../lib/recordingSessionStore'
 import type { RecordingStatus } from '../types'
 
 /** Incident / P0: evidence chain for main lecture track only (no secrets). */
 function mainRecLine(
-  phase: 'start' | 'data' | 'stop' | 'blob' | 'guard' | 'flush',
+  phase: 'start' | 'data' | 'stop' | 'blob' | 'guard' | 'flush' | 'persist',
   payload: Record<string, string | number | boolean | undefined | null>,
 ): void {
   console.warn(`[MainRec][${phase}]`, JSON.stringify({ ...payload, t: Date.now() }))
@@ -23,6 +36,12 @@ function pickMime(): string {
   return ''
 }
 
+function newSessionId(): string {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `main-${Date.now()}`
+}
+
 /** Skip accidental tiny blobs from stop/pause races. */
 const MIN_LIVE_AUDIO_BYTES = 2048
 
@@ -32,6 +51,9 @@ export const LIVE_WHISPER_SLICE_MS = 1600
 /** After final requestData(), wait until no non-empty chunk for this long (or cap) before MediaRecorder.stop(). */
 const MAIN_RECORDER_QUIET_MS = 100
 const MAIN_RECORDER_FLUSH_MAX_MS = 3000
+
+/** Periodic MediaRecorder.requestData interval — also drives durable chunk writes. */
+export const MAIN_RECORDER_REQUEST_DATA_MS = 5000
 
 export function useRecorder(opts?: {
   /** Receives each timed audio slice while recording (cloned track; same mic as main file). */
@@ -47,17 +69,28 @@ export function useRecorder(opts?: {
    * Main track is unchanged. Used to test whether the Youmi live chain interferes with main recording.
    */
   experimentalSkipLiveSlice?: boolean
+  /** Owner isolation key for durable sessions (`userId` or `local` / `anonymous`). */
+  getOwnerKey?: () => string
 }) {
   const [status, setStatus] = useState<RecordingStatus>('idle')
   const [elapsedSec, setElapsedSec] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  /** Stable recording UUID for the active durable session (also used as cloud/pending id). */
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const liveSliceRecorderRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const liveStreamRef = useRef<MediaStream | null>(null)
-  const chunksRef = useRef<BlobPart[]>([])
+  /**
+   * Phase 2D-4: do NOT retain the full lecture in memory. Only a short queue of
+   * chunks awaiting confirmed IndexedDB persistence is held; after each write
+   * the Blob reference is released.
+   */
+  const persistQueueRef = useRef<Array<{ index: number; blob: Blob }>>([])
+  const persistChainRef = useRef<Promise<void>>(Promise.resolve())
   const mimeRef = useRef<string>('audio/webm')
+  const bitrateRef = useRef<number>(SPEECH_AUDIO_BITS_PER_SECOND)
   // PCM streaming capture (AudioContext path)
   const audioContextRef = useRef<AudioContext | null>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -71,6 +104,8 @@ export function useRecorder(opts?: {
   const mainLastChunkAtRef = useRef(0)
   /** Force periodic flush so long sessions don't collapse to ~1s output. */
   const mainRequestDataTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const elapsedSecRef = useRef(0)
 
   const liveCyclingRef = useRef(false)
   const liveSliceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -84,12 +119,62 @@ export function useRecorder(opts?: {
   const legacySliceDiagLoggedRef = useRef(false)
 
   useEffect(() => {
+    elapsedSecRef.current = elapsedSec
+  }, [elapsedSec])
+
+  useEffect(() => {
     if (status !== 'recording') return
     const id = window.setInterval(() => {
       setElapsedSec((s) => s + 1)
     }, 1000)
     return () => window.clearInterval(id)
   }, [status])
+
+  const enqueuePersist = useCallback((sessionId: string, index: number, blob: Blob) => {
+    persistQueueRef.current.push({ index, blob })
+    persistChainRef.current = persistChainRef.current.then(async () => {
+      while (persistQueueRef.current.length > 0) {
+        const item = persistQueueRef.current.shift()!
+        try {
+          const result = await appendRecordingChunk(sessionId, item.index, item.blob)
+          mainRecLine('persist', {
+            session: sessionId.slice(-8),
+            chunkIndex: item.index,
+            size: item.blob.size,
+            accepted: result.accepted,
+            reason: result.reason ?? '',
+          })
+        } catch (err) {
+          // Re-queue at front so stop() can still flush; keep reference until success.
+          persistQueueRef.current.unshift(item)
+          mainRecLine('persist', {
+            session: sessionId.slice(-8),
+            chunkIndex: item.index,
+            error: err instanceof Error ? err.message : String(err),
+          })
+          throw err
+        }
+        // Release chunk reference after confirmed persistence (or duplicate ignore).
+      }
+    }).catch(() => {
+      /* chain continues on next enqueue; stop() awaits drain */
+    })
+  }, [])
+
+  const drainPersistQueue = useCallback(async () => {
+    await persistChainRef.current
+    // One more pass if a failed item was re-queued
+    if (persistQueueRef.current.length > 0) {
+      const sessionId = mainRecSessionIdRef.current
+      persistChainRef.current = persistChainRef.current.then(async () => {
+        while (persistQueueRef.current.length > 0 && sessionId) {
+          const item = persistQueueRef.current.shift()!
+          await appendRecordingChunk(sessionId, item.index, item.blob)
+        }
+      })
+      await persistChainRef.current
+    }
+  }, [])
 
   /** Stop the current slice timer/recorder only (keep cycle fn so Resume can restart). */
   const haltLiveSliceCycle = useCallback(() => {
@@ -129,6 +214,10 @@ export function useRecorder(opts?: {
       clearInterval(mainRequestDataTimerRef.current)
       mainRequestDataTimerRef.current = null
     }
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current)
+      heartbeatTimerRef.current = null
+    }
     teardownPcmCapture()
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
@@ -136,7 +225,7 @@ export function useRecorder(opts?: {
     liveStreamRef.current = null
   }, [teardownPcmCapture])
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (): Promise<string | null> => {
     setError(null)
     try {
       const existing = mediaRecorderRef.current
@@ -146,14 +235,14 @@ export function useRecorder(opts?: {
           state: existing.state,
           session: mainRecSessionIdRef.current.slice(-8),
         })
-        return
+        return mainRecSessionIdRef.current || null
       }
       logMediaEnvironmentOnce()
       if (!navigator.mediaDevices?.getUserMedia) {
         setError(
           'Microphone API unavailable (navigator.mediaDevices missing). On macOS desktop, rebuild the app after adding Info.plist (NSMicrophoneUsageDescription). See console [lc-media env].',
         )
-        return
+        return null
       }
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -164,37 +253,43 @@ export function useRecorder(opts?: {
       streamRef.current = stream
       const mime = pickMime()
       mimeRef.current = mime || 'audio/webm'
-      const mr = new MediaRecorder(
-        stream,
-        mime ? { mimeType: mime } : undefined,
-      )
-      mainRecSessionIdRef.current =
-        typeof crypto !== 'undefined' && crypto.randomUUID
-          ? crypto.randomUUID()
-          : `main-${Date.now()}`
+      const bitrate = selectSpeechBitrateBps()
+      bitrateRef.current = bitrate
+      const mr = new MediaRecorder(stream, buildMediaRecorderOptions(mime, bitrate))
+      const sessionId = newSessionId()
+      mainRecSessionIdRef.current = sessionId
       mainDataChunkIndexRef.current = 0
       pcmFrameDiagCountRef.current = 0
       legacySliceDiagLoggedRef.current = false
-      chunksRef.current = []
-      const session = mainRecSessionIdRef.current
+      persistQueueRef.current = []
+      persistChainRef.current = Promise.resolve()
+
+      const ownerKey = opts?.getOwnerKey?.() ?? 'anonymous'
+      await createRecordingSession({
+        id: sessionId,
+        ownerKey,
+        mime: mime || 'audio/webm',
+        requestedBitrate: bitrate,
+      })
+      setActiveSessionId(sessionId)
+
+      const session = sessionId
       mr.ondataavailable = (e) => {
         const ev = e as BlobEvent & { timecode?: number }
         const idx = mainDataChunkIndexRef.current++
         const tc = typeof ev.timecode === 'number' ? ev.timecode : undefined
         if (e.data.size > 0) {
-          chunksRef.current.push(e.data)
           mainLastChunkAtRef.current = Date.now()
+          // Durable write — do not retain full session in component memory.
+          enqueuePersist(session, idx, e.data)
         }
-        const cumulativeBytes = chunksRef.current.reduce(
-          (n, p) => n + (p instanceof Blob ? p.size : 0),
-          0,
-        )
         mainRecLine('data', {
           session: session.slice(-8),
           chunkIndex: idx,
           size: e.data.size,
           timecodeMs: tc,
-          cumulativeBytes,
+          queueDepth: persistQueueRef.current.length,
+          audioBitsPerSecond: bitrate,
         })
       }
       /**
@@ -202,6 +297,9 @@ export function useRecorder(opts?: {
        * browsers (notably WebKit) intermediate `dataavailable` blobs can be empty or invalid, and
        * filtering `size > 0` then leaves only the last slice — saved audio can be ~1s while the UI
        * timer shows the full session. Live captions use a separate cloned stream + their own MR.
+       *
+       * Chunks are flushed via requestData every MAIN_RECORDER_REQUEST_DATA_MS and persisted to
+       * IndexedDB immediately so a crash mid-lecture does not lose the only copy.
        *
        * Commit `recording` status BEFORE `mr.start()` so parent useLayoutEffect attaches live chunk
        * handlers before any audio is captured (fixes first-session truncation vs second session OK).
@@ -217,13 +315,13 @@ export function useRecorder(opts?: {
         mime: mr.mimeType || mime || '',
         recorderState: mr.state,
         audioTracks: stream.getAudioTracks().length,
+        audioBitsPerSecond: bitrate,
         experimentalSkipLiveSlice: Boolean(opts?.experimentalSkipLiveSlice),
       })
       if (typeof mr.requestData === 'function') {
         if (mainRequestDataTimerRef.current) {
           clearInterval(mainRequestDataTimerRef.current)
         }
-        // 5s is a good balance: frequent enough to avoid losing buffered media; not too chatty.
         mainRequestDataTimerRef.current = window.setInterval(() => {
           if (mr.state !== 'recording') return
           try {
@@ -232,8 +330,13 @@ export function useRecorder(opts?: {
           } catch {
             /* ignore */
           }
-        }, 5000)
+        }, MAIN_RECORDER_REQUEST_DATA_MS)
       }
+
+      if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current)
+      heartbeatTimerRef.current = window.setInterval(() => {
+        void heartbeatRecordingSession(session, elapsedSecRef.current)
+      }, 15_000)
 
       // PCM streaming capture via AudioContext ScriptProcessor.
       // Runs alongside the main MediaRecorder — does not affect the lecture recording.
@@ -376,7 +479,7 @@ export function useRecorder(opts?: {
           try {
             rec = new MediaRecorder(
               liveStreamRef.current,
-              mimeType ? { mimeType: mimeType } : undefined,
+              buildMediaRecorderOptions(mimeType, bitrateRef.current),
             )
           } catch {
             if (liveCyclingRef.current) {
@@ -445,14 +548,16 @@ export function useRecorder(opts?: {
           }
         }, 120)
       }
+      return sessionId
     } catch (e) {
       console.warn('[useRecorder] microphone access failed', e)
       setError(
         'Microphone access is required to record lectures. Please allow Youmi Lens in System Settings -> Privacy & Security -> Microphone, then restart the app.',
       )
       stopStream()
+      return null
     }
-  }, [opts?.onLiveAudioChunkRef, opts?.experimentalSkipLiveSlice, stopStream])
+  }, [opts?.onLiveAudioChunkRef, opts?.experimentalSkipLiveSlice, opts?.getOwnerKey, stopStream, enqueuePersist])
 
   const pause = useCallback(() => {
     const mr = mediaRecorderRef.current
@@ -472,6 +577,8 @@ export function useRecorder(opts?: {
     }
     mr.pause()
     setStatus('paused')
+    const sid = mainRecSessionIdRef.current
+    if (sid) void updateRecordingSessionStatus(sid, 'paused')
   }, [haltLiveSliceCycle])
 
   const resume = useCallback(() => {
@@ -482,9 +589,11 @@ export function useRecorder(opts?: {
     liveCyclingRef.current = true
     startLiveSliceCycleRef.current?.()
     setStatus('recording')
+    const sid = mainRecSessionIdRef.current
+    if (sid) void updateRecordingSessionStatus(sid, 'recording')
   }, [])
 
-  const stop = useCallback((): Promise<{ blob: Blob; mime: string }> => {
+  const stop = useCallback((): Promise<{ blob: Blob; mime: string; sessionId: string }> => {
     return new Promise((resolve, reject) => {
       const mr = mediaRecorderRef.current
       const liveMr = liveSliceRecorderRef.current
@@ -499,18 +608,19 @@ export function useRecorder(opts?: {
       const finishMain = () => {
         liveSliceRecorderRef.current = null
         const sessionTag = mainRecSessionIdRef.current.slice(-8)
+        const sessionId = mainRecSessionIdRef.current
         mainRecLine('stop', {
           session: sessionTag,
           preStopState: mr.state,
-          chunkCount: chunksRef.current.length,
-          chunkBytesBeforeFlush: chunksRef.current.reduce(
-            (n, p) => n + (p instanceof Blob ? p.size : 0),
-            0,
-          ),
+          queueDepth: persistQueueRef.current.length,
         })
         if (mainRequestDataTimerRef.current) {
           clearInterval(mainRequestDataTimerRef.current)
           mainRequestDataTimerRef.current = null
+        }
+        if (heartbeatTimerRef.current) {
+          clearInterval(heartbeatTimerRef.current)
+          heartbeatTimerRef.current = null
         }
         try {
           if (typeof mr.requestData === 'function') {
@@ -522,21 +632,33 @@ export function useRecorder(opts?: {
         }
         mainLastChunkAtRef.current = Date.now()
         mr.onstop = () => {
-          const mime = mr.mimeType || mimeRef.current
-          const parts = chunksRef.current
-          const totalBytes = parts.reduce((n, p) => n + (p instanceof Blob ? p.size : 0), 0)
-          const blob = new Blob(parts, { type: mime })
-          mainRecLine('blob', {
-            session: sessionTag,
-            chunkCount: parts.length,
-            totalBytes,
-            finalBlobSize: blob.size,
-            finalBlobType: blob.type || mime,
-          })
-          mediaRecorderRef.current = null
-          stopStream()
-          setStatus('idle')
-          resolve({ blob, mime })
+          void (async () => {
+            try {
+              await drainPersistQueue()
+              await updateRecordingSessionStatus(sessionId, 'finalizing')
+              // Assemble ONLY from durable chunks — no in-memory full array retained during capture.
+              const assembled = await assembleRecordingBlob(sessionId)
+              if (!assembled || assembled.blob.size <= 0) {
+                throw new Error('Recording finalize produced an empty audio blob')
+              }
+              const mime = mr.mimeType || mimeRef.current || assembled.mime
+              mainRecLine('blob', {
+                session: sessionTag,
+                finalBlobSize: assembled.blob.size,
+                finalBlobType: assembled.blob.type || mime,
+                source: 'durable_chunks',
+              })
+              mediaRecorderRef.current = null
+              stopStream()
+              setStatus('idle')
+              resolve({ blob: assembled.blob, mime, sessionId })
+            } catch (err) {
+              mediaRecorderRef.current = null
+              stopStream()
+              setStatus('idle')
+              reject(err instanceof Error ? err : new Error(String(err)))
+            }
+          })()
         }
         const waitQuietThenStop = () => {
           const deadline = Date.now() + MAIN_RECORDER_FLUSH_MAX_MS
@@ -581,15 +703,20 @@ export function useRecorder(opts?: {
         finishMain()
       }
     })
-  }, [teardownLiveSliceCycle, stopStream])
+  }, [teardownLiveSliceCycle, stopStream, drainPersistQueue])
 
   const cancel = useCallback(() => {
     teardownLiveSliceCycle()
     const liveMr = liveSliceRecorderRef.current
     const mr = mediaRecorderRef.current
+    const sessionId = mainRecSessionIdRef.current
     if (mainRequestDataTimerRef.current) {
       clearInterval(mainRequestDataTimerRef.current)
       mainRequestDataTimerRef.current = null
+    }
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current)
+      heartbeatTimerRef.current = null
     }
     if (liveMr && liveMr.state !== 'inactive') {
       try {
@@ -609,16 +736,23 @@ export function useRecorder(opts?: {
       mr.stop()
     }
     mediaRecorderRef.current = null
-    chunksRef.current = []
+    persistQueueRef.current = []
+    persistChainRef.current = Promise.resolve()
     stopStream()
     setStatus('idle')
     setElapsedSec(0)
+    setActiveSessionId(null)
+    if (sessionId) {
+      void deleteRecordingSession(sessionId).catch(() => { /* best-effort */ })
+    }
+    mainRecSessionIdRef.current = ''
   }, [teardownLiveSliceCycle, stopStream])
 
   return {
     status,
     elapsedSec,
     error,
+    activeSessionId,
     start,
     pause,
     resume,

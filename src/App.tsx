@@ -50,6 +50,14 @@ import {
   deletePendingUpload,
 } from './lib/db'
 import {
+  beginFinalizeRecordingSession,
+  completeRecordingSessionPersist,
+  deleteRecordingSession,
+  keepRecordingSessionForLater,
+  listRecoverableRecordingSessions,
+} from './lib/recordingSessionStore'
+import { ownerKeyForUser, type RecordingSessionMeta } from './lib/recordingSession'
+import {
   visiblePendingUploads,
   sanitizeUploadErrorCategory,
   pendingStatusLabel,
@@ -1493,16 +1501,25 @@ function RecordingWorkspace({
     import.meta.env.VITE_EXPERIMENT_SKIP_YOUMI_LIVE_SLICE === 'true'
   /** Default realtime for Youmi hosted: PCM → `/api/live-realtime-ws` → DashScope streaming ASR. Prod always on. */
   const useLiveEngineV2ForHosted = usesHosted && (import.meta.env.PROD || USE_LIVE_ENGINE_V2)
+  const getRecordingOwnerKey = useCallback(
+    () => ownerKeyForUser(userId, Boolean(localOnly)),
+    [userId, localOnly],
+  )
   const recorder = useRecorder({
     onLiveAudioChunkRef,
     onPcmChunkRef: onLivePcmChunkRef,
     // Skip the MediaRecorder blob-slice cycle when PCM streaming drives the live engine (v2 path).
     experimentalSkipLiveSlice: useLiveEngineV2ForHosted || (experimentSkipYoumiLiveSlice && usesHosted),
+    getOwnerKey: getRecordingOwnerKey,
   })
 
   const [flow, dispatchFlow] = useReducer(recordingFlowReducer, initialRecordingFlow)
   const [recentCapture, setRecentCapture] = useState<RecentCaptureOutcome>(null)
   const [recentAi, setRecentAi] = useState<RecentAiOutcome>(null)
+  /** Unfinished durable sessions recovered on startup (owner-isolated). */
+  const [recoveredSessions, setRecoveredSessions] = useState<RecordingSessionMeta[]>([])
+  const [recoveryBusyId, setRecoveryBusyId] = useState<string | null>(null)
+  const [recoveryDeleteConfirmId, setRecoveryDeleteConfirmId] = useState<string | null>(null)
 
   /** In-flight capture only; terminal outcomes use `recentCapture` / `recentAi`. */
   const saveOrFinishBusy = isCapturePipelinePhase(flow.phase) || flow.phase === 'stopping'
@@ -2925,6 +2942,24 @@ const [editLectureModal, setEditLectureModal] = useState<{
     return () => clearInterval(id)
   }, [localOnly, usesHosted, selectedId, supabase, userId, detail?.aiStatus, refreshList])
 
+  // Phase 2D-4: detect unfinished durable recording sessions on startup / owner change.
+  // Never auto-resume mic, never auto-upload — user chooses Save / Keep / Delete.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const ownerKey = ownerKeyForUser(userId, Boolean(localOnly))
+        const sessions = await listRecoverableRecordingSessions(ownerKey)
+        if (!cancelled) setRecoveredSessions(sessions)
+      } catch {
+        if (!cancelled) setRecoveredSessions([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [userId, localOnly])
+
   const startRecording = () => {
     if (!localOnly && usesHosted) {
       void refreshHostedHealth()
@@ -2991,11 +3026,229 @@ const [editLectureModal, setEditLectureModal] = useState<{
     dispatchFlow({ type: 'CAPTURE_FINISHED' })
   }, [])
 
+  const formatRecoveryDuration = (sec: number) => {
+    const s = Math.max(0, Math.floor(sec))
+    const m = Math.floor(s / 60)
+    const r = s % 60
+    return m > 0 ? `${m}m ${r}s` : `${r}s`
+  }
+
+  const handleRecoverSave = useCallback(
+    async (session: RecordingSessionMeta) => {
+      if (recoveryBusyId || saveInFlightRef.current) return
+      if (recorder.status === 'recording' || recorder.status === 'paused') return
+      setRecoveryBusyId(session.id)
+      saveInFlightRef.current = true
+      dispatchFlow({ type: 'CAPTURE_BEGIN', recordingId: session.id })
+      try {
+        const fin = await beginFinalizeRecordingSession(session.id)
+        if (fin.action === 'already_done') {
+          setRecoveredSessions((prev) => prev.filter((s) => s.id !== session.id))
+          endCapture({
+            kind: 'list_refresh_warn',
+            recordingId: session.id,
+            message: 'This recording was already saved. Check Recent or Pending uploads.',
+            at: Date.now(),
+          })
+          return
+        }
+        if (fin.action !== 'proceed' || !fin.assembled) {
+          endCapture({
+            kind: 'failure',
+            recordingId: session.id,
+            outcome: 'other',
+            message: 'Could not recover this recording (no usable audio). You can Keep for later or Delete.',
+            at: Date.now(),
+          })
+          return
+        }
+        const { blob, mime } = fin.assembled
+        const courseVal = course.trim() || 'Course'
+        const titleVal = title.trim() || `Lecture ${formatDate(session.startedAt)}`
+        const durationSec = session.approxDurationSec || 0
+        const recordingId = session.id
+
+        if (localOnly) {
+          dispatchFlow({ type: 'CAPTURE_UPLOAD' })
+          await withTimeout(
+            saveRecordingLocal({
+              id: recordingId,
+              course: courseVal,
+              title: titleVal,
+              createdAt: session.startedAt,
+              durationSec,
+              mime,
+              audioBlob: blob,
+            }),
+            SAVE_DB_TIMEOUT_MS,
+            'Local save (recovered)',
+          )
+          await completeRecordingSessionPersist(recordingId)
+          setRecoveredSessions((prev) => prev.filter((s) => s.id !== recordingId))
+          try {
+            await refreshList()
+          } catch { /* ignore */ }
+          endCapture({ kind: 'success', recordingId, at: Date.now() })
+          setSelectedId(recordingId)
+          return
+        }
+
+        if (!supabase || !userId) {
+          endCapture({
+            kind: 'failure',
+            recordingId,
+            outcome: 'other',
+            message: 'Sign in to save and process this recovered recording, or Keep for later.',
+            at: Date.now(),
+          })
+          return
+        }
+
+        dispatchFlow({ type: 'CAPTURE_UPLOAD' })
+        try {
+          let saveResult: Awaited<ReturnType<typeof uploadLectureAudioViaServer>> | undefined
+          for (let attempt = 1; ; attempt++) {
+            try {
+              saveResult = await withTimeout(
+                uploadLectureAudioViaServer(supabase, recordingId, blob, mime, durationSec, {
+                  course: courseVal,
+                  title: titleVal,
+                  liveTranscript: '',
+                  liveTranscriptRaw: '',
+                }),
+                SAVE_UPLOAD_TIMEOUT_MS,
+                'Audio upload (recovered)',
+              )
+              break
+            } catch (attemptErr) {
+              const plan = computeUploadRetryPlan(attempt)
+              if (!plan.retry || !isTransientUploadError(attemptErr)) throw attemptErr
+              await new Promise((r) => window.setTimeout(r, plan.delayMs))
+            }
+          }
+          if (!saveResult!.recording) {
+            await withTimeout(
+              insertLectureRecordingRow({
+                supabase,
+                userId,
+                id: recordingId,
+                course: courseVal,
+                title: titleVal,
+                durationSec,
+                mime,
+                storagePath: saveResult!.storagePath,
+                liveTranscript: '',
+                liveTranscriptRaw: '',
+              }),
+              SAVE_DB_TIMEOUT_MS,
+              'Database write (recovered)',
+            )
+          }
+          await completeRecordingSessionPersist(recordingId)
+          setRecoveredSessions((prev) => prev.filter((s) => s.id !== recordingId))
+          try {
+            await refreshList()
+          } catch { /* ignore */ }
+          endCapture({ kind: 'success', recordingId, at: Date.now() })
+          setSelectedId(recordingId)
+        } catch (upErr) {
+          await withTimeout(
+            savePendingUpload({
+              id: recordingId,
+              userId,
+              course: courseVal,
+              title: titleVal,
+              durationSec,
+              mime,
+              lang: liveLang,
+              translateTarget,
+              createdAt: session.startedAt,
+              updatedAt: Date.now(),
+              state: 'upload_failed',
+              lastErrorCategory: sanitizeUploadErrorCategory(upErr),
+              attempts: 1,
+              cloudUploaded: false,
+              audioBlob: blob,
+            }),
+            SAVE_DB_TIMEOUT_MS,
+            'Preserve recovered upload (pending)',
+          )
+          await completeRecordingSessionPersist(recordingId)
+          setRecoveredSessions((prev) => prev.filter((s) => s.id !== recordingId))
+          try {
+            await refreshList()
+          } catch { /* ignore */ }
+          endCapture({
+            kind: 'list_refresh_warn',
+            recordingId,
+            message:
+              'Recovered recording is safe on this device under Pending uploads. Tap Retry when you’re back online.',
+            at: Date.now(),
+          })
+        }
+      } catch (e) {
+        endCapture({
+          kind: 'failure',
+          recordingId: session.id,
+          outcome: 'other',
+          message: e instanceof Error ? e.message : 'Could not save recovered recording',
+          at: Date.now(),
+        })
+      } finally {
+        saveInFlightRef.current = false
+        setRecoveryBusyId(null)
+        dispatchFlow({ type: 'CAPTURE_FINISHED' })
+      }
+    },
+    [
+      recoveryBusyId,
+      recorder.status,
+      course,
+      title,
+      localOnly,
+      supabase,
+      userId,
+      liveLang,
+      translateTarget,
+      refreshList,
+      endCapture,
+    ],
+  )
+
+  const handleRecoverKeep = useCallback(async (sessionId: string) => {
+    await keepRecordingSessionForLater(sessionId)
+    setRecoveredSessions((prev) =>
+      prev.map((s) => (s.id === sessionId ? { ...s, status: 'kept' as const } : s)),
+    )
+  }, [])
+
+  const handleRecoverDelete = useCallback(async (sessionId: string) => {
+    if (recoveryDeleteConfirmId !== sessionId) {
+      setRecoveryDeleteConfirmId(sessionId)
+      return
+    }
+    await deleteRecordingSession(sessionId)
+    setRecoveryDeleteConfirmId(null)
+    setRecoveredSessions((prev) => prev.filter((s) => s.id !== sessionId))
+  }, [recoveryDeleteConfirmId])
+
   const handleStopAndSave = async () => {
     if (saveInFlightRef.current) return
     if (recorder.status !== 'recording' && recorder.status !== 'paused') return
 
-    const recordingId = crypto.randomUUID()
+    // Phase 2D-4: reuse the durable session UUID created at Start (same id for
+    // chunks → pending upload → cloud row). Never mint a second id here.
+    const recordingId = recorder.activeSessionId
+    if (!recordingId) {
+      setRecentCapture({
+        kind: 'failure',
+        recordingId: 'unknown',
+        outcome: 'other',
+        message: 'No active recording session was found. Try Start again.',
+        at: Date.now(),
+      })
+      return
+    }
 
     if (!localOnly && userId && !tryAcquireTabSaveLock(recordingId)) {
       setRecentCapture({
@@ -3033,7 +3286,10 @@ const [editLectureModal, setEditLectureModal] = useState<{
       })
 
       const uiElapsedSecBeforeStop = recorder.elapsedSec
-      const { blob, mime } = await recorder.stop()
+      const { blob, mime, sessionId } = await recorder.stop()
+      if (sessionId !== recordingId) {
+        console.warn('[capture] session_id_mismatch', JSON.stringify({ recordingId, sessionId }))
+      }
       traceCaptionStop('after_recorder_stop', {
         ...getEnArrivalWalls(),
       })
@@ -3170,6 +3426,7 @@ const [editLectureModal, setEditLectureModal] = useState<{
             at: Date.now(),
           })
         }
+        void completeRecordingSessionPersist(recordingId).catch(() => { /* best-effort */ })
         ledgerClear(recordingId)
       } else {
         dispatchFlow({ type: 'CAPTURE_UPLOAD' })
@@ -3251,6 +3508,7 @@ const [editLectureModal, setEditLectureModal] = useState<{
                   'Recording saved locally (too long for cloud processing). Free access limit reached. Please contact Youmi Lens for more access.',
                 at: Date.now(),
               })
+              void completeRecordingSessionPersist(recordingId).catch(() => { /* best-effort */ })
             } catch (locFallbackErr) {
               endCapture({
                 kind: 'failure',
@@ -3301,6 +3559,8 @@ const [editLectureModal, setEditLectureModal] = useState<{
               'Preserve failed upload (pending)',
             )
             console.warn('[capture] upload_failed_pending_saved', JSON.stringify({ recordingId, durationSec, category: sanitizeUploadErrorCategory(upErr) }))
+            // Pending upload row now holds the durable blob — safe to drop session chunks.
+            void completeRecordingSessionPersist(recordingId).catch(() => { /* best-effort */ })
             try {
               await refreshList()
             } catch {
@@ -3405,6 +3665,7 @@ const [editLectureModal, setEditLectureModal] = useState<{
           })
         }
 
+        void completeRecordingSessionPersist(recordingId).catch(() => { /* best-effort */ })
         ledgerClear(recordingId)
       }
 
@@ -5276,6 +5537,7 @@ useEffect(() => {
             recordingSafety={{
               recorderStatus: recorder.status as 'idle' | 'recording' | 'paused',
               saveInFlight: saveOrFinishBusy,
+              recoveringSession: Boolean(recoveryBusyId),
             }}
           />
           <div className="yl-sidebar-divider record-sidebar-admin-hidden" aria-hidden />
@@ -6051,6 +6313,56 @@ useEffect(() => {
         ) : null}
 
         {recorder.error && <p className="error">{recorder.error}</p>}
+        {recoveredSessions.length > 0 && (
+          <div className="recent-outcome" role="status" style={{ marginBottom: '0.75rem' }}>
+            <div className="recent-outcome-head">
+              <strong>Unfinished recording recovered</strong>
+            </div>
+            {recoveredSessions.map((s) => (
+              <div key={s.id} style={{ marginTop: '0.5rem' }}>
+                <p className="hint small" style={{ margin: '0 0 0.35rem' }}>
+                  {new Date(s.startedAt).toLocaleString()} · ~{formatRecoveryDuration(s.approxDurationSec)} ·{' '}
+                  {s.status}
+                </p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+                  <button
+                    type="button"
+                    className="btn primary small"
+                    disabled={Boolean(recoveryBusyId) || recorder.status !== 'idle'}
+                    onClick={() => void handleRecoverSave(s)}
+                  >
+                    {recoveryBusyId === s.id ? 'Saving…' : 'Save and process'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost small"
+                    disabled={Boolean(recoveryBusyId)}
+                    onClick={() => void handleRecoverKeep(s.id)}
+                  >
+                    Keep for later
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost small"
+                    disabled={Boolean(recoveryBusyId)}
+                    onClick={() => void handleRecoverDelete(s.id)}
+                  >
+                    {recoveryDeleteConfirmId === s.id ? 'Confirm delete' : 'Delete'}
+                  </button>
+                  {recoveryDeleteConfirmId === s.id ? (
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      onClick={() => setRecoveryDeleteConfirmId(null)}
+                    >
+                      Cancel
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
         {recentCapture && (
           <div className="recent-outcome" role="status">
             <div className="recent-outcome-head">

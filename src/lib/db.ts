@@ -2,13 +2,15 @@ import type { Recording, RecordingDetail } from '../types'
 import type { PendingUploadMeta } from './pendingUploads'
 
 const DB_NAME = 'lecture-companion'
-// v4 (Phase 2D-2): add the additive `pending_uploads` store for cloud recordings
-// whose upload failed. The existing `recordings`/`recordings_trash` stores are
-// untouched, so local-only mode behaviour is unchanged.
-const DB_VERSION = 4
+// v4 (Phase 2D-2): additive `pending_uploads` for failed cloud uploads.
+// v5 (Phase 2D-4): additive `recording_sessions` + `recording_chunks` for
+// durable incremental capture (crash-safe long lectures). Prior stores untouched.
+const DB_VERSION = 5
 const STORE = 'recordings'
 const TRASH_STORE = 'recordings_trash'
 const PENDING_STORE = 'pending_uploads'
+const SESSION_STORE = 'recording_sessions'
+const CHUNK_STORE = 'recording_chunks'
 
 export type RecordingWithBlob = Recording & { audioBlob: Blob }
 /** Durable cloud pending/failed upload: metadata (incl. userId) + the audio blob. */
@@ -16,7 +18,8 @@ export type PendingUploadRow = PendingUploadMeta & { audioBlob: Blob }
 
 type Row = RecordingWithBlob
 
-function openDb(): Promise<IDBDatabase> {
+/** Shared DB open — also used by recordingSessionStore (same name/version). */
+export function openLectureCompanionDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
     req.onerror = () => reject(req.error)
@@ -32,8 +35,19 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(PENDING_STORE)) {
         db.createObjectStore(PENDING_STORE, { keyPath: 'id' })
       }
+      if (!db.objectStoreNames.contains(SESSION_STORE)) {
+        db.createObjectStore(SESSION_STORE, { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains(CHUNK_STORE)) {
+        const chunks = db.createObjectStore(CHUNK_STORE, { keyPath: 'id' })
+        chunks.createIndex('by_session', 'sessionId', { unique: false })
+      }
     }
   })
+}
+
+function openDb(): Promise<IDBDatabase> {
+  return openLectureCompanionDb()
 }
 
 // ── Pending cloud uploads (Phase 2D-2) ───────────────────────────────────────
