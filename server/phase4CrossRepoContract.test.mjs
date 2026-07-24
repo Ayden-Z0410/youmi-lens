@@ -1,10 +1,11 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const IPAD_REPO = process.env.IPAD_REPO_PATH || '/Users/summer/Documents/youmi-lens-ipad'
 const PRODUCT_ID = 'com.aydenz.youmilensipad.studentbasic30d'
 const LEGACY_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
+const IPAD_AVAILABLE = existsSync(join(IPAD_REPO, 'lib/purchases.ts'))
 
 function backend(path) {
   return readFileSync(new URL(path, import.meta.url), 'utf8')
@@ -14,7 +15,7 @@ function ipad(path) {
   return readFileSync(join(IPAD_REPO, path), 'utf8')
 }
 
-describe('Phase 4 backend/iPad IAP API contract', () => {
+describe.skipIf(!IPAD_AVAILABLE)('Phase 4 backend/iPad IAP API contract', () => {
   const routes = backend('./iapRoutes.mjs')
   const apple = backend('./iapApple.mjs')
   const purchases = ipad('lib/purchases.ts')
