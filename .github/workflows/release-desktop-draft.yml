@@ -43,8 +43,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest # universal / Apple Silicon + Intel per tauri.conf
-            args: ""
+          # macOS CI codesign requires APPLE_CERTIFICATE* secrets (not yet configured).
+          # v0.1.9 macOS DMG + updater tarball were published from a local Developer ID build.
+          # Re-enable macos-latest once Apple signing secrets are present.
           - os: windows-latest # NSIS + MSI updater artifacts
             args: ""
     runs-on: ${{ matrix.os }}
