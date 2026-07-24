@@ -2030,13 +2030,27 @@ h3 {
   letter-spacing: 0.01em;
 }
 
+.download-msi-link {
+  margin: 0;
+  color: rgba(7, 26, 51, 0.52);
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.download-msi-link:hover,
+.download-msi-link:focus-visible {
+  color: rgba(7, 26, 51, 0.78);
+}
+
 .download-meta {
   margin-top: 24px;
   color: rgba(7, 26, 51, 0.56);
   font-size: 15px;
 }
 
-/* Quiet, muted note under the Windows button — intentionally lighter/smaller. Not a callout box. */
+/* Quiet, muted notes under the download buttons — intentionally lighter/smaller. Not a callout box. */
 .download-windows-note {
   margin-top: 16px;
   max-width: 520px;
@@ -2044,6 +2058,10 @@ h3 {
   font-size: 13px;
   line-height: 1.55;
   letter-spacing: 0.01em;
+}
+
+.download-windows-note + .download-windows-note {
+  margin-top: 8px;
 }
 
 @media (max-width: 980px) {
