@@ -101,6 +101,7 @@ describe('recordingSession pure model (Phase 2D-4)', () => {
 describe('recordingSession wiring regressions (App + recorder)', () => {
   const appSrc = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8')
   const recorderSrc = readFileSync(new URL('../hooks/useRecorder.ts', import.meta.url), 'utf8')
+  const storeSrc = readFileSync(new URL('./recordingSessionStore.ts', import.meta.url), 'utf8')
   const aiSrc = readFileSync(new URL('./aiUserFacing.ts', import.meta.url), 'utf8')
 
   it('persists chunks durably during recording (not only at Stop)', () => {
@@ -108,6 +109,38 @@ describe('recordingSession wiring regressions (App + recorder)', () => {
     expect(recorderSrc).toContain('createRecordingSession')
     expect(recorderSrc).toContain('audioBitsPerSecond')
     expect(recorderSrc).not.toMatch(/chunksRef\.current\.push/)
+  })
+
+  it('does not consume durable chunk indexes for zero-byte MediaRecorder blobs', () => {
+    // Empty requestData flushes must skip index assignment; otherwise nextChunkIndex
+    // gaps silently truncate the lecture on every later append.
+    expect(recorderSrc).toMatch(/if\s*\(\s*e\.data\.size\s*<=\s*0\s*\)/)
+    expect(recorderSrc).toContain('skippedEmpty')
+    const emptyGuardAt = recorderSrc.indexOf('e.data.size <= 0')
+    const indexBumpAt = recorderSrc.indexOf('mainDataChunkIndexRef.current++')
+    expect(emptyGuardAt).toBeGreaterThan(-1)
+    expect(indexBumpAt).toBeGreaterThan(emptyGuardAt)
+  })
+
+  it('appends/heartbeat/status use single-transaction session RMW', () => {
+    // Whole-object puts after a prior readonly get can roll back nextChunkIndex
+    // when they race an accepted chunk write.
+    for (const fn of [
+      'export async function appendRecordingChunk',
+      'export async function heartbeatRecordingSession',
+      'export async function updateRecordingSessionStatus',
+    ]) {
+      const start = storeSrc.indexOf(fn)
+      expect(start).toBeGreaterThan(-1)
+      const nextExport = storeSrc.indexOf('\nexport async function', start + fn.length)
+      const body = storeSrc.slice(start, nextExport === -1 ? undefined : nextExport)
+      expect(body).toContain("transaction(")
+      expect(body).toContain('readwrite')
+      expect(body).toContain('.get(')
+      expect(body).toContain('.put(')
+      expect(body).not.toContain('getRecordingSession(')
+      expect(body).not.toContain('putRecordingSession(')
+    }
   })
 
   it('Stop reuses durable session id for pending upload (no second UUID at save)', () => {
