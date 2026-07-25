@@ -79,56 +79,100 @@ export async function updateRecordingSessionStatus(
   id: string,
   status: RecordingSessionStatus,
 ): Promise<RecordingSessionMeta | null> {
-  const existing = await getRecordingSession(id)
-  if (!existing) return null
-  const next = withSessionStatus(existing, status)
-  await putRecordingSession(next)
-  return next
+  // Read-modify-write in one readwrite txn so a concurrent chunk append cannot
+  // have its nextChunkIndex/chunkCount clobbered by a stale whole-object put.
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    let result: RecordingSessionMeta | null = null
+    const tx = db.transaction(SESSION_STORE, 'readwrite')
+    tx.oncomplete = () => resolve(result)
+    tx.onerror = () => reject(tx.error)
+    const store = tx.objectStore(SESSION_STORE)
+    const req = store.get(id)
+    req.onsuccess = () => {
+      const existing = (req.result as RecordingSessionMeta | undefined) ?? null
+      if (!existing) return
+      result = withSessionStatus(existing, status)
+      store.put(result)
+    }
+  })
 }
 
 export async function heartbeatRecordingSession(
   id: string,
   approxDurationSec: number,
 ): Promise<void> {
-  const existing = await getRecordingSession(id)
-  if (!existing) return
-  if (existing.status !== 'recording' && existing.status !== 'paused') return
-  await putRecordingSession(withHeartbeat(existing, approxDurationSec))
+  // Same atomic RMW as status updates — heartbeat must never rewrite stale
+  // chunk counters from a prior readonly get.
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SESSION_STORE, 'readwrite')
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    const store = tx.objectStore(SESSION_STORE)
+    const req = store.get(id)
+    req.onsuccess = () => {
+      const existing = (req.result as RecordingSessionMeta | undefined) ?? null
+      if (!existing) return
+      if (existing.status !== 'recording' && existing.status !== 'paused') return
+      store.put(withHeartbeat(existing, approxDurationSec))
+    }
+  })
 }
 
 /**
  * Persist one chunk. Duplicate indexes are ignored (idempotent). Out-of-order
  * indexes are rejected. Returns whether a new chunk was stored.
+ *
+ * Session metadata is read inside the same readwrite transaction as the write
+ * so heartbeat/status updates cannot race and roll back nextChunkIndex.
  */
 export async function appendRecordingChunk(
   sessionId: string,
   index: number,
   blob: Blob,
 ): Promise<{ accepted: boolean; reason?: 'duplicate' | 'reject' | 'missing_session' }> {
-  const session = await getRecordingSession(sessionId)
-  if (!session) return { accepted: false, reason: 'missing_session' }
-  const verdict = shouldAcceptChunkIndex(session, index)
-  if (verdict === 'duplicate') return { accepted: false, reason: 'duplicate' }
-  if (verdict === 'reject') return { accepted: false, reason: 'reject' }
-
-  const row: RecordingChunkRow = {
-    id: chunkRowId(sessionId, index),
-    sessionId,
-    index,
-    size: blob.size,
-    createdAt: Date.now(),
-    blob,
-  }
-  const next = applyAcceptedChunk(session, index, blob.size)
   const db = await openDb()
-  await new Promise<void>((resolve, reject) => {
+  return new Promise((resolve, reject) => {
+    let outcome: { accepted: boolean; reason?: 'duplicate' | 'reject' | 'missing_session' } = {
+      accepted: false,
+      reason: 'missing_session',
+    }
     const tx = db.transaction([SESSION_STORE, CHUNK_STORE], 'readwrite')
-    tx.oncomplete = () => resolve()
+    tx.oncomplete = () => resolve(outcome)
     tx.onerror = () => reject(tx.error)
-    tx.objectStore(CHUNK_STORE).put(row)
-    tx.objectStore(SESSION_STORE).put(next)
+    const sessionStore = tx.objectStore(SESSION_STORE)
+    const chunkStore = tx.objectStore(CHUNK_STORE)
+    const req = sessionStore.get(sessionId)
+    req.onsuccess = () => {
+      const session = (req.result as RecordingSessionMeta | undefined) ?? null
+      if (!session) {
+        outcome = { accepted: false, reason: 'missing_session' }
+        return
+      }
+      const verdict = shouldAcceptChunkIndex(session, index)
+      if (verdict === 'duplicate') {
+        outcome = { accepted: false, reason: 'duplicate' }
+        return
+      }
+      if (verdict === 'reject') {
+        outcome = { accepted: false, reason: 'reject' }
+        return
+      }
+      const row: RecordingChunkRow = {
+        id: chunkRowId(sessionId, index),
+        sessionId,
+        index,
+        size: blob.size,
+        createdAt: Date.now(),
+        blob,
+      }
+      const next = applyAcceptedChunk(session, index, blob.size)
+      chunkStore.put(row)
+      sessionStore.put(next)
+      outcome = { accepted: true }
+    }
   })
-  return { accepted: true }
 }
 
 export async function listRecordingChunks(sessionId: string): Promise<RecordingChunkRow[]> {
