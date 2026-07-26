@@ -247,6 +247,22 @@ export function deriveBillingState(input: DeriveBillingStateInput): BillingState
     }
   }
 
+  // Stripe status is none, but quota already reflects an active Student Pass
+  // (typically Apple IAP). Do not present this as Free/Upgrade — that path
+  // starts a second paid Checkout for the same tier.
+  const quotaPlanType =
+    input.quota && typeof input.quota.planType === 'string' ? input.quota.planType.trim().toLowerCase() : ''
+  if (quotaPlanType === 'student_pass') {
+    return {
+      status: 'active',
+      planCode,
+      interval,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      manageable,
+      quota,
+    }
+  }
+
   // status === 'none' or any other inactive non-terminal → free
   return { status: 'free', quota }
 }

@@ -29,6 +29,18 @@ const studentQuota: QuotaStatusPayload = {
   maxProcessingJobsPerDay: 10,
 }
 
+const freeQuota: QuotaStatusPayload = {
+  planType: 'public_trial',
+  unlimited: false,
+  monthlyMinutesLimit: 60,
+  minutesUsed: 12,
+  minutesRemaining: 48,
+  maxRecordingsPerDay: 2,
+  recordingsUsedToday: 1,
+  recordingsRemainingToday: 1,
+  maxProcessingJobsPerDay: 2,
+}
+
 describe('normalizeBillingInterval', () => {
   it('maps month/monthly/year/annual and unknown → null', () => {
     expect(normalizeBillingInterval('month')).toBe('monthly')
@@ -90,10 +102,25 @@ describe('deriveBillingState', () => {
       signedIn: true,
       loading: false,
       subscription: sub({ status: 'none' }),
-      quota: studentQuota,
+      quota: freeQuota,
       error: null,
     })
     expect(state.status).toBe('free')
+  })
+
+  it('treats Apple/IAP student_pass quota as active even when Stripe status is none', () => {
+    const state = deriveBillingState({
+      signedIn: true,
+      loading: false,
+      subscription: sub({ status: 'none', provider: null }),
+      quota: studentQuota,
+      error: null,
+    })
+    expect(state).toMatchObject({
+      status: 'active',
+      manageable: false,
+      planCode: null,
+    })
   })
 
   it('active monthly', () => {

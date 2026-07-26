@@ -22,6 +22,7 @@ import {
   resolveUserIdForSubscription,
   applyStripeSubscription,
   buildSubscriptionStatus,
+  subscriptionStatusFinality,
 } from './stripeSubscriptions.mjs'
 
 const START = Math.floor(Date.parse('2026-06-11T00:00:00Z') / 1000)
@@ -274,6 +275,44 @@ describe('out-of-order webhook protection', () => {
     expect(result.applied).toBe(true)
     expect(calls.upserts[0].row.last_event_at).toBe(new Date(Date.parse('2026-06-21T00:00:00Z')).toISOString())
     expect(calls.rpc[0].fn).toBe('project_stripe_entitlement')
+  })
+
+  it('same-second stale active cannot resurrect a canceled subscription', async () => {
+    // Stripe event.created is second-resolution; rapid cancel often shares one second.
+    const sameSecond = Date.parse('2026-06-20T00:00:00.000Z')
+    const { db, calls } = fakeDb({
+      customerUser: 'user-1',
+      existingSub: { last_event_at: '2026-06-20T00:00:00.000Z', status: 'canceled' },
+    })
+    const result = await applyStripeSubscription(db, stripeSub({ status: 'active' }), {
+      nowMs: NOW,
+      eventCreatedMs: sameSecond,
+    })
+    expect(result).toMatchObject({ applied: false, reason: 'stale' })
+    expect(calls.rpc).toHaveLength(0)
+    expect(calls.upserts).toHaveLength(0)
+  })
+
+  it('same-second cancel still applies over a previously stored active status', async () => {
+    const sameSecond = Date.parse('2026-06-20T00:00:00.000Z')
+    const { db, calls } = fakeDb({
+      customerUser: 'user-1',
+      existingSub: { last_event_at: '2026-06-20T00:00:00.000Z', status: 'active' },
+    })
+    const result = await applyStripeSubscription(
+      db,
+      stripeSub({ status: 'canceled', cancel_at_period_end: false }),
+      { nowMs: NOW, eventCreatedMs: sameSecond },
+    )
+    expect(result.applied).toBe(true)
+    expect(calls.upserts[0].row.status).toBe('canceled')
+    expect(calls.rpc[0].fn).toBe('project_stripe_entitlement')
+  })
+
+  it('ranks canceled/expired above active for same-second tie-breaks', () => {
+    expect(subscriptionStatusFinality('canceled')).toBeGreaterThan(subscriptionStatusFinality('active'))
+    expect(subscriptionStatusFinality('expired')).toBeGreaterThan(subscriptionStatusFinality('past_due'))
+    expect(subscriptionStatusFinality('past_due')).toBeGreaterThan(subscriptionStatusFinality('trialing'))
   })
 })
 
