@@ -21,6 +21,7 @@ describe('pending upload recovery model (Phase 2D-2)', () => {
     expect(sanitizeUploadErrorCategory(new Error('network error: fetch failed'))).toBe('network')
     expect(sanitizeUploadErrorCategory(new Error('Bucket not found'))).toBe('storage')
     expect(sanitizeUploadErrorCategory(new Error('503 gateway'))).toBe('server')
+    expect(sanitizeUploadErrorCategory(new Error('recording_too_long'))).toBe('quota')
     expect(sanitizeUploadErrorCategory(new Error('Bearer sk_live_abc leaked'))).toBe('unknown')
   })
 
@@ -51,5 +52,9 @@ describe('pending upload recovery model (Phase 2D-2)', () => {
     expect(detail).toMatch(/safe on this device/)
     expect(detail).toMatch(/nothing needs to be re-recorded/)
     expect(detail).not.toMatch(/sk_|Bearer|token/i)
+    const quotaDetail = pendingStatusDetail({ state: 'upload_failed', lastErrorCategory: 'quota' })
+    expect(quotaDetail).toMatch(/Pending uploads/)
+    expect(quotaDetail).toMatch(/length limit/)
+    expect(quotaDetail).toMatch(/tap Retry/)
   })
 })

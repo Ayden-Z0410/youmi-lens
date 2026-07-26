@@ -55,9 +55,12 @@ describe('long-recording save flow (src/App.tsx)', () => {
     expect(appSrc).toContain('tap Retry when you’re back online')
   })
 
-  it('keeps the existing recording_too_long → local fallback intact', () => {
+  it('preserves recording_too_long lectures as visible pending uploads (not invisible local rows)', () => {
     expect(appSrc).toContain('recording_too_long')
-    expect(appSrc).toContain("'Local save fallback'")
+    expect(appSrc).toContain("'Preserve over-limit recording (pending)'")
+    expect(appSrc).toContain("lastErrorCategory: 'quota'")
+    // Must not reintroduce the cloud-user-invisible local-only fallback on this path.
+    expect(appSrc).not.toContain("'Local save fallback'")
   })
 
   it('documents the persist-first / no-size-gate invariant at the guard site', () => {

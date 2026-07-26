@@ -3481,35 +3481,50 @@ const [editLectureModal, setEditLectureModal] = useState<{
             return
           }
 
-          // If the recording is too long for cloud processing,
-          // fall back to local save so the audio is never lost.
+          // If the recording is too long for cloud processing, preserve it as a
+          // durable per-user PENDING UPLOAD. Cloud users never see the local
+          // `recordings` store in Courses, so saveRecordingLocal here made the
+          // lecture invisible while still deleting durable session chunks.
           if (/recording_too_long/i.test(msg) || /recording.*too long|too long.*recording/i.test(msg)) {
-            console.warn('[capture] recording_too_long — falling back to local save', JSON.stringify({ recordingId, durationSec }))
+            console.warn('[capture] recording_too_long — preserving as pending upload', JSON.stringify({ recordingId, durationSec }))
             try {
               await withTimeout(
-                saveRecordingLocal({
+                savePendingUpload({
                   id: recordingId,
+                  userId: userId!,
                   course: courseVal,
                   title: titleVal,
-                  createdAt: Date.now(),
                   durationSec,
                   mime,
-                  audioBlob: blob,
+                  lang: liveLang,
+                  translateTarget,
                   liveTranscript: liveTranscriptCanonical || undefined,
                   liveTranscriptRaw: liveTranscriptRaw || undefined,
+                  createdAt: Date.now(),
+                  updatedAt: Date.now(),
+                  state: 'upload_failed',
+                  lastErrorCategory: 'quota',
+                  attempts: 1,
+                  cloudUploaded: false,
+                  audioBlob: blob,
                 }),
                 SAVE_DB_TIMEOUT_MS,
-                'Local save fallback',
+                'Preserve over-limit recording (pending)',
               )
+              void completeRecordingSessionPersist(recordingId).catch(() => { /* best-effort */ })
+              try {
+                await refreshList()
+              } catch {
+                /* best-effort refresh */
+              }
               endCapture({
                 kind: 'list_refresh_warn',
                 recordingId,
                 message:
-                  'Recording saved locally (too long for cloud processing). Free access limit reached. Please contact Youmi Lens for more access.',
+                  'Your recording is safe on this device under Pending uploads (too long for cloud processing on your current plan). Contact Youmi Lens for more access, then tap Retry — nothing was lost.',
                 at: Date.now(),
               })
-              void completeRecordingSessionPersist(recordingId).catch(() => { /* best-effort */ })
-            } catch (locFallbackErr) {
+            } catch {
               endCapture({
                 kind: 'failure',
                 recordingId,
