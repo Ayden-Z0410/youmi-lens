@@ -82,6 +82,62 @@ button {
   align-items: center;
 }
 
+/* Commercialization nav additions (Pricing lives in .nav-links; auth entry here).
+   Right cell now holds the Log in / Account entry + the existing macOS CTA. */
+.nav-right {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.nav-login {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 15px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 620;
+  line-height: 1;
+  color: rgba(7, 26, 51, 0.86);
+  background: transparent;
+  text-decoration: none;
+  transition: background 180ms ease, color 180ms ease;
+}
+.nav-login:hover,
+.nav-login:focus-visible {
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--text-navy);
+}
+.nav-account {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 12px 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.6);
+  font-size: 14px;
+  font-weight: 620;
+  color: var(--text-navy);
+  text-decoration: none;
+}
+.nav-account:hover {
+  background: rgba(255, 255, 255, 0.85);
+}
+.nav-account .av {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-blue);
+  font-weight: 700;
+  font-size: 12px;
+  display: grid;
+  place-items: center;
+}
+
 .brand {
   gap: 10px;
   min-width: 0;
@@ -3374,6 +3430,93 @@ h3 {
 @media (max-width: 1024px) {
   .chapter {
     width: min(100% - 28px, var(--max-width));
+  }
+}
+
+/* Tablet and phone-landscape navigation: retain the full horizontal nav while
+   compressing its spacing so Login/Account and the download CTA never overflow. */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .site-nav {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 6px 8px 6px 12px;
+  }
+
+  .brand-wordmark {
+    width: 94px;
+  }
+
+  .nav-links {
+    min-width: 0;
+    gap: 0;
+    padding: 2px;
+  }
+
+  .nav-links a {
+    min-height: 38px;
+    padding: 0 8px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .nav-right {
+    gap: 4px;
+  }
+
+  .nav-login,
+  .nav-account {
+    min-height: 38px;
+    padding-left: 8px;
+    padding-right: 8px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .nav-download {
+    min-height: 38px;
+    padding: 0 12px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  /* Keep the product preview recognizably tablet/landscape, but remove the
+     tertiary summary rail that forces the three-column mock wider than the
+     viewport. Portrait mobile still uses the separate single-column rules. */
+  .showcase-wrap,
+  .showcase-window {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .showcase-wrap {
+    transform: none !important;
+  }
+
+  .app-shell {
+    grid-template-columns: minmax(190px, 24%) minmax(0, 1fr);
+  }
+
+  .summary-fragment {
+    display: none;
+  }
+
+  .sidebar-fragment {
+    padding: 24px 16px;
+  }
+
+  .recording-fragment {
+    margin: 18px;
+    padding: 22px;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 900px) {
+  .site-nav {
+    grid-template-columns: auto 1fr;
+  }
+
+  .nav-links {
+    display: none;
   }
 }
 

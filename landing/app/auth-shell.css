@@ -1,0 +1,195 @@
+/* ============================================================================
+   Youmi Lens — SHARED authentication design system (Phase 3E).
+   Single source of truth for Website AND Desktop auth. Both surfaces render the
+   same .yl-auth-* markup + these rules, so they read as ONE design family.
+   Palette/rhythm are the APPROVED WEBSITE values; iPad is the brand reference.
+   Self-contained (defines its own tokens) so it works in both the static site
+   and the .ds-root desktop app.
+   PRODUCTION: this file is served to /login/, /register/, /forgot-password/,
+   and /reset-password/. The Desktop preview loads its own copy under
+   landing/previews/commercial-ui/, so edits here do not affect that preview.
+   ============================================================================ */
+
+/* Tokens live on BOTH the optional .yl-auth wrapper (Website) and the surface
+   itself (Desktop renders .yl-auth-surface directly), so the navy panel vars
+   resolve in either composition. */
+.yl-auth,
+.yl-auth-surface {
+  --yl-ink: #16243A;
+  --yl-slate: #3D4D66;
+  --yl-link: #334B68;
+  --yl-line: #E3E8EF;
+  --yl-ph: #A8B3C2;
+  --yl-muted: #9AA7B8;
+  --yl-navy1: #1A2B47;
+  --yl-navy2: #101B2D;
+  --yl-glow: #4A7DBF;
+  --yl-primary: #0B1F3B;
+  --yl-success: #2f8f73;
+  --yl-danger: #b3372c;
+  --yl-accent: #2f65b7;
+  --yl-container-radius: 22px;
+  --yl-field-radius: 14px;
+  --yl-field-h: 50px;
+  --yl-btn-h: 52px;
+  --yl-shadow: 0 18px 60px rgba(6, 27, 52, 0.12);
+  --yl-border: 1px solid rgba(6, 27, 52, 0.10);
+  --yl-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  font-family: var(--yl-font);
+  -webkit-font-smoothing: antialiased;
+}
+.yl-auth *, .yl-auth *::before, .yl-auth *::after,
+.yl-auth-surface *, .yl-auth-surface *::before, .yl-auth-surface *::after { box-sizing: border-box; }
+
+/* ── unified rounded auth surface (identical on Website + Desktop) ──────────── */
+.yl-auth-surface {
+  display: grid;
+  grid-template-columns: 46% 1fr;
+  align-items: stretch;
+  min-height: 640px;
+  border-radius: var(--yl-container-radius);
+  overflow: hidden;
+  border: var(--yl-border);
+  box-shadow: var(--yl-shadow);
+  background: #fff;
+}
+
+/* ── full-height navy brand panel ──────────────────────────────────────────── */
+.yl-auth-brand {
+  position: relative;
+  overflow: hidden;
+  color: #fff;
+  background: linear-gradient(180deg, var(--yl-navy1) 0%, var(--yl-navy2) 100%);
+  padding: 44px 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 20px;
+}
+.yl-auth-brand::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 70% at 15% 8%, rgba(74, 125, 191, 0.26), rgba(74, 125, 191, 0) 60%),
+    linear-gradient(160deg, rgba(74, 125, 191, 0.10), rgba(74, 125, 191, 0) 55%);
+  pointer-events: none;
+}
+.yl-auth-brand > * { position: relative; z-index: 1; }
+.yl-auth-brandtop { display: flex; align-items: center; }
+/* Official master lockup, light-on-navy treatment (exact asset recolored). */
+.yl-auth-logo { height: 26px; width: auto; display: block; filter: brightness(0) invert(1); }
+.yl-auth-live { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+.yl-auth-rec { width: 8px; height: 8px; border-radius: 9999px; background: #E0635C; animation: yl-pulse 2.2s ease-in-out infinite; }
+@keyframes yl-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .5; transform: scale(.82); } }
+@media (prefers-reduced-motion: reduce) { .yl-auth-rec { animation: none; } }
+.yl-auth-livelabel { color: rgba(255, 255, 255, 0.55); font-size: 12px; font-weight: 600; letter-spacing: 1.6px; text-transform: uppercase; }
+.yl-auth-caption { color: #F4F7FB; font-size: 22px; line-height: 31px; font-weight: 500; margin: 0 0 20px; max-width: 430px; }
+.yl-auth-caption.dim { color: rgba(244, 247, 251, 0.4); }
+.yl-auth-tagline { color: rgba(255, 255, 255, 0.85); font-size: 13.5px; line-height: 21px; font-weight: 600; margin: 0; }
+.yl-auth-desc { color: rgba(255, 255, 255, 0.5); font-size: 13.5px; line-height: 21px; margin: 2px 0 0; }
+.yl-auth-wave { display: flex; align-items: flex-end; gap: 4px; height: 44px; opacity: 0.5; }
+.yl-auth-wave span { width: 3px; border-radius: 2px; background: linear-gradient(180deg, #7FB0E6, #4A7DBF); min-height: 4px; }
+
+/* ── light form panel ──────────────────────────────────────────────────────── */
+.yl-auth-form { background: #fff; display: flex; align-items: center; justify-content: center; padding: 44px 40px; min-width: 0; }
+.yl-auth-card { width: 100%; max-width: 400px; }
+.yl-auth-title { color: var(--yl-ink); font-size: 27px; line-height: 33px; font-weight: 700; letter-spacing: -0.4px; margin: 0; }
+.yl-auth-switch { display: flex; gap: 6px; align-items: center; margin: 8px 0 22px; font-size: 14.5px; color: var(--yl-slate); flex-wrap: wrap; }
+.yl-auth-switch button { color: var(--yl-link); font-weight: 600; background: none; border: none; cursor: pointer; font-size: 14.5px; padding: 0; }
+.yl-auth-switch button:hover { text-decoration: underline; }
+
+.yl-auth-sso { display: flex; flex-direction: column; gap: 11px; }
+.yl-sso-btn { height: var(--yl-field-h); border-radius: var(--yl-field-radius); display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 15.5px; font-weight: 600; cursor: pointer; border: 1px solid transparent; transition: opacity .12s ease, transform .12s ease; }
+.yl-sso-btn:active { transform: scale(.99); }
+.yl-sso-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(47, 101, 183, 0.28); }
+.yl-sso-apple { background: #000; color: #fff; }
+.yl-sso-google { background: #fff; color: var(--yl-ink); border-color: var(--yl-line); }
+
+.yl-auth-divider { display: flex; align-items: center; gap: 14px; margin: 20px 0; }
+.yl-auth-divider::before, .yl-auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--yl-line); }
+.yl-auth-divider span { color: var(--yl-muted); font-size: 12.5px; }
+
+.yl-auth-field { margin-bottom: 16px; }
+.yl-auth-field > label { display: block; color: var(--yl-slate); font-size: 13px; font-weight: 600; margin-bottom: 7px; }
+.yl-auth-input { width: 100%; height: var(--yl-field-h); border: 1px solid var(--yl-line); border-radius: var(--yl-field-radius); background: #fff; padding: 0 16px; font-size: 15.5px; color: var(--yl-ink); font-family: var(--yl-font); }
+.yl-auth-input::placeholder { color: var(--yl-ph); }
+.yl-auth-input:focus-visible { outline: none; border-color: var(--yl-link); box-shadow: 0 0 0 3px rgba(51, 75, 104, 0.12); }
+.yl-auth-input.err { border-color: var(--yl-danger); }
+.yl-auth-pw { position: relative; }
+.yl-auth-pw .yl-auth-input { padding-right: 56px; }
+.yl-auth-eye { position: absolute; right: 6px; top: 6px; height: 38px; width: 42px; border: none; background: transparent; color: var(--yl-muted); font-weight: 600; font-size: 12.5px; border-radius: 10px; cursor: pointer; }
+.yl-auth-eye:hover { background: #f1f5f9; color: var(--yl-slate); }
+.yl-auth-err { color: var(--yl-danger); font-size: 13px; font-weight: 600; margin: 4px 0 0; }
+.yl-auth-hint { color: var(--yl-muted); font-size: 12.5px; line-height: 18px; margin: 7px 0 0; }
+.yl-auth-forgot { display: flex; justify-content: flex-end; margin: -4px 0 4px; }
+.yl-auth-forgot button { color: var(--yl-link); font-weight: 600; font-size: 13.5px; background: none; border: none; cursor: pointer; }
+.yl-auth-forgot button:hover { text-decoration: underline; }
+
+.yl-auth-primary { width: 100%; height: var(--yl-btn-h); border-radius: var(--yl-field-radius); border: none; background: var(--yl-primary); color: #f8fafc; font-size: 15.5px; font-weight: 600; cursor: pointer; margin-top: 4px; transition: filter .12s ease, opacity .12s ease; font-family: var(--yl-font); }
+.yl-auth-primary:hover:not(:disabled) { filter: brightness(1.12); }
+.yl-auth-primary:disabled { opacity: .5; cursor: not-allowed; }
+.yl-auth-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(47, 101, 183, 0.32); }
+
+.yl-auth-terms { display: flex; gap: 10px; align-items: flex-start; margin: 4px 0 14px; font-size: 12.5px; color: var(--yl-slate); line-height: 18px; }
+.yl-auth-terms input { margin-top: 2px; width: 16px; height: 16px; accent-color: var(--yl-primary); flex: none; }
+.yl-auth-terms a { color: var(--yl-link); font-weight: 600; }
+
+.yl-auth-banner { border-radius: 12px; padding: 11px 13px; font-size: 13px; margin-bottom: 16px; line-height: 18px; }
+.yl-auth-banner.err { background: rgba(179, 55, 44, 0.06); border: 1px solid rgba(179, 55, 44, 0.22); color: var(--yl-danger); }
+.yl-auth-banner.info { background: rgba(47, 101, 183, 0.07); border: 1px solid rgba(47, 101, 183, 0.20); color: var(--yl-accent); }
+.yl-auth-banner.ok { background: rgba(47, 143, 115, 0.08); border: 1px solid rgba(47, 143, 115, 0.22); color: var(--yl-success); }
+.yl-auth-banner .yl-link { background: none; border: none; padding: 0; color: var(--yl-accent); font-weight: 600; cursor: pointer; font-size: 13px; }
+
+.yl-auth-code { letter-spacing: 8px; text-align: center; font-size: 20px; font-weight: 600; }
+.yl-auth-icon { width: 52px; height: 52px; border-radius: 9999px; display: grid; place-items: center; margin: 0 auto 14px; background: rgba(47, 101, 183, 0.10); font-size: 24px; }
+.yl-auth-icon.ok { background: rgba(47, 143, 115, 0.12); }
+.yl-auth-back { display: block; margin: 14px auto 0; color: var(--yl-link); font-weight: 600; font-size: 13.5px; background: none; border: none; cursor: pointer; }
+.yl-auth-center { text-align: center; }
+.yl-auth-lede { color: var(--yl-slate); font-size: 14.5px; line-height: 1.45; margin: 8px 0 20px; }
+
+/* ── responsive: WEBSITE uses viewport media queries ───────────────────────── */
+@media (max-width: 900px) {
+  .yl-auth-surface { grid-template-columns: 42% 1fr; min-height: 560px; }
+  .yl-auth-brand { padding: 32px 28px; }
+  .yl-auth-form { padding: 34px 28px; }
+  .yl-auth-caption { font-size: 18px; line-height: 26px; margin-bottom: 14px; }
+}
+@media (max-width: 640px) {
+  .yl-auth-surface { grid-template-columns: 1fr; min-height: 0; }
+  .yl-auth-brand { padding: 22px 24px 20px; gap: 12px; }
+  .yl-auth-brand .yl-auth-caption.dim, .yl-auth-brand .yl-auth-desc, .yl-auth-wave { display: none; }
+  .yl-auth-caption { font-size: 16px; line-height: 22px; margin: 0; }
+}
+
+/* ── WEBSITE full-viewport auth ─────────────────────────────────────────────
+   login / register / forgot-password / reset-password fill the whole screen:
+   an edge-to-edge navy|form split with no outer padding, radius, or shadow.
+   Scoped to .yl-auth-full so the Desktop surface (and .compact) is unchanged. */
+.yl-auth-full {
+  display: block;
+  padding: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+.yl-auth-full .yl-auth-surface {
+  max-width: none;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+/* The brand wordmark links home, since these pages carry no marketing nav. */
+.yl-auth-full .yl-auth-brandtop a { display: inline-flex; text-decoration: none; }
+
+@media (max-width: 640px) {
+  /* Brand panel becomes a compact banner; the form takes the remaining height. */
+  .yl-auth-full .yl-auth-surface { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+}
+
+/* ── responsive: DESKTOP uses explicit modifier classes (window-size driven) ── */
+.yl-auth-surface.compact { grid-template-columns: 42% 1fr; min-height: 560px; }
+.yl-auth-surface.compact .yl-auth-brand { padding: 30px 26px; }
+.yl-auth-surface.compact .yl-auth-form { padding: 32px 26px; }
+.yl-auth-surface.compact .yl-auth-caption { font-size: 18px; line-height: 26px; }
