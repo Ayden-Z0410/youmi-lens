@@ -10,6 +10,7 @@
  *   POST /api/subscription/refresh    — pull latest from Stripe and re-project.
  */
 import { verifyJwt } from './betaGate.mjs'
+import { getActiveEntitlement } from './iapEntitlements.mjs'
 import { getBillingAdminClient, getStripe, getStripeWebhookSecret, isStripeConfigured } from './stripeClient.mjs'
 import {
   isAllowedPlanCode,
@@ -75,6 +76,18 @@ export function shouldBlockCheckoutForSubscription(subscription) {
   return false
 }
 
+/**
+ * Block Stripe Checkout when the user already holds an active student_pass
+ * entitlement from ANY source (Apple IAP or Stripe). Stripe-only subscription
+ * status would otherwise let an Apple-paid user start a second paid Checkout.
+ */
+export function shouldBlockCheckoutForEntitlement(entitlement) {
+  if (!entitlement || typeof entitlement !== 'object') return false
+  if (entitlement.status != null && entitlement.status !== 'active') return false
+  if (entitlement.revoked_at) return false
+  return entitlement.plan_type === 'student_pass'
+}
+
 // ── POST /api/billing/checkout ───────────────────────────────────────────────
 export async function handleCheckout(req, res) {
   const user = await requireUser(req, res)
@@ -106,6 +119,17 @@ export async function handleCheckout(req, res) {
         error: 'subscription_already_exists',
         message:
           'You already have a subscription. Refresh your plan status or manage your existing subscription.',
+      })
+      return
+    }
+
+    const entitlement = await getActiveEntitlement(db, user.userId, new Date().toISOString())
+    if (shouldBlockCheckoutForEntitlement(entitlement)) {
+      res.status(409).json({
+        ok: false,
+        error: 'entitlement_already_active',
+        message:
+          'You already have an active Student Pass. Manage your existing subscription or App Store purchase instead of starting a new checkout.',
       })
       return
     }

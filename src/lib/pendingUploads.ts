@@ -16,7 +16,13 @@
 export type PendingUploadState = 'upload_failed' | 'uploading'
 
 /** Sanitized failure buckets — safe to persist/log; never carry raw errors/secrets. */
-export type PendingUploadErrorCategory = 'network' | 'timeout' | 'server' | 'storage' | 'unknown'
+export type PendingUploadErrorCategory =
+  | 'network'
+  | 'timeout'
+  | 'server'
+  | 'storage'
+  | 'quota'
+  | 'unknown'
 
 export interface PendingUploadMeta {
   /** Stable recording UUID (same id used for the cloud storage path + row). */
@@ -47,6 +53,7 @@ export function sanitizeUploadErrorCategory(err: unknown): PendingUploadErrorCat
   if (/timeout|timed out/.test(msg)) return 'timeout'
   if (/network|fetch failed|failed to fetch|econn|socket|offline/.test(msg)) return 'network'
   if (/bucket|storage|permission|unauthor|forbidden/.test(msg)) return 'storage'
+  if (/recording_too_long|too long.*recording|recording.*too long/.test(msg)) return 'quota'
   if (/5\d\d|gateway|server|temporarily|429|too many/.test(msg)) return 'server'
   return 'unknown'
 }
@@ -81,8 +88,12 @@ export function pendingStatusDetail(m: Pick<PendingUploadMeta, 'state' | 'lastEr
     timeout: 'the upload timed out',
     server: 'the server was temporarily unavailable',
     storage: 'cloud storage could not be reached',
+    quota: 'it exceeds your plan’s recording length limit',
     unknown: 'the upload could not complete',
   }
   const reason = m.lastErrorCategory ? why[m.lastErrorCategory] : why.unknown
+  if (m.lastErrorCategory === 'quota') {
+    return `Your recording is safe on this device under Pending uploads. Cloud processing was blocked because ${reason}. Contact Youmi Lens for more access, then tap Retry — nothing needs to be re-recorded.`
+  }
   return `Your recording is safe on this device. Last upload didn’t finish because ${reason}. Retry when you’re back online — nothing needs to be re-recorded.`
 }

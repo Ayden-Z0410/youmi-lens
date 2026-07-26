@@ -5,6 +5,7 @@ import {
   handlePortal,
   handleSubscriptionStatus,
   shouldBlockCheckoutForSubscription,
+  shouldBlockCheckoutForEntitlement,
 } from './stripeRoutes.mjs'
 import { getOrCreateStripeCustomer, getStripeCustomerId, linkStripeCustomer } from './stripeCustomers.mjs'
 import { safeRedirectUrl } from './stripeConfig.mjs'
@@ -109,6 +110,33 @@ describe('shouldBlockCheckoutForSubscription (active-subscriber guard)', () => {
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'expired', manageable: true })).toBe(false)
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'canceled', manageable: true })).toBe(false)
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'past_due', manageable: false })).toBe(false)
+  })
+})
+
+describe('shouldBlockCheckoutForEntitlement (cross-provider paid guard)', () => {
+  it('blocks an active student_pass entitlement from Apple or Stripe', () => {
+    expect(
+      shouldBlockCheckoutForEntitlement({
+        plan_type: 'student_pass',
+        status: 'active',
+        revoked_at: null,
+      }),
+    ).toBe(true)
+  })
+
+  it('allows missing/revoked/non-pass entitlements so free users can checkout', () => {
+    expect(shouldBlockCheckoutForEntitlement(null)).toBe(false)
+    expect(shouldBlockCheckoutForEntitlement({ plan_type: 'student_pass', status: 'revoked', revoked_at: null })).toBe(
+      false,
+    )
+    expect(
+      shouldBlockCheckoutForEntitlement({
+        plan_type: 'student_pass',
+        status: 'active',
+        revoked_at: '2026-06-01T00:00:00.000Z',
+      }),
+    ).toBe(false)
+    expect(shouldBlockCheckoutForEntitlement({ plan_type: 'public_trial', status: 'active' })).toBe(false)
   })
 })
 

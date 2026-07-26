@@ -221,6 +221,26 @@ export async function projectEntitlement(db, userId, record, nowMs = Date.now())
 }
 
 /**
+ * Relative finality of a canonical subscription status. Higher means more
+ * terminal. Used only as a same-second tie-break when Stripe `event.created`
+ * (unix seconds) collides — strictly older events still always lose.
+ */
+export function subscriptionStatusFinality(status) {
+  switch (status) {
+    case 'canceled':
+    case 'expired':
+      return 3
+    case 'past_due':
+      return 2
+    case 'active':
+    case 'trialing':
+      return 1
+    default:
+      return 0
+  }
+}
+
+/**
  * Apply a full Stripe subscription object to the DB: upsert the canonical row
  * and project the entitlement. Requires a resolvable user_id.
  *
@@ -228,7 +248,10 @@ export async function projectEntitlement(db, userId, record, nowMs = Date.now())
  * ordering guarantees. When `eventCreatedMs` is supplied (the Stripe event
  * `created` time), an event OLDER than the last one already applied to this
  * subscription is skipped, so a stale delivery can never regress a newer period
- * or status. A live refresh passes no event time and always applies.
+ * or status. Stripe timestamps are second-resolution, so equal `created` values
+ * are common on rapid cancel; those ties prefer the more terminal status so a
+ * late active payload cannot resurrect access after a same-second cancel.
+ * A live refresh passes no event time and always applies.
  */
 export async function applyStripeSubscription(db, sub, { nowMs = Date.now(), eventCreatedMs = null } = {}) {
   const userId = await resolveUserIdForSubscription(db, sub)
@@ -239,14 +262,22 @@ export async function applyStripeSubscription(db, sub, { nowMs = Date.now(), eve
   if (eventCreatedMs != null && Number.isFinite(eventCreatedMs)) {
     const { data: existing, error } = await db
       .from('subscriptions')
-      .select('last_event_at')
+      .select('last_event_at, status')
       .eq('provider', 'stripe')
       .eq('provider_subscription_id', record.provider_subscription_id)
       .maybeSingle()
     if (error) throw error
     const storedMs = existing?.last_event_at ? Date.parse(existing.last_event_at) : NaN
-    if (Number.isFinite(storedMs) && eventCreatedMs < storedMs) {
-      return { applied: false, reason: 'stale', userId, record }
+    if (Number.isFinite(storedMs)) {
+      if (eventCreatedMs < storedMs) {
+        return { applied: false, reason: 'stale', userId, record }
+      }
+      if (
+        eventCreatedMs === storedMs &&
+        subscriptionStatusFinality(record.status) < subscriptionStatusFinality(existing?.status)
+      ) {
+        return { applied: false, reason: 'stale', userId, record }
+      }
     }
   }
 
