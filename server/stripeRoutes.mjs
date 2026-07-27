@@ -75,6 +75,93 @@ export function shouldBlockCheckoutForSubscription(subscription) {
   return false
 }
 
+/**
+ * Stripe-live subscription statuses that mean "do not open another Checkout".
+ * Complements the local DB guard so multi-tab races cannot create a second
+ * paid subscription before the first webhook lands.
+ */
+export function shouldBlockCheckoutForStripeSubscription(stripeSubscription) {
+  if (!stripeSubscription || typeof stripeSubscription !== 'object') return false
+  const status = stripeSubscription.status
+  return status === 'active' || status === 'trialing' || status === 'past_due'
+}
+
+/** Stable Stripe idempotency key for same-user + same-price Checkout creates. */
+export function checkoutIdempotencyKey(userId, priceId) {
+  return `billing:checkout:${userId}:${priceId}`
+}
+
+/**
+ * Prefer an already-open Checkout Session for the same user + plan so concurrent
+ * tabs reuse one Stripe session (one URL) instead of creating two subscriptions.
+ */
+export function pickReusableOpenCheckoutSession(sessions, { userId, planCode }) {
+  if (!Array.isArray(sessions) || !userId || !planCode) return null
+  for (const session of sessions) {
+    if (!session || session.status !== 'open') continue
+    if (session.mode && session.mode !== 'subscription') continue
+    const meta = session.metadata || {}
+    if (meta.user_id !== userId) continue
+    if (meta.plan_code !== planCode) continue
+    if (typeof session.url !== 'string' || !session.url) continue
+    return session
+  }
+  return null
+}
+
+/**
+ * Create or reuse a Stripe Checkout Session.
+ *
+ * Layered multi-tab protection (no DB migration):
+ * 1. Block when Stripe already has an active/trialing/past_due subscription.
+ * 2. Reuse an open same-plan Checkout Session URL when present.
+ * 3. Expire other open sessions for this customer before creating a new one.
+ * 4. Pass a user+price idempotency key so concurrent same-plan creates collapse.
+ */
+export async function createOrReuseCheckoutSession(stripe, {
+  userId,
+  customerId,
+  planCode,
+  priceId,
+  urls,
+}) {
+  const subsList = await stripe.subscriptions.list({
+    customer: customerId,
+    status: 'all',
+    limit: 10,
+  })
+  const subs = Array.isArray(subsList?.data) ? subsList.data : []
+  if (subs.some((sub) => shouldBlockCheckoutForStripeSubscription(sub))) {
+    const err = new Error('subscription_already_exists')
+    err.code = 'subscription_already_exists'
+    throw err
+  }
+
+  const sessionsList = await stripe.checkout.sessions.list({
+    customer: customerId,
+    status: 'open',
+    limit: 10,
+  })
+  const openSessions = Array.isArray(sessionsList?.data) ? sessionsList.data : []
+  const reusable = pickReusableOpenCheckoutSession(openSessions, { userId, planCode })
+  if (reusable) return { session: reusable, reused: true }
+
+  for (const open of openSessions) {
+    if (!open?.id) continue
+    try {
+      await stripe.checkout.sessions.expire(open.id)
+    } catch {
+      /* session may have completed/expired between list and expire */
+    }
+  }
+
+  const session = await stripe.checkout.sessions.create(
+    buildCheckoutSessionParams({ userId, customerId, planCode, priceId, urls }),
+    { idempotencyKey: checkoutIdempotencyKey(userId, priceId) },
+  )
+  return { session, reused: false }
+}
+
 // ── POST /api/billing/checkout ───────────────────────────────────────────────
 export async function handleCheckout(req, res) {
   const user = await requireUser(req, res)
@@ -112,11 +199,28 @@ export async function handleCheckout(req, res) {
 
     const customerId = await getOrCreateStripeCustomer(db, stripe, { userId: user.userId, email: user.email })
     const urls = getCheckoutUrls()
-    const session = await stripe.checkout.sessions.create(
-      buildCheckoutSessionParams({ userId: user.userId, customerId, planCode, priceId, urls }),
-    )
+    const { session } = await createOrReuseCheckoutSession(stripe, {
+      userId: user.userId,
+      customerId,
+      planCode,
+      priceId,
+      urls,
+    })
+    if (!session?.url) {
+      res.status(502).json({ ok: false, error: 'checkout_failed', message: 'Could not start checkout.' })
+      return
+    }
     res.json({ ok: true, url: session.url })
   } catch (err) {
+    if (err?.code === 'subscription_already_exists') {
+      res.status(409).json({
+        ok: false,
+        error: 'subscription_already_exists',
+        message:
+          'You already have a subscription. Refresh your plan status or manage your existing subscription.',
+      })
+      return
+    }
     console.error('[billing/checkout] failed', err instanceof Error ? err.message : String(err))
     res.status(502).json({ ok: false, error: 'checkout_failed', message: 'Could not start checkout.' })
   }
