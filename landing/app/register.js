@@ -5,6 +5,7 @@
  */
 import { getSession, onAuthChange, checkEmail, sendSignupCode, verifySignupCodeAndCreateUser, signInWithProvider, isConfigured } from './auth.js'
 import { surface, ssoStack, mount, banner, esc, EMAIL_RE, createResendState, resendControlsHtml, wireResendControls, stopResendCountdown } from './auth-ui.js'
+import { validateUsername, USERNAME_MIN_LENGTH, USERNAME_MAX_LENGTH } from './profileFields.js'
 
 let step = 'form' // 'form' | 'verify' | 'success'
 
@@ -15,6 +16,8 @@ const resend = createResendState()
 let showPw = false
 let msg = null
 let email = ''
+let username = '' // preserved across repaints so a rejected submit keeps the value
+let agreed = false
 
 function formBody() {
   return `
@@ -26,13 +29,19 @@ function formBody() {
     <form id="f">
       <div class="yl-auth-field"><label for="email">Email</label>
         <input id="email" class="yl-auth-input" type="email" autocomplete="email" placeholder="you@university.edu" value="${esc(email)}" required></div>
+      <div class="yl-auth-field"><label for="uname">Username</label>
+        <input id="uname" class="yl-auth-input" type="text" autocomplete="nickname" placeholder="How you want to be greeted"
+               value="${esc(username)}" maxlength="${USERNAME_MAX_LENGTH}" required
+               aria-describedby="uname-hint" aria-invalid="false">
+        <p class="yl-auth-hint" id="uname-hint">${USERNAME_MIN_LENGTH}–${USERNAME_MAX_LENGTH} characters.</p>
+        <p class="yl-auth-err" id="uerr" hidden></p></div>
       <div class="yl-auth-field"><label for="pw">Password</label>
         <div class="yl-auth-pw"><input id="pw" class="yl-auth-input" type="${showPw ? 'text' : 'password'}" autocomplete="new-password" placeholder="Create a password" required>
           <button type="button" class="yl-auth-eye" id="eye">${showPw ? 'Hide' : 'Show'}</button></div>
         <p class="yl-auth-hint">We’ll email a verification code to confirm your address.</p></div>
       <div class="yl-auth-field"><label for="cf">Confirm password</label>
         <input id="cf" class="yl-auth-input" type="${showPw ? 'text' : 'password'}" autocomplete="new-password" placeholder="Re-enter password" required></div>
-      <label class="yl-auth-terms"><input type="checkbox" id="agree">
+      <label class="yl-auth-terms"><input type="checkbox" id="agree"${agreed ? ' checked' : ''}>
         <span>I agree to the <a href="/#support">Terms</a> and <a href="/#privacy">Privacy Policy</a>.</span></label>
       <p class="yl-auth-err" id="err" hidden></p>
       <button type="submit" class="yl-auth-primary" id="submit">Create account</button>
@@ -68,32 +77,59 @@ function paint() {
   } else if (step === 'verify') {
     document.getElementById('vf').addEventListener('submit', onVerify)
     wireResendControls(resend, {
-      send: () => sendSignupCode(email),
+      send: () => sendSignupCode(email, username),
       onChange: () => { step = 'form'; msg = null; paint() },
     })
   }
 }
 
+/** Field-level 'taken' error after a repaint (form step must already be mounted). */
+function showUsernameTaken(message) {
+  const el = document.getElementById('uerr')
+  const box = document.getElementById('uname')
+  if (!el || !box) return
+  el.hidden = false
+  el.textContent = message
+  box.setAttribute('aria-invalid', 'true')
+  box.focus()
+}
+
 async function onCreate(e) {
   e.preventDefault()
   email = document.getElementById('email').value.trim()
+  const unameEl = document.getElementById('uname')
   const pw = document.getElementById('pw').value
   const cf = document.getElementById('cf').value
-  const agree = document.getElementById('agree').checked
+  agreed = document.getElementById('agree').checked
   const err = document.getElementById('err')
+  const uerr = document.getElementById('uerr')
   const fail = (m) => { err.hidden = false; err.textContent = m }
+  // Username errors sit beside the Username field, not in the shared footer.
+  const failUsername = (m) => {
+    uerr.hidden = false; uerr.textContent = m
+    unameEl.setAttribute('aria-invalid', 'true'); unameEl.focus()
+  }
+  err.hidden = true; uerr.hidden = true; unameEl.setAttribute('aria-invalid', 'false')
+
   if (!EMAIL_RE.test(email)) return fail('Enter a valid email address.')
+  const uname = validateUsername(unameEl.value)
+  username = unameEl.value.trim() // normalized; preserved if a later step fails
+  if (!uname.ok) return failUsername(uname.message)
   if (pw.length < 8) return fail('Password must be at least 8 characters.')
   if (pw !== cf) return fail('Passwords don’t match.')
-  if (!agree) return fail('Please accept the Terms and Privacy Policy.')
+  if (!agreed) return fail('Please accept the Terms and Privacy Policy.')
   window._pw = pw // held in-memory only for this flow; never logged/persisted
   const btn = document.getElementById('submit'); btn.disabled = true; btn.textContent = 'Sending code…'
   const chk = await checkEmail(email)
   if (chk.ok && chk.exists && chk.status === 'registered') {
     msg = { kind: 'info', html: `That email already has a Youmi Lens account. <a href="/login/">Sign in instead</a>.` }; return paint()
   }
-  const sent = await sendSignupCode(email)
-  if (!sent.ok) { msg = { kind: 'err', html: esc(sent.message) }; return paint() }
+  const sent = await sendSignupCode(email, uname.value)
+  if (!sent.ok) {
+    // Taken usernames stay on the form with the field-level error and no email sent.
+    if (sent.code === 'username_taken') { msg = null; paint(); return showUsernameTaken(sent.message) }
+    msg = { kind: 'err', html: esc(sent.message) }; return paint()
+  }
   step = 'verify'; msg = null; paint()
 }
 
@@ -103,9 +139,14 @@ async function onVerify(e) {
   const verr = document.getElementById('verr')
   if (!/^\d{8}$/.test(code)) { verr.hidden = false; verr.textContent = 'Enter the full 8-digit code.'; return }
   const btn = document.getElementById('vsubmit'); btn.disabled = true; btn.textContent = 'Verifying…'
-  const r = await verifySignupCodeAndCreateUser(email, window._pw || '', code)
+  const r = await verifySignupCodeAndCreateUser(email, window._pw || '', code, username)
+  if (r.ok) { window._pw = undefined; step = 'success'; msg = null; return paint() }
+  if (r.code === 'username_taken') {
+    // Lost the race — no account was created. Back to the form, value kept.
+    step = 'form'; msg = null; paint()
+    return showUsernameTaken(r.message)
+  }
   window._pw = undefined
-  if (r.ok) { step = 'success'; msg = null; return paint() }
   msg = { kind: 'err', html: esc(r.message || 'That code didn’t work. Please try again.') }; paint()
 }
 

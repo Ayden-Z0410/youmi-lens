@@ -22,6 +22,8 @@ vi.mock('@supabase/supabase-js', () => {
   const chain = () => {
     const c = {
       select: () => c,
+      // usernameTaken() narrows with ILIKE before the exact JS re-compare
+      ilike: () => c,
       insert: () => c,
       update: () => c,
       upsert: () => c,

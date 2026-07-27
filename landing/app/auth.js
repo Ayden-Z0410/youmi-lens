@@ -80,6 +80,34 @@ export async function getAccessToken() {
   const s = await getSession()
   return s?.access_token ?? null
 }
+
+/**
+ * The signed-in user's own username, mirroring iPad's lib/auth.tsx:
+ *   1. trimmed profiles.username   2. trimmed user_metadata.username   3. null
+ *
+ * Reads ONLY the caller's own row: `.eq('id', user.id)`, and the database
+ * additionally enforces it via RLS policy `profiles_select_own` (auth.uid() = id).
+ * There is no public username lookup and no new endpoint — the existing session
+ * client is sufficient. A failed or missing profile read is never fatal: it falls
+ * back to metadata, and the caller falls back to the email local-part. A username
+ * is never fabricated — absence returns null.
+ */
+export async function getUsername() {
+  const s = await getSession()
+  if (!s?.user) return null
+  const meta = typeof s.user.user_metadata?.username === 'string' ? s.user.user_metadata.username.trim() : ''
+  const c = await ensureClient()
+  if (!c) return meta || null
+  try {
+    const { data, error } = await c.from('profiles').select('username').eq('id', s.user.id).maybeSingle()
+    if (error) return meta || null // profile unreadable → metadata, then legacy fallback
+    const profileName = typeof data?.username === 'string' ? data.username.trim() : ''
+    if (profileName) return profileName
+  } catch {
+    return meta || null
+  }
+  return meta || null
+}
 export async function onAuthChange(cb) {
   const c = await ensureClient(); if (!c) return () => {}
   const { data } = c.auth.onAuthStateChange((_e, session) => cb(session))
@@ -106,10 +134,10 @@ export async function signInWithProvider(provider /* 'google' | 'apple' */) {
 }
 
 // ── registration (shared 8-digit email code flow) ───────────────────────────
-/** username is derived from the email local-part; users can rename later in-app. */
-function deriveUsername(email) {
-  return (email.split('@')[0] || 'student').replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 32) || 'student'
-}
+// The username is supplied explicitly by the user, exactly as on Desktop. It is
+// NOT derived from the email: a fabricated value silently claimed a globally
+// unique name the user never chose. Callers pass an already-trimmed value that
+// passed validateUsername() from profileFields.js.
 
 export async function checkEmail(email) {
   if (!CONFIGURED) return NOT_CONFIGURED
@@ -140,14 +168,14 @@ async function postAuth(path, payload) {
   }
 }
 
-export async function sendSignupCode(email) {
-  return postAuth('/auth/send-signup-code', { email: email.trim(), username: deriveUsername(email) })
+export async function sendSignupCode(email, username) {
+  return postAuth('/auth/send-signup-code', { email: email.trim(), username: String(username ?? '').trim() })
 }
 
-export async function verifySignupCodeAndCreateUser(email, password, code) {
+export async function verifySignupCodeAndCreateUser(email, password, code, username) {
   const trimmedEmail = email.trim()
   const verify = await postAuth('/auth/verify-signup-code-and-create-user', {
-    email: trimmedEmail, username: deriveUsername(trimmedEmail), password, code: code.replace(/\s/g, ''),
+    email: trimmedEmail, username: String(username ?? '').trim(), password, code: code.replace(/\s/g, ''),
   })
   if (!verify.ok) return verify
   // Backend never returns a session — establish it with email+password.

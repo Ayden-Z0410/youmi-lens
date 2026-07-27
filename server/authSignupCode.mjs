@@ -144,9 +144,69 @@ function generateCode() {
   return String(randomInt(0, 100_000_000)).padStart(8, '0')
 }
 
+/**
+ * Username rules — the SAME contract as Desktop's src/lib/profileFields.ts:
+ * trim, 2–64 characters, no ASCII control characters. Case and inner spaces are
+ * preserved for storage; Unicode is allowed. Comparison is lower(trim(...)) to
+ * match the DB index `profiles_username_lower_unique`.
+ */
+export const USERNAME_MIN_LENGTH = 2
+export const USERNAME_MAX_LENGTH = 64
+export const USERNAME_TAKEN_MESSAGE = 'This username is already taken. Try another one.'
+
+function hasAsciiControl(s) {
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s.charCodeAt(i)
+    if (c < 0x20 || c === 0x7f) return true
+  }
+  return false
+}
+
 function validUsername(name) {
   const trimmed = typeof name === 'string' ? name.trim() : ''
-  return trimmed.length >= 2 && trimmed.length <= 64
+  if (trimmed.length < USERNAME_MIN_LENGTH || trimmed.length > USERNAME_MAX_LENGTH) return false
+  return !hasAsciiControl(trimmed)
+}
+
+/** Key used for case-insensitive comparison — mirrors lower(trim(username)). */
+export function usernameKey(name) {
+  return String(name ?? '').trim().toLowerCase()
+}
+
+/** Escape LIKE wildcards so a username containing % or _ cannot widen the match. */
+function likeEscape(s) {
+  return s.replace(/[\\%_]/g, (m) => `\\${m}`)
+}
+
+/**
+ * Server-side availability check (service-role only — anonymous clients are
+ * never granted access to profiles or to the display-name RPC).
+ *
+ * Best-effort by design: it narrows with ILIKE and then re-compares exactly in
+ * JS, so a wildcard or an untrimmed legacy row can never produce a false
+ * "taken". The DB unique index remains the authority for concurrent races.
+ * On query failure it returns false — the index still blocks a real collision.
+ */
+async function usernameTaken(db, username) {
+  const key = usernameKey(username)
+  if (!key) return false
+  const { data, error } = await db
+    .from('profiles')
+    .select('username')
+    .ilike('username', likeEscape(key))
+    .limit(20)
+  if (error) {
+    console.warn('[signup-username] availability check failed', error.message)
+    return false // fail open; the unique index is the final guard
+  }
+  return (data || []).some((row) => usernameKey(row?.username) === key)
+}
+
+/** True when a Postgres error is the profiles username unique-index violation. */
+function isUsernameUniqueViolation(err) {
+  if (!err) return false
+  if (err.code === '23505') return true
+  return /profiles_username_lower_unique/i.test(String(err.message || ''))
 }
 
 /** Whether a Supabase Auth user already exists for this email. */
@@ -199,6 +259,13 @@ export async function handleSendSignupCode(req, res) {
       error: 'check_failed',
       message: 'Could not verify whether this email is available. Please try again.',
     })
+    return
+  }
+
+  // Username availability BEFORE any code is generated or emailed, so an
+  // obviously taken name never costs the user an email. Re-checked at creation.
+  if (await usernameTaken(db, username)) {
+    res.status(409).json({ ok: false, error: 'username_taken', message: USERNAME_TAKEN_MESSAGE })
     return
   }
 
@@ -340,6 +407,15 @@ export async function handleVerifySignupCodeAndCreateUser(req, res) {
     return
   }
 
+  // Re-check availability immediately BEFORE the auth user exists. The earlier
+  // check happened minutes ago at code-send time; a name can be taken since.
+  // Creating the auth user first and only then discovering the collision is what
+  // produced partially initialized accounts (auth user, no profile row).
+  if (await usernameTaken(db, username)) {
+    res.status(409).json({ ok: false, error: 'username_taken', message: USERNAME_TAKEN_MESSAGE })
+    return
+  }
+
   const { data: created, error: createErr } = await db.auth.admin.createUser({
     email,
     password,
@@ -358,12 +434,34 @@ export async function handleVerifySignupCodeAndCreateUser(req, res) {
     return
   }
 
-  // Profile row (non-fatal: loadUsername falls back to user_metadata.username).
+  // Profile row. A unique-index violation here means another account claimed the
+  // name between the pre-check and now. That must NOT leave a half-built account,
+  // so the auth user created moments ago is removed and the caller gets a stable
+  // username_taken. The index — not the pre-check — is the real concurrency guard.
   const { error: profileErr } = await db
     .from('profiles')
     .upsert({ id: created.user.id, username, updated_at: new Date().toISOString() })
   if (profileErr) {
-    console.warn('[verify-signup-code] profile upsert failed', profileErr.message)
+    if (isUsernameUniqueViolation(profileErr)) {
+      const { error: cleanupErr } = await db.auth.admin.deleteUser(created.user.id)
+      if (cleanupErr) {
+        // Sanitized: no email, no username, no owner details — id prefix only.
+        console.error(
+          '[verify-signup-code] username race cleanup failed',
+          JSON.stringify({ userIdPrefix: created.user.id.slice(0, 8), reason: 'delete_failed' }),
+        )
+      }
+      console.warn(
+        '[verify-signup-code] username taken at insert',
+        JSON.stringify({ userIdPrefix: created.user.id.slice(0, 8), cleanedUp: !cleanupErr }),
+      )
+      res.status(409).json({ ok: false, error: 'username_taken', message: USERNAME_TAKEN_MESSAGE })
+      return
+    }
+    // Any other profile-write problem is surfaced, not silently swallowed. The
+    // account stays usable because user_metadata.username is the documented
+    // fallback both clients already read, so it is not worth deleting the user.
+    console.error('[verify-signup-code] profile upsert failed', profileErr.message)
   }
 
   await db.from('signup_codes').update({ consumed: true }).eq('id', row.id)

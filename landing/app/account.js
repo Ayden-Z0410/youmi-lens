@@ -4,7 +4,7 @@
  *   GET /api/subscription/status  → renewal / cancel / past-due facts (Bearer)
  * Sensitive IDs are never shown; backend values map to clear user-facing labels.
  */
-import { getSession, getQuotaStatus, getSubscriptionStatus, openBillingPortal, signOut } from './auth.js'
+import { getSession, getUsername, getQuotaStatus, getSubscriptionStatus, openBillingPortal, signOut } from './auth.js'
 import { esc, toast } from './auth-ui.js'
 import { mins, usd, PRICE } from './plans.js'
 
@@ -53,11 +53,13 @@ function meterFill(used, limit) {
   return { pct: Math.round(r * 100), cls: r >= 1 ? 'danger' : r >= 0.85 ? 'warn' : '', remaining: Math.max(0, limit - used) }
 }
 
-function dashboardView(email, plan, sub) {
+function dashboardView(email, plan, sub, username) {
   // A session can lack an email (e.g. some OAuth identities). Show a neutral
   // value rather than inferring or fabricating an address.
   const emailText = email || 'Not available'
-  const handle = email ? email.split('@')[0] : emailText
+  // Identity precedence: real username → email local-part (legacy accounts that
+  // predate an explicit username) → the neutral placeholder. Never fabricated.
+  const handle = username || (email ? email.split('@')[0] : emailText)
   const planType = plan.planType
   const isPaid = planType === 'student_pass'
   const [tone, label] = badge(planType, sub)
@@ -78,7 +80,7 @@ function dashboardView(email, plan, sub) {
   details += `<dt>Platforms</dt><dd>Mac · Windows · iPad</dd>`
 
   return `<div class="acct">
-    <div class="card acct__head"><div class="acct__avatar">${esc((email[0] || 'A').toUpperCase())}</div>
+    <div class="card acct__head"><div class="acct__avatar">${esc((handle[0] || 'A').toUpperCase())}</div>
       <div class="acct__id"><div class="acct__name">${esc(handle)}</div><div class="acct__email">${esc(emailText)}</div></div>
       <span class="badge badge--${tone}">${label}</span></div>
     <div class="card pane"><h3>Your plan</h3>
@@ -123,7 +125,11 @@ async function load() {
   const sub = s.ok ? s.body?.subscription : null
   const session = await getSession()
   const email = session?.user?.email || plan.email || '' // never fabricate an address
-  set(dashboardView(email, plan, sub))
+  // Non-fatal: getUsername() already degrades to metadata, and null here simply
+  // means the legacy email-local-part fallback is used.
+  let username = null
+  try { username = await getUsername() } catch { username = null }
+  set(dashboardView(email, plan, sub, username))
   wire(email, plan, sub)
 }
 

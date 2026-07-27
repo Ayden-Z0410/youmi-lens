@@ -10,6 +10,9 @@ import { FREE, PAID, PRICE, COMPARE_ROWS, usd, annualPerMonth } from '../../../.
 
 const L = (p: string) => readFileSync(new URL(`../../../../landing/${p}`, import.meta.url), 'utf8')
 
+/** Drop comments so assertions about shipped behaviour never match prose. */
+const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+
 describe('exact approved prices / quotas (landing/app/plans.js)', () => {
   it('Free Beta + Student Basic values are exact', () => {
     expect(FREE).toMatchObject({ monthlyMinutes: 300, dailyMinutes: 120, maxRecordingMinutes: 60, maxLiveSessionMinutes: 60, recordingsPerDay: 2, processingJobsPerDay: 2 })
@@ -467,8 +470,9 @@ describe('Shared auth resend + change-email feedback', () => {
   })
 
   it('resend wording never reveals whether an address exists', () => {
+    // user-facing string literals only — explanatory comments are not shipped copy
     for (const f of [...SCREENS, 'app/auth-ui.js']) {
-      expect(L(f), f).not.toMatch(/no account|not registered|unknown email|doesn.t exist/i)
+      expect(stripComments(L(f)), f).not.toMatch(/no account|not registered|unknown email|doesn.t exist/i)
     }
   })
 
@@ -489,5 +493,191 @@ describe('Shared auth resend + change-email feedback', () => {
     for (const f of SCREENS) {
       expect(L(f), f).toMatch(/function paint\(\) \{\s*\n\s*stopResendCountdown\(resend\)/)
     }
+  })
+})
+
+/**
+ * Website registration now collects the EXISTING account username explicitly.
+ *
+ * It previously fabricated one from the email local-part (`deriveUsername`),
+ * silently claiming a globally unique name the user never chose — and with a
+ * stricter alphanumeric/32-char rule than the real product contract.
+ */
+describe('Registration username field', () => {
+  const reg = () => L('app/register.js')
+  const fields = () => L('app/profileFields.js')
+
+  it('the username auto-derivation is gone', () => {
+    expect(L('app/auth.js')).not.toMatch(/deriveUsername/)
+    expect(reg()).not.toMatch(/deriveUsername/)
+  })
+
+  it('the form renders a required Username field with the product copy', () => {
+    const s = reg()
+    expect(s).toMatch(/<label for="uname">Username<\/label>/)
+    expect(s).toMatch(/placeholder="How you want to be greeted"/)
+    expect(s).toMatch(/\$\{USERNAME_MIN_LENGTH\}–\$\{USERNAME_MAX_LENGTH\} characters\./)
+    expect(s).toMatch(/id="uname"[\s\S]{0,240}required/)
+  })
+
+  it('field order is Email → Username → Password → Confirm password', () => {
+    const s = reg()
+    const order = ['for="email"', 'for="uname"', 'for="pw"', 'for="cf"'].map((sel) => s.indexOf(sel))
+    expect(order.every((i) => i > -1)).toBe(true)
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+    expect(s.indexOf('id="agree"')).toBeGreaterThan(order[3]) // Terms last
+  })
+
+  it('the username error is rendered next to the Username field', () => {
+    const s = reg()
+    // #uerr lives inside the username field block, before the password field
+    expect(s.indexOf('id="uerr"')).toBeGreaterThan(s.indexOf('id="uname"'))
+    expect(s.indexOf('id="uerr"')).toBeLessThan(s.indexOf('for="pw"'))
+    expect(s).toMatch(/aria-invalid/)
+    expect(s).toMatch(/aria-describedby="uname-hint"/)
+  })
+
+  it('the explicit username is passed to BOTH signup calls', () => {
+    const s = reg()
+    expect(s).toMatch(/sendSignupCode\(email, uname\.value\)/)
+    expect(s).toMatch(/verifySignupCodeAndCreateUser\(email, window\._pw \|\| '', code, username\)/)
+    const auth = L('app/auth.js')
+    expect(auth).toMatch(/sendSignupCode\(email, username\)/)
+    expect(auth).toMatch(/verifySignupCodeAndCreateUser\(email, password, code, username\)/)
+  })
+
+  it('a taken username keeps the user on the form with their input preserved', () => {
+    const s = reg()
+    expect(s).toMatch(/username_taken/)
+    expect(s).toMatch(/step = 'form'/)
+    expect(s).toMatch(/^let username = ''/m) // survives repaint
+    expect(s).toMatch(/^let agreed = false/m) // terms state survives repaint
+    expect(s).toMatch(/value="\$\{esc\(username\)\}"/)
+  })
+
+  it('the duplicate-email guard still runs before any code is sent', () => {
+    const s = reg()
+    // scope to onCreate — the resend wiring elsewhere also calls sendSignupCode
+    const onCreate = s.slice(s.indexOf('async function onCreate'))
+    expect(onCreate.indexOf('checkEmail(email)')).toBeLessThan(onCreate.indexOf('sendSignupCode(email'))
+    expect(s).toMatch(/chk\.exists && chk\.status === 'registered'/)
+  })
+
+  it('client validation matches the product contract exactly', () => {
+    const f = fields()
+    expect(f).toMatch(/USERNAME_MIN_LENGTH = 2/)
+    expect(f).toMatch(/USERNAME_MAX_LENGTH = 64/)
+    expect(f).toMatch(/hasAsciiControl/)
+    expect(f).toMatch(/trim\(\)\.toLowerCase\(\)/) // comparison key
+    // the rules that must NOT come back — checked against code, not the doc comment
+    const code = stripComments(f)
+    expect(code).not.toMatch(/a-zA-Z0-9_\.\-/)
+    expect(code).not.toMatch(/slice\(0, ?32\)/)
+    expect(code).not.toMatch(/\b32\b/)
+    expect(code).not.toMatch(/reserved/i)
+  })
+
+  it('server and client agree on bounds and control-character rejection', () => {
+    const server = L('../server/authSignupCode.mjs')
+    expect(server).toMatch(/USERNAME_MIN_LENGTH = 2/)
+    expect(server).toMatch(/USERNAME_MAX_LENGTH = 64/)
+    expect(server).toMatch(/hasAsciiControl/)
+    expect(server).toMatch(/USERNAME_TAKEN_MESSAGE = 'This username is already taken\. Try another one\.'/)
+  })
+
+  it('the server checks availability before sending AND before creating the user', () => {
+    const server = L('../server/authSignupCode.mjs')
+    const createIdx = server.indexOf('auth.admin.createUser')
+    const guardIdx = server.lastIndexOf('if (await usernameTaken(db, username))', createIdx)
+    expect(guardIdx).toBeGreaterThan(-1)
+    expect(guardIdx).toBeLessThan(createIdx) // the decisive ordering assertion
+    expect(server).toMatch(/deleteUser\(created\.user\.id\)/) // race cleanup
+    expect(server).not.toMatch(/console\.warn\('\[verify-signup-code\] profile upsert failed'/)
+  })
+
+  it('anonymous clients are never granted the availability RPC', () => {
+    // Username AVAILABILITY is service-role, server-side only. The client may read
+    // its own profile row (RLS profiles_select_own) but must never call the RPC,
+    // and registration must not touch profiles at all.
+    for (const f of ['app/auth.js', 'app/register.js', 'app/account.js']) {
+      expect(L(f), f).not.toMatch(/profile_display_name_taken/)
+    }
+    expect(L('app/register.js')).not.toMatch(/from\('profiles'\)/)
+    // any profiles read in the client is scoped to the caller's own id
+    const auth = L('app/auth.js')
+    if (auth.includes("from('profiles')")) {
+      expect(auth).toMatch(/\.eq\('id', s\.user\.id\)/)
+      expect(auth).not.toMatch(/\.eq\('username'/)
+    }
+  })
+})
+
+/**
+ * Account page identity.
+ *
+ * The page rendered `email.split('@')[0]` as the user's name, so an account with
+ * a real username still showed an email fragment. Precedence is now
+ * profiles.username → user_metadata.username → email local-part (legacy only).
+ */
+describe('Account page shows the real username', () => {
+  const acct = () => L('app/account.js')
+  const auth = () => L('app/auth.js')
+
+  it('reads the profile row, then metadata, then gives up — never fabricating', () => {
+    const code = stripComments(auth())
+    const fn = code.slice(code.indexOf('export async function getUsername'))
+    expect(fn).toMatch(/user_metadata\?\.username/)
+    expect(fn).toMatch(/\.from\('profiles'\)/)
+    expect(fn).toMatch(/\.select\('username'\)/)
+    // profile value wins when present …
+    expect(fn.indexOf('profileName')).toBeLessThan(fn.lastIndexOf('return meta || null'))
+    // … and the terminal fallback is null, not a made-up name
+    expect(fn).toMatch(/return meta \|\| null/)
+    expect(fn).not.toMatch(/'student'|'user'|split\('@'\)/)
+  })
+
+  it('queries only the caller’s own row, with no public lookup', () => {
+    const fn = auth().slice(auth().indexOf('export async function getUsername'))
+    expect(fn).toMatch(/\.eq\('id', s\.user\.id\)/)
+    // no lookup by name, and no way to request someone else's row
+    expect(fn).not.toMatch(/\.eq\('username'|\.ilike\(|profile_display_name_taken/)
+    expect(stripComments(acct())).not.toMatch(/from\('profiles'\)/)
+  })
+
+  it('trims whitespace from both username sources', () => {
+    const fn = auth().slice(auth().indexOf('export async function getUsername'))
+    expect(fn).toMatch(/user_metadata\.username\.trim\(\)/)
+    expect(fn).toMatch(/data\?\.username[\s\S]{0,40}\.trim\(\)/)
+  })
+
+  it('a profile-read failure degrades instead of breaking the page', () => {
+    const fn = auth().slice(auth().indexOf('export async function getUsername'))
+    expect(fn).toMatch(/if \(error\) return meta \|\| null/)
+    expect(fn).toMatch(/catch \{/)
+    // and the caller additionally guards
+    expect(acct()).toMatch(/try \{ username = await getUsername\(\) \} catch \{ username = null \}/)
+  })
+
+  it('email local-part is used only when no username exists', () => {
+    const s = acct()
+    expect(s).toMatch(/const handle = username \|\| \(email \? email\.split\('@'\)\[0\] : emailText\)/)
+    expect(s).toMatch(/dashboardView\(email, plan, sub, username\)/)
+    // the avatar follows the displayed identity, not the raw email
+    expect(s).toMatch(/\$\{esc\(\(handle\[0\] \|\| 'A'\)\.toUpperCase\(\)\)\}/)
+  })
+
+  it('quota, subscription and plan rendering are untouched', () => {
+    const s = acct()
+    expect(s).toMatch(/Promise\.all\(\[getQuotaStatus\(\), getSubscriptionStatus\(\)\]\)/)
+    expect(s).toMatch(/const plan = q\.body\?\.plan \|\| \{\}/)
+    expect(s).toMatch(/const sub = s\.ok \? s\.body\?\.subscription : null/)
+    expect(s).toMatch(/Upgrade to Student Basic/)
+    expect(s).toMatch(/used this month/)
+    // the auth_required redirect still guards the page
+    expect(s).toMatch(/location\.replace\('\/login\/\?next=\/account\/'\)/)
+  })
+
+  it('adds no new endpoint for the profile read', () => {
+    expect(stripComments(auth())).not.toMatch(/\/api\/(profile|username)/)
   })
 })
