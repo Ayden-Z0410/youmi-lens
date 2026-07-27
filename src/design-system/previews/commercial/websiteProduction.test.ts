@@ -387,3 +387,107 @@ describe('Phase 6 — static 404 routing (no SPA catch-all)', () => {
     }
   })
 })
+
+/**
+ * Shared "Resend code" / "Change email" controls (auth-ui.js), used by BOTH the
+ * registration verify step and the password-reset code step.
+ *
+ * Both screens previously rendered bare .yl-auth-back text buttons with no
+ * hover/focus/active/disabled styling, and a handler that awaited the network
+ * before repainting — so a click produced no visible change and duplicate
+ * requests were possible. One controller now serves both screens.
+ */
+describe('Shared auth resend + change-email feedback', () => {
+  const ui = () => L('app/auth-ui.js')
+  const shell = () => L('app/auth-shell.css')
+  const SCREENS = ['app/forgot.js', 'app/register.js']
+
+  it('there is exactly ONE implementation, owned by auth-ui.js', () => {
+    expect(ui()).toMatch(/export function wireResendControls/)
+    for (const f of SCREENS) {
+      expect(L(f), `${f} must not re-implement the controller`).not.toMatch(/function wireResendControls/)
+      expect(L(f), `${f} must not re-implement the countdown`).not.toMatch(/setInterval\(/)
+    }
+  })
+
+  it('both screens use the shared markup and controller', () => {
+    for (const f of SCREENS) {
+      const s = L(f)
+      expect(s, f).toMatch(/resendControlsHtml\(resend\)/)
+      expect(s, f).toMatch(/wireResendControls\(resend, \{/)
+      expect(s, f).toMatch(/createResendState\(\)/)
+    }
+  })
+
+  it('resend shows an immediate loading state and disables the control', () => {
+    expect(ui()).toMatch(/btn\.disabled = true/)
+    expect(ui()).toMatch(/btn\.textContent = 'Sending…'/)
+  })
+
+  it('duplicate resend requests are blocked by an in-flight guard and the cooldown', () => {
+    expect(ui()).toMatch(/if \(rs\.busy \|\| resendCooldownSeconds\(rs\) > 0\) return/)
+    expect(ui()).toMatch(/rs\.busy = true/)
+    expect(ui()).toMatch(/rs\.busy = false/)
+  })
+
+  it('success confirms and starts a visible cooldown countdown', () => {
+    expect(ui()).toMatch(/setStatus\('ok', 'New code sent'\)/)
+    expect(ui()).toMatch(/rs\.until = Date\.now\(\) \+ RESEND_COOLDOWN_MS/)
+    expect(ui()).toMatch(/Resend in \$\{s\}s/)
+    expect(ui()).toMatch(/RESEND_COOLDOWN_MS = 30_000/)
+  })
+
+  it('the cooldown survives a repaint so it cannot be bypassed', () => {
+    // state lives with the caller at module scope, not inside paint()
+    for (const f of SCREENS) expect(L(f), f).toMatch(/^const resend = createResendState\(\)/m)
+    expect(ui()).toMatch(/if \(resendCooldownSeconds\(rs\) > 0\) runCountdown\(\)/)
+  })
+
+  it('failure restores the control and reports inline', () => {
+    expect(ui()).toMatch(/btn\.disabled = false[\s\S]{0,80}btn\.textContent = 'Resend code'/)
+    expect(ui()).toMatch(/setStatus\('err',/)
+  })
+
+  it('a new resend clears the stale banner instead of stacking results', () => {
+    expect(ui()).toMatch(/stale[\s\S]{0,80}\.remove\(\)/)
+  })
+
+  it('change email returns to the entry step and focuses the email field', () => {
+    expect(ui()).toMatch(/field\.focus\(\)/)
+    expect(ui()).toMatch(/stopResendCountdown\(rs\)/)
+    // each screen resets its own transient state and returns to its entry step
+    expect(L('app/forgot.js')).toMatch(/onChange: \(\) => \{ step = 'email'; msg = null; paint\(\) \}/)
+    expect(L('app/register.js')).toMatch(/onChange: \(\) => \{ step = 'form'; msg = null; paint\(\) \}/)
+  })
+
+  it('the status region is an accessible live region', () => {
+    expect(ui()).toMatch(/role="status"/)
+    expect(ui()).toMatch(/aria-live="polite"/)
+    expect(ui()).toMatch(/statusEl\.textContent = text/) // never parsed as HTML
+  })
+
+  it('resend wording never reveals whether an address exists', () => {
+    for (const f of [...SCREENS, 'app/auth-ui.js']) {
+      expect(L(f), f).not.toMatch(/no account|not registered|unknown email|doesn.t exist/i)
+    }
+  })
+
+  it('the secondary controls have real interaction states', () => {
+    const css = shell()
+    expect(css).toMatch(/\.yl-auth-back:hover:not\(:disabled\)/)
+    expect(css).toMatch(/\.yl-auth-back:active:not\(:disabled\)/)
+    expect(css).toMatch(/\.yl-auth-back:focus-visible/)
+    expect(css).toMatch(/\.yl-auth-back:disabled/)
+  })
+
+  it('the status line reserves height so results do not shift the layout', () => {
+    expect(shell()).toMatch(/\.yl-auth-status\s*\{[^}]*min-height:/)
+  })
+
+  it('no timer is left running when either screen repaints', () => {
+    expect(ui()).toMatch(/export function stopResendCountdown/)
+    for (const f of SCREENS) {
+      expect(L(f), f).toMatch(/function paint\(\) \{\s*\n\s*stopResendCountdown\(resend\)/)
+    }
+  })
+})

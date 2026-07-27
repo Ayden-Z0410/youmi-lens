@@ -158,7 +158,44 @@
 .yl-auth-code { letter-spacing: 8px; text-align: center; font-size: 20px; font-weight: 600; }
 .yl-auth-icon { width: 52px; height: 52px; border-radius: 9999px; display: grid; place-items: center; margin: 0 auto 14px; background: rgba(47, 101, 183, 0.10); font-size: 24px; }
 .yl-auth-icon.ok { background: rgba(47, 143, 115, 0.12); }
-.yl-auth-back { display: block; margin: 14px auto 0; color: var(--yl-link); font-weight: 600; font-size: 13.5px; background: none; border: none; cursor: pointer; }
+/* Secondary text controls. These previously had no hover, focus, active or
+   disabled treatment, so they read as static text and a click gave no feedback.
+   Same colour system and weight as before — only interaction states added, and
+   they stay visually subordinate to .yl-auth-primary. */
+.yl-auth-back {
+  display: block;
+  margin: 14px auto 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  color: var(--yl-link);
+  font-weight: 600;
+  font-size: 13.5px;
+  font-family: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, opacity 140ms ease;
+}
+.yl-auth-back:hover:not(:disabled) { background: rgba(47, 101, 183, 0.08); }
+.yl-auth-back:active:not(:disabled) { background: rgba(47, 101, 183, 0.14); }
+.yl-auth-back:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(47, 101, 183, 0.32); }
+.yl-auth-back:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* The two secondary controls sit on one row so neither looks like body copy. */
+.yl-auth-subactions { display: flex; justify-content: center; gap: 4px; flex-wrap: wrap; }
+.yl-auth-subactions .yl-auth-back { margin-top: 12px; }
+
+/* Live region for the resend result. min-height reserves the line so showing or
+   clearing the message never shifts the layout. */
+.yl-auth-status {
+  min-height: 18px;
+  margin: 8px 0 0;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 18px;
+}
+.yl-auth-status.ok { color: var(--yl-success); }
+.yl-auth-status.err { color: var(--yl-danger); }
 .yl-auth-center { text-align: center; }
 .yl-auth-lede { color: var(--yl-slate); font-size: 14.5px; line-height: 1.45; margin: 8px 0 20px; }
 

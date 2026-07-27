@@ -4,9 +4,14 @@
  * verify-signup-code-and-create-user → signInWithPassword → /account/.
  */
 import { getSession, onAuthChange, checkEmail, sendSignupCode, verifySignupCodeAndCreateUser, signInWithProvider, isConfigured } from './auth.js'
-import { surface, ssoStack, mount, banner, esc, EMAIL_RE } from './auth-ui.js'
+import { surface, ssoStack, mount, banner, esc, EMAIL_RE, createResendState, resendControlsHtml, wireResendControls, stopResendCountdown } from './auth-ui.js'
 
 let step = 'form' // 'form' | 'verify' | 'success'
+
+/* Same SHARED resend controller as the password-reset code step (auth-ui.js).
+   Module scope so the cooldown survives a repaint and cannot be bypassed. */
+const resend = createResendState()
+
 let showPw = false
 let msg = null
 let email = ''
@@ -43,8 +48,7 @@ function verifyBody() {
       <input id="code" class="yl-auth-input yl-auth-code" inputmode="numeric" maxlength="8" pattern="[0-9]{8}" placeholder="••••••••" required>
       <p class="yl-auth-err" id="verr" hidden></p></div>
       <button type="submit" class="yl-auth-primary" id="vsubmit">Verify &amp; create account</button></form>
-    <button type="button" class="yl-auth-back" id="resend">Resend code</button>
-    <button type="button" class="yl-auth-back" id="change">Change email</button>`
+    ${resendControlsHtml(resend)}`
 }
 
 function successBody() {
@@ -54,6 +58,7 @@ function successBody() {
 }
 
 function paint() {
+  stopResendCountdown(resend) // old button about to detach; the verify step restarts it
   mount(surface(step === 'form' ? formBody() : step === 'verify' ? verifyBody() : successBody()))
   if (step === 'form') {
     document.querySelectorAll('[data-provider]').forEach((b) =>
@@ -62,8 +67,10 @@ function paint() {
     document.getElementById('f').addEventListener('submit', onCreate)
   } else if (step === 'verify') {
     document.getElementById('vf').addEventListener('submit', onVerify)
-    document.getElementById('resend').addEventListener('click', async () => { const r = await sendSignupCode(email); msg = r.ok ? { kind: 'ok', html: 'A new code is on its way.' } : { kind: 'err', html: esc(r.message) }; paint() })
-    document.getElementById('change').addEventListener('click', () => { step = 'form'; msg = null; paint() })
+    wireResendControls(resend, {
+      send: () => sendSignupCode(email),
+      onChange: () => { step = 'form'; msg = null; paint() },
+    })
   }
 }
 

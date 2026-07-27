@@ -53,6 +53,96 @@ export function ssoStack(word) {
   <div class="yl-auth-divider"><span>or ${word} with email</span></div>`
 }
 
+/* ── Shared "Resend code" / "Change email" controls ─────────────────────────
+   ONE implementation for both the registration verify step and the password
+   reset code step. Both screens previously rendered bare text buttons whose
+   handler awaited the network before repainting, so a click produced no visible
+   change and duplicate requests were possible.
+
+   The caller owns the state object so a cooldown survives a repaint (and cannot
+   be bypassed by re-rendering). Copy is identical whether or not an address
+   exists, so nothing here leaks account existence. */
+export const RESEND_COOLDOWN_MS = 30_000
+
+export function createResendState() {
+  return { until: 0, busy: false, timer: null }
+}
+export function resendCooldownSeconds(rs) {
+  return Math.max(0, Math.ceil((rs.until - Date.now()) / 1000))
+}
+export function stopResendCountdown(rs) {
+  if (rs.timer) { clearInterval(rs.timer); rs.timer = null }
+}
+
+/** Markup: the two secondary controls plus a reserved-height live region. */
+export function resendControlsHtml(rs) {
+  const s = resendCooldownSeconds(rs)
+  return `<div class="yl-auth-subactions">
+      <button type="button" class="yl-auth-back" id="resend"${s > 0 ? ' disabled' : ''}>${s > 0 ? `Resend in ${s}s` : 'Resend code'}</button>
+      <button type="button" class="yl-auth-back" id="change">Change email</button>
+    </div>
+    <p class="yl-auth-status" id="rstatus" role="status" aria-live="polite"></p>`
+}
+
+/**
+ * Wire the controls rendered by resendControlsHtml.
+ *   send()      → async, resolves { ok, message }
+ *   onChange()  → return to the email-entry step (caller repaints, then we focus)
+ */
+export function wireResendControls(rs, { send, onChange }) {
+  const btn = document.getElementById('resend')
+  const statusEl = document.getElementById('rstatus')
+  if (!btn || !statusEl) return
+
+  const setStatus = (kind, text) => {
+    statusEl.className = 'yl-auth-status' + (text ? ' ' + kind : '')
+    statusEl.textContent = text // textContent → backend copy is never parsed as HTML
+  }
+  const runCountdown = () => {
+    stopResendCountdown(rs)
+    const tick = () => {
+      const s = resendCooldownSeconds(rs)
+      if (s > 0) { btn.disabled = true; btn.textContent = `Resend in ${s}s`; return }
+      stopResendCountdown(rs)
+      btn.disabled = false
+      btn.textContent = 'Resend code'
+    }
+    tick()
+    rs.timer = setInterval(tick, 1000)
+  }
+  if (resendCooldownSeconds(rs) > 0) runCountdown()
+
+  btn.addEventListener('click', async () => {
+    // Two guards — in-flight and cooldown — make any extra click a no-op.
+    if (rs.busy || resendCooldownSeconds(rs) > 0) return
+    rs.busy = true
+    const stale = document.querySelector('.yl-auth-banner')
+    if (stale) stale.remove() // drop the old result so banners never stack
+    btn.disabled = true
+    btn.textContent = 'Sending…'
+    setStatus('', '')
+
+    const r = await send()
+    rs.busy = false
+    if (r && r.ok) {
+      rs.until = Date.now() + RESEND_COOLDOWN_MS
+      setStatus('ok', 'New code sent')
+      runCountdown()
+    } else {
+      btn.disabled = false
+      btn.textContent = 'Resend code'
+      setStatus('err', (r && r.message) || 'Could not send the code. Please try again.')
+    }
+  })
+
+  document.getElementById('change').addEventListener('click', () => {
+    stopResendCountdown(rs)
+    onChange() // caller resets its step + transient message, then repaints
+    const field = document.getElementById('email')
+    if (field) field.focus() // keyboard users land where they must type
+  })
+}
+
 export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 export function banner(kind, html) { return `<div class="yl-auth-banner ${kind}">${html}</div>` }
 export function mount(html) {

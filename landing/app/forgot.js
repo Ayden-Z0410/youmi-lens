@@ -6,12 +6,17 @@
  *   No Website-only reset logic; no redirect link required.
  */
 import { sendPasswordResetCode, verifyPasswordResetCode, updatePassword, signOut, isConfigured } from './auth.js'
-import { surface, mount, banner, esc, EMAIL_RE } from './auth-ui.js'
+import { surface, mount, banner, esc, EMAIL_RE, createResendState, resendControlsHtml, wireResendControls, stopResendCountdown } from './auth-ui.js'
 
 let step = 'email' // 'email' | 'code' | 'password' | 'done'
 let email = ''
 let showPw = false
 let msg = null
+
+/* Resend feedback state — the SHARED controller from auth-ui.js, also used by the
+   registration verify step. Kept at module scope so a cooldown survives a repaint
+   (e.g. a failed code verification) and cannot be bypassed by re-rendering. */
+const resend = createResendState()
 
 function emailBody() {
   return `
@@ -33,8 +38,7 @@ function codeBody() {
     <form id="cf"><div class="yl-auth-field"><label for="code">Reset code</label>
       <input id="code" class="yl-auth-input yl-auth-code" inputmode="numeric" maxlength="8" pattern="[0-9]{8}" placeholder="••••••••" required></div>
       <button type="submit" class="yl-auth-primary" id="csubmit">Verify code</button></form>
-    <button type="button" class="yl-auth-back" id="resend">Resend code</button>
-    <button type="button" class="yl-auth-back" id="change">Change email</button>`
+    ${resendControlsHtml(resend)}`
 }
 function passwordBody() {
   return `
@@ -56,6 +60,7 @@ function doneBody() {
 }
 
 function paint() {
+  stopResendCountdown(resend) // old button about to detach; the code step restarts it
   mount(surface(step === 'email' ? emailBody() : step === 'code' ? codeBody() : step === 'password' ? passwordBody() : doneBody()))
   if (step === 'email') {
     document.getElementById('f').addEventListener('submit', async (e) => {
@@ -77,8 +82,10 @@ function paint() {
       if (r.ok) { step = 'password'; msg = null; return paint() }
       msg = r.message; paint()
     })
-    document.getElementById('resend').addEventListener('click', async () => { const r = await sendPasswordResetCode(email); msg = r.ok ? null : r.message; paint() })
-    document.getElementById('change').addEventListener('click', () => { step = 'email'; msg = null; paint() })
+    wireResendControls(resend, {
+      send: () => sendPasswordResetCode(email),
+      onChange: () => { step = 'email'; msg = null; paint() },
+    })
   } else if (step === 'password') {
     document.getElementById('eye').addEventListener('click', () => { showPw = !showPw; paint() })
     document.getElementById('pf').addEventListener('submit', async (e) => {
