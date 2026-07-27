@@ -25,7 +25,16 @@
 
 html {
   scroll-behavior: smooth;
+  /* The toolbar is position:fixed (top 16 + ~58 tall), so a bare #anchor would
+     land the section heading underneath it. scroll-padding-top offsets every
+     fragment jump — same-page clicks AND a cold load of /#features from another
+     route — so the heading always clears the bar. No JS, no double-scroll. */
+  scroll-padding-top: 92px;
   background: var(--background);
+}
+
+@media (max-width: 720px) {
+  html { scroll-padding-top: 78px; }
 }
 
 body {

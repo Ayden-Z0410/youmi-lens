@@ -8,19 +8,27 @@ export function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&am
 const WAVE = [7,13,22,12,19,30,15,9,24,34,20,12,17,27,14,8,20,31,17,11,23,16,9,6,15,25,13,8]
   .map((h) => `<span style="height:${h}px"></span>`).join('')
 
+/**
+ * Navy brand panel — three zones so the column reads top / centre / bottom:
+ *   .yl-auth-brandtop  logo, anchored top (links home)
+ *   .yl-auth-brandmid  the message + waveform, optically centred
+ *   .yl-auth-brandfoot "One account, every device." as footer-level copy
+ * The tagline used to sit third of four children, which parked it mid-panel
+ * competing with the message; it is now the last child and reads as a footnote.
+ */
 export function brandPanel() {
   return `<div class="yl-auth-brand">
     <div class="yl-auth-brandtop"><a href="/" aria-label="Youmi Lens home"><img class="yl-auth-logo" src="/brand/youmi-lens-wordmark-transparent.png" alt="Youmi Lens"></a></div>
-    <div>
+    <div class="yl-auth-brandmid">
       <div class="yl-auth-live"><span class="yl-auth-rec"></span><span class="yl-auth-livelabel">Live captions</span></div>
       <p class="yl-auth-caption">Every lecture, captioned in real time.</p>
       <p class="yl-auth-caption dim">Translated as your professor speaks.</p>
+      <div class="yl-auth-wave">${WAVE}</div>
     </div>
-    <div>
+    <div class="yl-auth-brandfoot">
       <p class="yl-auth-tagline">One account, every device.</p>
       <p class="yl-auth-desc">Your recordings, courses, and plan stay in sync across Mac, Windows, and iPad.</p>
     </div>
-    <div class="yl-auth-wave">${WAVE}</div>
   </div>`
 }
 

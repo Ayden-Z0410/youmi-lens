@@ -1,17 +1,36 @@
 /**
- * Shared production site header. Renders the EXISTING production navigation
- * (same .site-nav structure as the homepage) and adds ONLY the approved entries:
- *   signed out → Pricing + Log in
- *   signed in  → Pricing + Account
- * Nothing else in the nav changes. Injected into <div id="site-header">.
+ * Shared production site header — the ONE toolbar markup helper for every route
+ * that is not the static homepage. It renders the same .site-nav structure, the
+ * same link destinations, and the same macOS CTA as landing/index.html, and is
+ * styled by the same landing/styles.css those routes now load. The homepage keeps
+ * its markup inline so the nav still renders with JavaScript disabled;
+ * websiteProduction.test.ts asserts the two stay identical.
+ *
+ * Only the right-hand cell varies:  signed out → Log in   ·   signed in → Account
  */
 import { getSession, onAuthChange } from './auth.js'
 
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])) }
 
+/** Approved production macOS build — must equal the homepage CTA in index.html. */
+export const MAC_DOWNLOAD_URL =
+  'https://github.com/Ayden-Z0410/youmi-lens/releases/download/v0.1.9/Youmi.Lens_0.1.9_aarch64.dmg'
+
+/** Absolute destinations so every link resolves from any route, never /pricing/#download. */
+export const NAV_LINKS = [
+  ['/#features', 'Features'],
+  ['/#privacy', 'Privacy'],
+  ['/#download', 'Download'],
+  ['/pricing/', 'Pricing'],
+  ['/#support', 'Support'],
+]
+
 function render(signedIn, email) {
-  const current = location.pathname
-  const pricingCurrent = current.startsWith('/pricing') ? ' aria-current="page" class="is-current"' : ''
+  const onPricing = location.pathname.startsWith('/pricing')
+  const links = NAV_LINKS.map(([href, label]) => {
+    const current = href === '/pricing/' && onPricing
+    return `<a href="${href}"${current ? ' aria-current="page" class="is-current"' : ''}>${label}</a>`
+  }).join('\n        ')
   const right = signedIn
     ? `<a class="nav-account" href="/account/"><span class="av">${esc((email || 'A')[0].toUpperCase())}</span>Account</a>`
     : `<a class="nav-login" href="/login/">Log in</a>`
@@ -19,15 +38,11 @@ function render(signedIn, email) {
     <header class="site-nav" aria-label="Primary navigation">
       <a class="brand" href="/" aria-label="Youmi Lens home"><img class="brand-wordmark" src="/brand/youmi-lens-wordmark-tight.png" alt="Youmi Lens"></a>
       <nav class="nav-links" aria-label="Page sections">
-        <a href="/#features">Features</a>
-        <a href="/#privacy">Privacy</a>
-        <a href="/#download">Download</a>
-        <a href="/pricing/"${pricingCurrent}>Pricing</a>
-        <a href="/#support">Support</a>
+        ${links}
       </nav>
       <div class="nav-right">
         ${right}
-        <a class="nav-download" href="/#download">Download for macOS</a>
+        <a class="nav-download" href="${MAC_DOWNLOAD_URL}" download>Download for macOS</a>
       </div>
     </header>`
 }

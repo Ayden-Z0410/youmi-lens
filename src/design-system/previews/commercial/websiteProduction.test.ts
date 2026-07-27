@@ -234,3 +234,107 @@ describe('security — no secrets in the static site', () => {
     expect(L('app/reset.js')).not.toMatch(/reset link|request a new link/i)
   })
 })
+
+/**
+ * Phase 4C — one toolbar, one destination map.
+ *
+ * The Pricing/Account toolbar used to be a hand-copied duplicate inside
+ * app/commercial.css. It preserved only the FIRST of the seventeen cascading
+ * .site-nav blocks in styles.css, so those routes rendered a square 1220px bar
+ * with a 55px logo while the homepage rendered the approved 1120px floating
+ * glass bar with a 94px logo. These guard that regression class.
+ */
+describe('Phase 4C — shared toolbar + navigation destinations', () => {
+  const ROUTES = ['pricing/index.html', 'account/index.html']
+
+  it('commercial.css declares no toolbar rules — styles.css owns the toolbar', () => {
+    const css = L('app/commercial.css')
+    for (const sel of ['.site-nav', '.nav-links', '.nav-download', '.brand-wordmark', '.nav-login', '.nav-account']) {
+      expect(css, `commercial.css must not redefine ${sel}`).not.toMatch(
+        new RegExp(`^\\${sel}[\\s,{]`, 'm'),
+      )
+    }
+  })
+
+  it('every route that renders the toolbar loads the one stylesheet that defines it', () => {
+    for (const r of ROUTES) {
+      expect(L(r), r).toMatch(/<link rel="stylesheet" href="\/styles\.css/)
+    }
+  })
+
+  it('homepage toolbar links are absolute so they resolve from any route', () => {
+    const nav = L('index.html').match(/<nav class="nav-links"[\s\S]*?<\/nav>/)?.[0] ?? ''
+    expect(nav).toBeTruthy()
+    for (const href of ['/#features', '/#privacy', '/#download', '/pricing/', '/#support']) {
+      expect(nav, `homepage nav must link ${href}`).toContain(`href="${href}"`)
+    }
+    // A bare "#download" here would resolve to /pricing/#download once the shared
+    // helper reuses this map, so route-relative section links are forbidden.
+    expect(nav).not.toMatch(/href="#/)
+  })
+
+  it('shared header helper uses the same absolute destinations as the homepage', () => {
+    const hdr = L('app/header.js')
+    for (const href of ['/#features', '/#privacy', '/#download', '/pricing/', '/#support']) {
+      expect(hdr, `header.js must link ${href}`).toContain(`'${href}'`)
+    }
+    expect(hdr).toMatch(/href="\/"/)          // logo → /
+    expect(hdr).toContain('/login/')
+    expect(hdr).toContain('/account/')
+  })
+
+  it('the macOS CTA is the same real v0.1.9 build everywhere (never /#download)', () => {
+    const dmg = 'releases/download/v0.1.9/Youmi.Lens_0.1.9_aarch64.dmg'
+    expect(L('app/header.js')).toContain(dmg)
+    const homeCta = L('index.html').match(/<a class="nav-download"[^>]*>/)?.[0] ?? ''
+    expect(homeCta).toContain(dmg)
+    expect(L('app/header.js')).not.toMatch(/nav-download" href="\/#download"/)
+  })
+
+  it('Pricing is the only item that can go active, and only on /pricing/', () => {
+    const hdr = L('app/header.js')
+    expect(hdr).toMatch(/location\.pathname\.startsWith\('\/pricing'\)/)
+    expect(hdr).toMatch(/href === '\/pricing\/' && onPricing/)
+    // the static homepage ships no active state, so Pricing can never highlight there
+    expect(L('index.html')).not.toMatch(/class="is-current"/)
+  })
+
+  it('anchor targets clear the fixed toolbar and respect reduced motion', () => {
+    const css = L('styles.css')
+    expect(css).toMatch(/scroll-padding-top:\s*92px/)
+    expect(css).toMatch(/scroll-behavior:\s*smooth/)
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]{0,120}scroll-behavior:\s*auto/)
+  })
+})
+
+describe('Phase 4C — auth brand panel hierarchy', () => {
+  it('the logo scales responsively and is never distorted', () => {
+    const css = L('app/auth-shell.css')
+    const rule = css.match(/\.yl-auth-logo\s*\{[\s\S]*?\}/)?.[0] ?? ''
+    expect(rule).toBeTruthy()
+    expect(rule, 'logo must scale with the viewport, not a fixed iPad-ish size').toMatch(/height:\s*clamp\(/)
+    expect(rule, 'width:auto preserves the artwork ratio').toMatch(/width:\s*auto/)
+    expect(rule, 'never size both axes').not.toMatch(/width:\s*\d/)
+    expect(rule).not.toMatch(/height:\s*26px/) // the old fixed size
+  })
+
+  it('"One account, every device." is the last thing in the brand column', () => {
+    const panel = L('app/auth-ui.js').match(/export function brandPanel\(\)[\s\S]*?\n\}/)?.[0] ?? ''
+    expect(panel).toBeTruthy()
+    expect(panel).toContain('One account, every device.')
+    const foot = panel.indexOf('yl-auth-brandfoot')
+    const mid = panel.indexOf('yl-auth-brandmid')
+    const top = panel.indexOf('yl-auth-brandtop')
+    expect(top).toBeGreaterThan(-1)
+    expect(mid).toBeGreaterThan(top)
+    expect(foot, 'the tagline block must come after the message block').toBeGreaterThan(mid)
+    // and it must be the final element of the panel
+    expect(panel.lastIndexOf('yl-auth-brandfoot')).toBeGreaterThan(panel.lastIndexOf('yl-auth-wave'))
+    expect(L('app/auth-shell.css')).toMatch(/\.yl-auth-brandfoot\s*\{[^}]*margin-top:\s*auto/)
+  })
+
+  it('the Apple button is still offered on the Website (config is the blocker, not the UI)', () => {
+    expect(L('app/auth-ui.js')).toMatch(/data-provider="apple"/)
+    expect(L('app/auth-ui.js')).toMatch(/Continue with Apple/)
+  })
+})

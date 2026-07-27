@@ -76,8 +76,23 @@
 }
 .yl-auth-brand > * { position: relative; z-index: 1; }
 .yl-auth-brandtop { display: flex; align-items: center; }
-/* Official master lockup, light-on-navy treatment (exact asset recolored). */
-.yl-auth-logo { height: 26px; width: auto; display: block; filter: brightness(0) invert(1); }
+/* Official master lockup, light-on-navy treatment (exact asset recolored).
+   Height-only sizing with width:auto preserves the artwork's 2.339:1 ratio — the
+   asset is never stretched on either axis. It was a fixed 26px (60.8px wide in a
+   661px panel, ~9%), which read as an iPad-sized header mark; it now scales with
+   the viewport. The source is 725x310, so even the 52px cap renders at ~6x the
+   pixels needed for a 2x display — no softness. */
+.yl-auth-logo {
+  height: clamp(38px, 3.4vw, 52px);
+  width: auto;
+  display: block;
+  filter: brightness(0) invert(1);
+}
+/* Centre zone: soaks up the slack the old 4-child space-between spread as dead
+   air, so the message sits optically centred instead of drifting upward. */
+.yl-auth-brandmid { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+/* Footer zone: secondary copy, quieter than the message and the form. */
+.yl-auth-brandfoot { margin-top: auto; }
 .yl-auth-live { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
 .yl-auth-rec { width: 8px; height: 8px; border-radius: 9999px; background: #E0635C; animation: yl-pulse 2.2s ease-in-out infinite; }
 @keyframes yl-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .5; transform: scale(.82); } }
@@ -85,9 +100,9 @@
 .yl-auth-livelabel { color: rgba(255, 255, 255, 0.55); font-size: 12px; font-weight: 600; letter-spacing: 1.6px; text-transform: uppercase; }
 .yl-auth-caption { color: #F4F7FB; font-size: 22px; line-height: 31px; font-weight: 500; margin: 0 0 20px; max-width: 430px; }
 .yl-auth-caption.dim { color: rgba(244, 247, 251, 0.4); }
-.yl-auth-tagline { color: rgba(255, 255, 255, 0.85); font-size: 13.5px; line-height: 21px; font-weight: 600; margin: 0; }
-.yl-auth-desc { color: rgba(255, 255, 255, 0.5); font-size: 13.5px; line-height: 21px; margin: 2px 0 0; }
-.yl-auth-wave { display: flex; align-items: flex-end; gap: 4px; height: 44px; opacity: 0.5; }
+.yl-auth-tagline { color: rgba(255, 255, 255, 0.72); font-size: 13px; line-height: 20px; font-weight: 600; margin: 0; }
+.yl-auth-desc { color: rgba(255, 255, 255, 0.42); font-size: 12.5px; line-height: 19px; margin: 2px 0 0; max-width: 430px; }
+.yl-auth-wave { display: flex; align-items: flex-end; gap: 4px; height: 44px; opacity: 0.5; margin-top: 26px; }
 .yl-auth-wave span { width: 3px; border-radius: 2px; background: linear-gradient(180deg, #7FB0E6, #4A7DBF); min-height: 4px; }
 
 /* ── light form panel ──────────────────────────────────────────────────────── */
