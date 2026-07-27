@@ -338,3 +338,52 @@ describe('Phase 4C — auth brand panel hierarchy', () => {
     expect(L('app/auth-ui.js')).toMatch(/Continue with Apple/)
   })
 })
+
+/**
+ * Phase 6 — static routing.
+ *
+ * Cloudflare Pages resolves an unmatched path in this order: _redirects → 404.html
+ * → serve /index.html with HTTP 200. landing/ shipped none of the first two, so
+ * every unknown path (and every not-yet-deployed asset) returned the homepage
+ * with a 200 — /app/config.js came back as text/html, which breaks module loading
+ * silently instead of failing loudly. A committed 404.html restores real 404s.
+ */
+describe('Phase 6 — static 404 routing (no SPA catch-all)', () => {
+  it('ships a 404 page so unmatched paths cannot fall through to index.html', () => {
+    const nf = L('404.html')
+    expect(nf).toMatch(/<!DOCTYPE html>/i)
+    expect(nf).toMatch(/404/)
+    expect(nf).toMatch(/href="\/"/)            // a way back home
+  })
+
+  it('the 404 page reuses the approved design system, not a second one', () => {
+    const nf = L('404.html')
+    expect(nf).toMatch(/href="\/styles\.css/)
+    expect(nf).toMatch(/class="button button-primary"/)
+  })
+
+  it('the 404 page leaks no debug information', () => {
+    const nf = L('404.html')
+    expect(nf).not.toMatch(/stack|trace|exception|localhost|127\.0\.0\.1|TODO/i)
+    expect(nf).not.toMatch(/console\.(log|debug|info|error)/)
+  })
+
+  it('no _redirects / _routes.json rewrites every path to index.html', () => {
+    // Their absence is the point: a catch-all would recreate the 200-for-everything
+    // bug that made a missing route indistinguishable from a working one.
+    for (const f of ['_redirects', '_routes.json']) {
+      let body: string | null = null
+      try { body = L(f) } catch { body = null }
+      if (body !== null) {
+        expect(body, `${f} must not contain a catch-all rewrite`).not.toMatch(/^\s*\/\*\s+\/index\.html\s+200/m)
+        expect(body, `${f} must not declare an SPA fallback`).not.toMatch(/"include"\s*:\s*\[\s*"\/\*"\s*\]/)
+      }
+    }
+  })
+
+  it('real folder routes still exist as their own documents', () => {
+    for (const r of ['pricing', 'login', 'register', 'forgot-password', 'reset-password', 'account']) {
+      expect(L(`${r}/index.html`), `${r} must be a real document`).toMatch(/<!doctype html>/i)
+    }
+  })
+})

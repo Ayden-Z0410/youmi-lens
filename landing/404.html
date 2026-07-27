@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Page not found — Youmi Lens</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="/favicon.ico?v=2" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=2">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=2">
+  <!-- Same stylesheet as every other route: tokens, buttons and type all come
+       from the approved system. Only the centring below is local to this page. -->
+  <link rel="stylesheet" href="/styles.css?v=6">
+  <style>
+    .nf {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      padding: 32px 24px;
+      text-align: center;
+    }
+    .nf-mark { width: 108px; height: auto; margin-bottom: 6px; }
+    .nf-code {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 1.6px;
+      text-transform: uppercase;
+      color: var(--accent-blue);
+      margin: 0;
+    }
+    /* styles.css art-directs h1 as uppercase weight 240; a short 404 headline
+       reads better at the section scale, so use it rather than the hero scale. */
+    .nf h1 {
+      margin: 0;
+      max-width: 18ch;
+      font-size: clamp(28px, 4.4vw, 44px);
+      font-weight: 760;
+      line-height: 1.1;
+      text-transform: none;
+    }
+    .nf p {
+      margin: 0;
+      max-width: 46ch;
+      color: var(--muted-text, rgba(7, 26, 51, 0.62));
+      font-size: 16px;
+      line-height: 1.55;
+    }
+    .nf-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <main class="nf">
+    <a href="/" aria-label="Youmi Lens home">
+      <img class="nf-mark" src="/brand/youmi-lens-wordmark-tight.png" alt="Youmi Lens">
+    </a>
+    <p class="nf-code">Error 404</p>
+    <h1>We couldn’t find that page.</h1>
+    <p>The link may be out of date, or the page may have moved. Everything else is still where you left it.</p>
+    <div class="nf-actions">
+      <a class="button button-primary" href="/">Back to home</a>
+      <a class="button button-secondary" href="/pricing/">See pricing</a>
+    </div>
+  </main>
+</body>
+</html>
