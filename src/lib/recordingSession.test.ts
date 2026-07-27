@@ -130,7 +130,12 @@ describe('recordingSession wiring regressions (App + recorder)', () => {
     expect(appSrc).toContain('NO client-side size gate')
   })
 
-  it('updater remains blocked while recovering a durable session', () => {
-    expect(appSrc).toContain('recoveringSession: Boolean(recoveryBusyId)')
+  it('Stop drain re-queues failed IndexedDB chunk writes (no silent lecture truncation)', () => {
+    expect(recorderSrc).toContain('flushPersistQueue')
+    expect(recorderSrc).toContain('maxAttempts: 5')
+    // The broken second-pass used a bare shift + append without re-queue.
+    expect(recorderSrc).not.toMatch(
+      /while \(persistQueueRef\.current\.length > 0 && sessionId\) \{\s*const item = persistQueueRef\.current\.shift\(\)!;\s*await appendRecordingChunk/,
+    )
   })
 })

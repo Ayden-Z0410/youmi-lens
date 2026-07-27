@@ -14,6 +14,7 @@ import {
   heartbeatRecordingSession,
   updateRecordingSessionStatus,
 } from '../lib/recordingSessionStore'
+import { flushPersistQueue } from '../lib/recordingPersistQueue'
 import type { RecordingStatus } from '../types'
 
 /** Incident / P0: evidence chain for main lecture track only (no secrets). */
@@ -130,51 +131,61 @@ export function useRecorder(opts?: {
     return () => window.clearInterval(id)
   }, [status])
 
+  const persistQueueItem = useCallback(async (sessionId: string, item: { index: number; blob: Blob }) => {
+    try {
+      const result = await appendRecordingChunk(sessionId, item.index, item.blob)
+      mainRecLine('persist', {
+        session: sessionId.slice(-8),
+        chunkIndex: item.index,
+        size: item.blob.size,
+        accepted: result.accepted,
+        reason: result.reason ?? '',
+      })
+    } catch (err) {
+      mainRecLine('persist', {
+        session: sessionId.slice(-8),
+        chunkIndex: item.index,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      throw err
+    }
+  }, [])
+
   const enqueuePersist = useCallback((sessionId: string, index: number, blob: Blob) => {
     persistQueueRef.current.push({ index, blob })
-    persistChainRef.current = persistChainRef.current.then(async () => {
-      while (persistQueueRef.current.length > 0) {
-        const item = persistQueueRef.current.shift()!
-        try {
-          const result = await appendRecordingChunk(sessionId, item.index, item.blob)
-          mainRecLine('persist', {
-            session: sessionId.slice(-8),
-            chunkIndex: item.index,
-            size: item.blob.size,
-            accepted: result.accepted,
-            reason: result.reason ?? '',
-          })
-        } catch (err) {
-          // Re-queue at front so stop() can still flush; keep reference until success.
-          persistQueueRef.current.unshift(item)
-          mainRecLine('persist', {
-            session: sessionId.slice(-8),
-            chunkIndex: item.index,
-            error: err instanceof Error ? err.message : String(err),
-          })
-          throw err
-        }
-        // Release chunk reference after confirmed persistence (or duplicate ignore).
-      }
-    }).catch(() => {
-      /* chain continues on next enqueue; stop() awaits drain */
-    })
-  }, [])
+    // Mid-recording: one attempt per chain tick. Failed items stay at the front
+    // (flushPersistQueue re-queues) so stop()'s drain can retry.
+    persistChainRef.current = persistChainRef.current
+      .then(async () => {
+        await flushPersistQueue(
+          persistQueueRef.current,
+          (item) => persistQueueItem(sessionId, item),
+          { maxAttempts: 1, retryDelayMs: 0 },
+        )
+      })
+      .catch(() => {
+        /* chain continues on next enqueue; stop() awaits drain */
+      })
+  }, [persistQueueItem])
 
   const drainPersistQueue = useCallback(async () => {
     await persistChainRef.current
-    // One more pass if a failed item was re-queued
+    // Final flush before assemble: retry transient IndexedDB failures. Must
+    // re-queue on error — a bare shift()+append previously dropped the lecture
+    // tail when the second pass threw.
     if (persistQueueRef.current.length > 0) {
       const sessionId = mainRecSessionIdRef.current
-      persistChainRef.current = persistChainRef.current.then(async () => {
-        while (persistQueueRef.current.length > 0 && sessionId) {
-          const item = persistQueueRef.current.shift()!
-          await appendRecordingChunk(sessionId, item.index, item.blob)
-        }
-      })
+      if (!sessionId) {
+        throw new Error('Recording session missing while flushing durable chunks')
+      }
+      persistChainRef.current = flushPersistQueue(
+        persistQueueRef.current,
+        (item) => persistQueueItem(sessionId, item),
+        { maxAttempts: 5, retryDelayMs: 50 },
+      )
       await persistChainRef.current
     }
-  }, [])
+  }, [persistQueueItem])
 
   /** Stop the current slice timer/recorder only (keep cycle fn so Resume can restart). */
   const haltLiveSliceCycle = useCallback(() => {
