@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildCheckoutSessionParams,
+  checkoutIdempotencyKey,
+  createOrReuseCheckoutSession,
   handleCheckout,
   handlePortal,
   handleSubscriptionStatus,
+  pickReusableOpenCheckoutSession,
+  shouldBlockCheckoutForStripeSubscription,
   shouldBlockCheckoutForSubscription,
 } from './stripeRoutes.mjs'
 import { getOrCreateStripeCustomer, getStripeCustomerId, linkStripeCustomer } from './stripeCustomers.mjs'
@@ -109,6 +113,153 @@ describe('shouldBlockCheckoutForSubscription (active-subscriber guard)', () => {
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'expired', manageable: true })).toBe(false)
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'canceled', manageable: true })).toBe(false)
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'past_due', manageable: false })).toBe(false)
+  })
+})
+
+describe('multi-tab Checkout race guards (Stripe-live)', () => {
+  it('blocks active/trialing/past_due Stripe subscriptions before a new Checkout', () => {
+    expect(shouldBlockCheckoutForStripeSubscription({ status: 'active' })).toBe(true)
+    expect(shouldBlockCheckoutForStripeSubscription({ status: 'trialing' })).toBe(true)
+    expect(shouldBlockCheckoutForStripeSubscription({ status: 'past_due' })).toBe(true)
+    expect(shouldBlockCheckoutForStripeSubscription({ status: 'canceled' })).toBe(false)
+    expect(shouldBlockCheckoutForStripeSubscription({ status: 'incomplete' })).toBe(false)
+  })
+
+  it('reuses an open same-plan Checkout Session URL', () => {
+    const reusable = pickReusableOpenCheckoutSession(
+      [
+        {
+          id: 'cs_other',
+          status: 'open',
+          mode: 'subscription',
+          url: 'https://checkout.stripe.com/other',
+          metadata: { user_id: 'user-1', plan_code: 'student_basic_annual' },
+        },
+        {
+          id: 'cs_match',
+          status: 'open',
+          mode: 'subscription',
+          url: 'https://checkout.stripe.com/match',
+          metadata: { user_id: 'user-1', plan_code: 'student_basic_monthly' },
+        },
+      ],
+      { userId: 'user-1', planCode: 'student_basic_monthly' },
+    )
+    expect(reusable?.id).toBe('cs_match')
+  })
+
+  it('scopes the Stripe idempotency key to user + price', () => {
+    expect(checkoutIdempotencyKey('user-1', 'price_monthly')).toBe('billing:checkout:user-1:price_monthly')
+  })
+
+  it('createOrReuseCheckoutSession blocks when Stripe already has an active subscription', async () => {
+    const stripe = {
+      subscriptions: {
+        list: async () => ({ data: [{ id: 'sub_live', status: 'active' }] }),
+      },
+      checkout: {
+        sessions: {
+          list: async () => ({ data: [] }),
+          create: async () => {
+            throw new Error('should not create')
+          },
+          expire: async () => {
+            throw new Error('should not expire')
+          },
+        },
+      },
+    }
+    await expect(
+      createOrReuseCheckoutSession(stripe, {
+        userId: 'user-1',
+        customerId: 'cus_1',
+        planCode: 'student_basic_monthly',
+        priceId: 'price_monthly',
+        urls: { successUrl: 'https://x/ok', cancelUrl: 'https://x/no' },
+      }),
+    ).rejects.toMatchObject({ code: 'subscription_already_exists' })
+  })
+
+  it('createOrReuseCheckoutSession reuses an open same-plan session instead of creating', async () => {
+    const open = {
+      id: 'cs_open',
+      status: 'open',
+      mode: 'subscription',
+      url: 'https://checkout.stripe.com/open',
+      metadata: { user_id: 'user-1', plan_code: 'student_basic_monthly' },
+    }
+    let created = 0
+    const stripe = {
+      subscriptions: { list: async () => ({ data: [] }) },
+      checkout: {
+        sessions: {
+          list: async () => ({ data: [open] }),
+          create: async () => {
+            created += 1
+            return { id: 'cs_new', url: 'https://checkout.stripe.com/new' }
+          },
+          expire: async () => {
+            throw new Error('should not expire reusable')
+          },
+        },
+      },
+    }
+    const result = await createOrReuseCheckoutSession(stripe, {
+      userId: 'user-1',
+      customerId: 'cus_1',
+      planCode: 'student_basic_monthly',
+      priceId: 'price_monthly',
+      urls: { successUrl: 'https://x/ok', cancelUrl: 'https://x/no' },
+    })
+    expect(result).toEqual({ session: open, reused: true })
+    expect(created).toBe(0)
+  })
+
+  it('createOrReuseCheckoutSession expires mismatched open sessions then creates with idempotency key', async () => {
+    const expired = []
+    const createArgs = []
+    const stripe = {
+      subscriptions: { list: async () => ({ data: [{ id: 'sub_old', status: 'canceled' }] }) },
+      checkout: {
+        sessions: {
+          list: async () => ({
+            data: [
+              {
+                id: 'cs_annual',
+                status: 'open',
+                mode: 'subscription',
+                url: 'https://checkout.stripe.com/annual',
+                metadata: { user_id: 'user-1', plan_code: 'student_basic_annual' },
+              },
+            ],
+          }),
+          expire: async (id) => {
+            expired.push(id)
+            return { id, status: 'expired' }
+          },
+          create: async (params, opts) => {
+            createArgs.push({ params, opts })
+            return { id: 'cs_new', url: 'https://checkout.stripe.com/new' }
+          },
+        },
+      },
+    }
+    const result = await createOrReuseCheckoutSession(stripe, {
+      userId: 'user-1',
+      customerId: 'cus_1',
+      planCode: 'student_basic_monthly',
+      priceId: 'price_monthly',
+      urls: { successUrl: 'https://x/ok', cancelUrl: 'https://x/no' },
+    })
+    expect(expired).toEqual(['cs_annual'])
+    expect(result.reused).toBe(false)
+    expect(result.session.url).toBe('https://checkout.stripe.com/new')
+    expect(createArgs[0].opts).toEqual({ idempotencyKey: 'billing:checkout:user-1:price_monthly' })
+    expect(createArgs[0].params.customer).toBe('cus_1')
+    expect(createArgs[0].params.metadata).toEqual({
+      user_id: 'user-1',
+      plan_code: 'student_basic_monthly',
+    })
   })
 })
 
