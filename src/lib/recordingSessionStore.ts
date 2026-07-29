@@ -99,36 +99,56 @@ export async function heartbeatRecordingSession(
 /**
  * Persist one chunk. Duplicate indexes are ignored (idempotent). Out-of-order
  * indexes are rejected. Returns whether a new chunk was stored.
+ *
+ * Session existence is re-checked inside the write transaction so a concurrent
+ * deleteRecordingSession cannot be undone by a late put that recreates the row.
  */
 export async function appendRecordingChunk(
   sessionId: string,
   index: number,
   blob: Blob,
 ): Promise<{ accepted: boolean; reason?: 'duplicate' | 'reject' | 'missing_session' }> {
-  const session = await getRecordingSession(sessionId)
-  if (!session) return { accepted: false, reason: 'missing_session' }
-  const verdict = shouldAcceptChunkIndex(session, index)
-  if (verdict === 'duplicate') return { accepted: false, reason: 'duplicate' }
-  if (verdict === 'reject') return { accepted: false, reason: 'reject' }
-
-  const row: RecordingChunkRow = {
-    id: chunkRowId(sessionId, index),
-    sessionId,
-    index,
-    size: blob.size,
-    createdAt: Date.now(),
-    blob,
-  }
-  const next = applyAcceptedChunk(session, index, blob.size)
   const db = await openDb()
-  await new Promise<void>((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const tx = db.transaction([SESSION_STORE, CHUNK_STORE], 'readwrite')
-    tx.oncomplete = () => resolve()
+    const sessionStore = tx.objectStore(SESSION_STORE)
+    const chunkStore = tx.objectStore(CHUNK_STORE)
+    let result: { accepted: boolean; reason?: 'duplicate' | 'reject' | 'missing_session' } = {
+      accepted: false,
+      reason: 'missing_session',
+    }
+    tx.oncomplete = () => resolve(result)
     tx.onerror = () => reject(tx.error)
-    tx.objectStore(CHUNK_STORE).put(row)
-    tx.objectStore(SESSION_STORE).put(next)
+    const getReq = sessionStore.get(sessionId)
+    getReq.onsuccess = () => {
+      const session = (getReq.result as RecordingSessionMeta | undefined) ?? null
+      if (!session) {
+        result = { accepted: false, reason: 'missing_session' }
+        return
+      }
+      const verdict = shouldAcceptChunkIndex(session, index)
+      if (verdict === 'duplicate') {
+        result = { accepted: false, reason: 'duplicate' }
+        return
+      }
+      if (verdict === 'reject') {
+        result = { accepted: false, reason: 'reject' }
+        return
+      }
+      const row: RecordingChunkRow = {
+        id: chunkRowId(sessionId, index),
+        sessionId,
+        index,
+        size: blob.size,
+        createdAt: Date.now(),
+        blob,
+      }
+      chunkStore.put(row)
+      sessionStore.put(applyAcceptedChunk(session, index, blob.size))
+      result = { accepted: true }
+    }
+    getReq.onerror = () => reject(getReq.error)
   })
-  return { accepted: true }
 }
 
 export async function listRecordingChunks(sessionId: string): Promise<RecordingChunkRow[]> {

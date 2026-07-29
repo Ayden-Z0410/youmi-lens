@@ -89,6 +89,8 @@ export function useRecorder(opts?: {
    */
   const persistQueueRef = useRef<Array<{ index: number; blob: Blob }>>([])
   const persistChainRef = useRef<Promise<void>>(Promise.resolve())
+  /** Bumped on cancel so in-flight persist loops abandon and cannot recreate discarded sessions. */
+  const persistEpochRef = useRef(0)
   const mimeRef = useRef<string>('audio/webm')
   const bitrateRef = useRef<number>(SPEECH_AUDIO_BITS_PER_SECOND)
   // PCM streaming capture (AudioContext path)
@@ -131,9 +133,12 @@ export function useRecorder(opts?: {
   }, [status])
 
   const enqueuePersist = useCallback((sessionId: string, index: number, blob: Blob) => {
+    const epoch = persistEpochRef.current
     persistQueueRef.current.push({ index, blob })
     persistChainRef.current = persistChainRef.current.then(async () => {
       while (persistQueueRef.current.length > 0) {
+        // Discard/cancel bumps the epoch; abandon so we never recreate deleted audio.
+        if (persistEpochRef.current !== epoch) return
         const item = persistQueueRef.current.shift()!
         try {
           const result = await appendRecordingChunk(sessionId, item.index, item.blob)
@@ -145,6 +150,7 @@ export function useRecorder(opts?: {
             reason: result.reason ?? '',
           })
         } catch (err) {
+          if (persistEpochRef.current !== epoch) return
           // Re-queue at front so stop() can still flush; keep reference until success.
           persistQueueRef.current.unshift(item)
           mainRecLine('persist', {
@@ -732,20 +738,38 @@ export function useRecorder(opts?: {
       liveSliceRecorderRef.current = null
     }
     if (mr && mr.state !== 'inactive') {
+      // MediaRecorder.stop() queues a final dataavailable; clear the handler first
+      // so Discard cannot persist private audio after the user threw it away.
+      mr.ondataavailable = null
       mr.onstop = null
-      mr.stop()
+      try {
+        mr.stop()
+      } catch {
+        /* already stopped */
+      }
     }
     mediaRecorderRef.current = null
+    // Abandon queued/in-flight durable writes for this session, then delete after
+    // the current append settles so a late put cannot recreate the session.
+    persistEpochRef.current += 1
     persistQueueRef.current = []
-    persistChainRef.current = Promise.resolve()
     stopStream()
     setStatus('idle')
     setElapsedSec(0)
     setActiveSessionId(null)
-    if (sessionId) {
-      void deleteRecordingSession(sessionId).catch(() => { /* best-effort */ })
-    }
     mainRecSessionIdRef.current = ''
+    if (sessionId) {
+      // Always delete this session after in-flight appends settle — do not gate on
+      // epoch, or a subsequent start() could abandon cleanup and leave private audio.
+      persistChainRef.current = persistChainRef.current
+        .catch(() => { /* ignore prior persist failure */ })
+        .then(async () => {
+          await deleteRecordingSession(sessionId)
+        })
+        .catch(() => { /* best-effort */ })
+    } else {
+      persistChainRef.current = Promise.resolve()
+    }
   }, [teardownLiveSliceCycle, stopStream])
 
   return {

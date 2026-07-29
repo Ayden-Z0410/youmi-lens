@@ -28,9 +28,9 @@ const PLAN_INTERVALS = {
  *
  * PRODUCT POLICY: grace is NOT an approved business decision yet, so the default
  * is ZERO days. Access during past_due is therefore never extended beyond the
- * already-paid current_period_end unless STRIPE_GRACE_PERIOD_DAYS is explicitly
- * set to a positive value. The knob is preserved so a grace policy can be turned
- * on later without a code change.
+ * already-paid boundary (Stripe's current_period_start after a failed renewal)
+ * unless STRIPE_GRACE_PERIOD_DAYS is explicitly set to a positive value. The knob
+ * is preserved so a grace policy can be turned on later without a code change.
  */
 export function getGracePeriodDays() {
   const raw = Number(process.env.STRIPE_GRACE_PERIOD_DAYS)
