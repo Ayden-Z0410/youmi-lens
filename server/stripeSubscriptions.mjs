@@ -10,7 +10,8 @@
  *   • Monthly and annual BOTH map to plan_type='student_pass' (one tier).
  *   • active / trialing               → access until current_period_end.
  *   • cancel_at_period_end (still active) → access until current_period_end.
- *   • past_due                        → access until grace_until ONLY.
+ *   • past_due                        → access until grace_until ONLY
+ *     (grace measured from current_period_start = paid boundary after renewal).
  *   • canceled (immediate) / expired  → no access.
  *   • Expiry is enforced at READ TIME (getActiveEntitlement window check) — no
  *     cron. A revoked/expired subscription simply stops projecting an active row.
@@ -86,13 +87,19 @@ export function deriveSubscriptionRecord(sub, { nowMs = Date.now(), graceDays } 
   const currentPeriodEnd = unixToIso(period.end)
   const cancelAtPeriodEnd = Boolean(sub?.cancel_at_period_end)
 
-  // Grace is measured from the already-paid current_period_end (never invents an
-  // unpaid window). Default grace is 0 days (unapproved policy) — see stripeConfig.
+  // Grace is measured from the already-paid boundary. After a failed renewal,
+  // Stripe advances current_period_start/end to the NEW unpaid period while
+  // status becomes past_due — so current_period_start is when payment was due
+  // (end of the paid window), NOT current_period_end (end of the unpaid window).
+  // Measuring from period_end would grant a full unpaid month/year of access.
+  // Default grace is 0 days (unapproved policy) — see stripeConfig.
   let graceUntil = null
   if (status === 'past_due') {
     const days = Number.isFinite(graceDays) ? graceDays : getGracePeriodDays()
-    const periodEndMs = currentPeriodEnd ? Date.parse(currentPeriodEnd) : nowMs
-    graceUntil = new Date((Number.isFinite(periodEndMs) ? periodEndMs : nowMs) + days * DAY_MS).toISOString()
+    const paidBoundaryMs = currentPeriodStart ? Date.parse(currentPeriodStart) : nowMs
+    graceUntil = new Date(
+      (Number.isFinite(paidBoundaryMs) ? paidBoundaryMs : nowMs) + days * DAY_MS,
+    ).toISOString()
   }
 
   return {
