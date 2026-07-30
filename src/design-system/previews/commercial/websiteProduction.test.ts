@@ -540,10 +540,34 @@ describe('Registration username field', () => {
   it('the explicit username is passed to BOTH signup calls', () => {
     const s = reg()
     expect(s).toMatch(/sendSignupCode\(email, uname\.value\)/)
-    expect(s).toMatch(/verifySignupCodeAndCreateUser\(email, window\._pw \|\| '', code, username\)/)
+    expect(s).toMatch(/verifySignupCodeAndCreateUser\(email, window\._pw, code, username\)/)
     const auth = L('app/auth.js')
     expect(auth).toMatch(/sendSignupCode\(email, username\)/)
     expect(auth).toMatch(/verifySignupCodeAndCreateUser\(email, password, code, username\)/)
+  })
+
+  it('keeps the in-memory password after a failed code verify (no verify-step lockout)', () => {
+    // Regression: clearing window._pw on invalid_code left the user on the verify
+    // step; the next attempt sent '' and the server rejected password length
+    // before checking the code — signup could not finish without Change email.
+    const s = reg()
+    const onVerify = s.slice(s.indexOf('async function onVerify'))
+    const clearAt = onVerify.indexOf('window._pw = undefined')
+    const usernameTakenAt = onVerify.indexOf("r.code === 'username_taken'")
+    const errPaintAt = onVerify.lastIndexOf("msg = { kind: 'err'")
+    expect(clearAt).toBeGreaterThan(-1)
+    // Success (and account_created redirect) may clear; the generic error path must not.
+    expect(errPaintAt).toBeGreaterThan(usernameTakenAt)
+    const afterTaken = onVerify.slice(usernameTakenAt)
+    const genericErr = afterTaken.slice(afterTaken.indexOf("msg = { kind: 'err'"))
+    expect(genericErr.indexOf('window._pw = undefined')).toBe(-1)
+    expect(onVerify).toMatch(/account_created_sign_in_required/)
+  })
+
+  it('auth distinguishes account-created-but-sign-in-failed from verify failure', () => {
+    const auth = L('app/auth.js')
+    expect(auth).toMatch(/account_created_sign_in_required/)
+    expect(auth).toMatch(/Account created\. Please sign in/)
   })
 
   it('a taken username keeps the user on the form with their input preserved', () => {
