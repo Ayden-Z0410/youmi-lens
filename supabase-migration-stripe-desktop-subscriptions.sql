@@ -218,7 +218,7 @@ ALTER TABLE public.billing_products
   DROP CONSTRAINT IF EXISTS billing_products_kind_check;
 ALTER TABLE public.billing_products
   ADD CONSTRAINT billing_products_kind_check
-  CHECK (kind IN ('non_renewing', 'consumable', 'renewing'));
+  CHECK (kind IN ('non_renewing', 'consumable', 'auto_renewable', 'renewing'));
 
 -- Seed the two Desktop Stripe plan rows (student_pass tier, monthly + annual).
 -- provider_price_id is a PLACEHOLDER — the server resolves the trusted price id
@@ -255,6 +255,8 @@ ALTER TABLE public.billing_events
     -- existing Apple / shared verbs (unchanged)
     'verify_ok', 'verify_reject', 'grant', 'restore', 'refund', 'revoke',
     'notification', 'sales_cutoff_block', 'kill_switch_block',
+    'subscription_started', 'subscription_renewed',
+    'subscription_status_changed', 'subscription_reconciled',
     -- new Stripe (Desktop) verbs
     'stripe_checkout_completed', 'stripe_subscription_created',
     'stripe_subscription_updated', 'stripe_subscription_deleted',

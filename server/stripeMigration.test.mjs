@@ -40,3 +40,56 @@ describe('Stripe subscription migration access controls', () => {
     )
   })
 })
+
+describe('Stripe subscription migration production compatibility', () => {
+  it('preserves every existing billing kind while adding renewing', () => {
+    const match = migration.match(
+      /ADD CONSTRAINT billing_products_kind_check\s+CHECK \(kind IN \(([^)]+)\)\);/,
+    )
+    expect(match).not.toBeNull()
+    const values = [...match[1].matchAll(/'([^']+)'/g)].map((entry) => entry[1])
+    expect(values).toEqual([
+      'non_renewing',
+      'consumable',
+      'auto_renewable',
+      'renewing',
+    ])
+  })
+
+  it('preserves existing subscription events and adds only the required Stripe events', () => {
+    const match = migration.match(
+      /ADD CONSTRAINT billing_events_event_type_check\s+CHECK \(event_type IN \(([\s\S]*?)\)\);/,
+    )
+    expect(match).not.toBeNull()
+    const values = [...match[1].matchAll(/'([^']+)'/g)].map((entry) => entry[1])
+    expect(values).toEqual([
+      'verify_ok',
+      'verify_reject',
+      'grant',
+      'restore',
+      'refund',
+      'revoke',
+      'notification',
+      'sales_cutoff_block',
+      'kill_switch_block',
+      'subscription_started',
+      'subscription_renewed',
+      'subscription_status_changed',
+      'subscription_reconciled',
+      'stripe_checkout_completed',
+      'stripe_subscription_created',
+      'stripe_subscription_updated',
+      'stripe_subscription_deleted',
+      'stripe_renewal',
+      'stripe_payment_failed',
+      'stripe_webhook_error',
+    ])
+  })
+
+  it('does not rewrite existing iPad products or name any App Store product id', () => {
+    expect(migration).not.toMatch(/UPDATE\s+public\.billing_products/i)
+    expect(migration).not.toContain('com.aydenz.youmilensipad')
+    expect(migration).toContain("('student_basic_monthly', 'stripe'")
+    expect(migration).toContain("('student_basic_annual',  'stripe'")
+  })
+})
