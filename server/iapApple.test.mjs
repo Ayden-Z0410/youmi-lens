@@ -77,21 +77,16 @@ describe('environmentTryOrder', () => {
     else process.env.APPLE_IAP_ENVIRONMENT = original
   })
 
-  it('attempts both Production and Sandbox so one backend serves TestFlight + App Store', () => {
+  it('defaults to Sandbox verification only', () => {
     delete process.env.APPLE_IAP_ENVIRONMENT // default (Sandbox preferred)
-    const order = environmentTryOrder()
-    expect(order).toContain(Environment.PRODUCTION)
-    expect(order).toContain(Environment.SANDBOX)
-    expect(new Set(order).size).toBe(order.length) // de-duplicated
+    expect(environmentTryOrder()).toEqual([Environment.SANDBOX])
   })
 
-  it('prefers the configured environment first', () => {
+  it('only attempts the configured environment', () => {
     process.env.APPLE_IAP_ENVIRONMENT = 'Production'
-    expect(environmentTryOrder()[0]).toBe(Environment.PRODUCTION)
-    expect(environmentTryOrder()).toContain(Environment.SANDBOX)
+    expect(environmentTryOrder()).toEqual([Environment.PRODUCTION])
 
     process.env.APPLE_IAP_ENVIRONMENT = 'Sandbox'
-    expect(environmentTryOrder()[0]).toBe(Environment.SANDBOX)
-    expect(environmentTryOrder()).toContain(Environment.PRODUCTION)
+    expect(environmentTryOrder()).toEqual([Environment.SANDBOX])
   })
 })
