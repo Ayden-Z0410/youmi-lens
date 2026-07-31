@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   appendSegment,
+  createFinalTranslationBuffer,
   endsSentence,
   endsWithConnector,
   shouldFlushBuffer,
+  FINAL_BUFFER_DEBOUNCE_MS,
   FINAL_BUFFER_MAX_CHARS,
 } from './liveTranslationBuffer.mjs'
 
@@ -25,6 +27,10 @@ function simulate(chunks, opts) {
 }
 
 describe('liveTranslationBuffer segmentation', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('A. combines a fragmented clause into one translation unit', () => {
     expect(simulate(['I have something', 'that I want to show you today.'])).toEqual([
       'I have something that I want to show you today.',
@@ -79,5 +85,44 @@ describe('liveTranslationBuffer segmentation', () => {
   it('treats CJK sentence punctuation as a boundary', () => {
     expect(endsSentence('这是一个句子。')).toBe(true)
     expect(shouldFlushBuffer('这是一个句子。')).toBe('flush')
+  })
+
+  it('flushes an unpunctuated trailing buffer on stream teardown', () => {
+    vi.useFakeTimers()
+    const enqueued = []
+    const buffer = createFinalTranslationBuffer({
+      enqueue: (id, text) => enqueued.push({ id, text }),
+    })
+
+    expect(buffer.push('seg-1', 'because the sample')).toMatchObject({
+      queued: true,
+      flushed: false,
+    })
+    expect(enqueued).toEqual([])
+
+    expect(buffer.flush()).toEqual({
+      flushed: true,
+      id: 'seg-1',
+      text: 'because the sample',
+    })
+    expect(enqueued).toEqual([{ id: 'seg-1', text: 'because the sample' }])
+
+    vi.advanceTimersByTime(FINAL_BUFFER_DEBOUNCE_MS)
+    expect(enqueued).toEqual([{ id: 'seg-1', text: 'because the sample' }])
+  })
+
+  it('clears a pending buffer without sending after hard socket teardown', () => {
+    vi.useFakeTimers()
+    const enqueued = []
+    const buffer = createFinalTranslationBuffer({
+      enqueue: (id, text) => enqueued.push({ id, text }),
+    })
+
+    buffer.push('seg-1', 'waiting for more')
+    buffer.clear()
+    vi.advanceTimersByTime(FINAL_BUFFER_DEBOUNCE_MS)
+
+    expect(enqueued).toEqual([])
+    expect(buffer.flush()).toEqual({ flushed: false })
   })
 })

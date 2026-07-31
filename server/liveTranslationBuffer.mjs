@@ -4,13 +4,13 @@
  * Deepgram emits many short FINAL segments. Translating each one on its own
  * splits a single spoken sentence into disconnected Chinese fragments — e.g.
  * "I have something" then "that I want to show you today." become two unrelated
- * translations. These PURE helpers let the WebSocket relay accumulate
+ * translations. These helpers let the WebSocket relay accumulate
  * consecutive finals into a coherent phrase and translate it as ONE unit.
  *
  * English (`stream_final`) is still relayed per-segment so the live transcript
- * stays responsive; only the Chinese translation is buffered. The relay owns the
- * debounce-pause and stream-stop flushes (timers/I/O); everything here is pure
- * and directly unit-testable.
+ * stays responsive; only the Chinese translation is buffered. The relay still
+ * owns translation I/O; this module owns the segmentation and small buffer
+ * controller so debounce and stream-stop flush behavior is directly testable.
  */
 
 /** Buffer length (chars) that force-flushes continuous speech with no punctuation. */
@@ -58,4 +58,67 @@ export function shouldFlushBuffer(buffer, { maxChars = FINAL_BUFFER_MAX_CHARS } 
   if (t.length >= maxChars) return 'flush' // continuous-speech safety valve
   if (endsSentence(t)) return 'flush' // clear sentence boundary
   return 'wait' // keep accumulating
+}
+
+/**
+ * Stateful relay helper for final translations. The WebSocket layer owns the
+ * actual translation I/O; this controller only tracks buffered text and timers.
+ */
+export function createFinalTranslationBuffer({
+  isEnabled = () => true,
+  enqueue,
+  debounceMs = FINAL_BUFFER_DEBOUNCE_MS,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
+  if (typeof enqueue !== 'function') {
+    throw new TypeError('createFinalTranslationBuffer requires enqueue')
+  }
+
+  let buffer = ''
+  let lastId = null
+  let timer = null
+
+  const clearPendingTimer = () => {
+    if (timer) {
+      clearTimer(timer)
+      timer = null
+    }
+  }
+
+  const clear = () => {
+    clearPendingTimer()
+    buffer = ''
+    lastId = null
+  }
+
+  const flush = () => {
+    clearPendingTimer()
+    const text = buffer.trim()
+    const id = lastId
+    buffer = ''
+    lastId = null
+    if (!id || !text || !isEnabled()) return { flushed: false }
+    enqueue(id, text)
+    return { flushed: true, id, text }
+  }
+
+  const push = (id, text) => {
+    const trimmed = typeof text === 'string' ? text.trim() : ''
+    if (!trimmed) return { queued: false }
+    buffer = appendSegment(buffer, trimmed)
+    lastId = id
+    if (shouldFlushBuffer(buffer) === 'flush') {
+      return { queued: true, ...flush() }
+    }
+    clearPendingTimer()
+    timer = setTimer(flush, debounceMs)
+    return { queued: true, flushed: false }
+  }
+
+  return {
+    push,
+    flush,
+    clear,
+  }
 }
