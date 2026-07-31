@@ -359,7 +359,7 @@ describe('notification idempotency', () => {
             return {
               eq() {
                 return {
-                  eq() {
+                  in() {
                     return { error: null }
                   },
                 }
@@ -372,6 +372,90 @@ describe('notification idempotency', () => {
 
     await expect(reserveNotification(db, { notificationUUID: 'retry' })).resolves.toMatchObject({
       reserved: true,
+      retrying: true,
+    })
+    expect(updates[0]).toMatchObject({ processing_status: 'processing', safe_error: null })
+  })
+
+  it('asks Apple to retry duplicate notifications that are still processing', async () => {
+    const db = {
+      from() {
+        return {
+          insert() {
+            return { error: { code: '23505', message: 'duplicate key' } }
+          },
+          select() {
+            return {
+              eq() {
+                return {
+                  maybeSingle() {
+                    return {
+                      data: {
+                        processing_status: 'processing',
+                        updated_at: new Date().toISOString(),
+                      },
+                      error: null,
+                    }
+                  },
+                }
+              },
+            }
+          },
+        }
+      },
+    }
+
+    await expect(reserveNotification(db, { notificationUUID: 'processing' })).resolves.toMatchObject({
+      reserved: false,
+      notificationUUID: 'processing',
+      inProgress: true,
+    })
+  })
+
+  it('reclaims stale processing notifications for retry', async () => {
+    const updates = []
+    const db = {
+      from() {
+        return {
+          insert() {
+            return { error: { code: '23505', message: 'duplicate key' } }
+          },
+          select() {
+            return {
+              eq() {
+                return {
+                  maybeSingle() {
+                    return {
+                      data: {
+                        processing_status: 'processing',
+                        updated_at: '2026-06-10T12:00:00Z',
+                      },
+                      error: null,
+                    }
+                  },
+                }
+              },
+            }
+          },
+          update(row) {
+            updates.push(row)
+            return {
+              eq() {
+                return {
+                  in() {
+                    return { error: null }
+                  },
+                }
+              },
+            }
+          },
+        }
+      },
+    }
+
+    await expect(reserveNotification(db, { notificationUUID: 'stale' })).resolves.toMatchObject({
+      reserved: true,
+      notificationUUID: 'stale',
       retrying: true,
     })
     expect(updates[0]).toMatchObject({ processing_status: 'processing', safe_error: null })

@@ -18,6 +18,7 @@
 import { findAppleIapTransactionBinding } from './iapLedger.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+const NOTIFICATION_PROCESSING_RETRY_MS = 10 * 60 * 1000
 export const STUDENT_BASIC_PRODUCT_ID = 'com.aydenz.youmilensipad.studentbasic30d'
 export const LEGACY_STUDENT_PASS_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
 export const STUDENT_ACCESS_PRODUCT_IDS = [
@@ -388,6 +389,13 @@ export function safeNotificationError(err) {
   return message.slice(0, 240)
 }
 
+function isStaleProcessingNotification(row, nowMs = Date.now()) {
+  if (row?.processing_status !== 'processing') return false
+  const marker = row.updated_at ?? row.created_at
+  const markerMs = marker ? new Date(marker).getTime() : NaN
+  return Number.isFinite(markerMs) && nowMs - markerMs > NOTIFICATION_PROCESSING_RETRY_MS
+}
+
 export async function reserveNotification(db, decoded) {
   const notificationUUID = decoded?.notificationUUID
   if (!notificationUUID) return { reserved: true, notificationUUID: null }
@@ -405,18 +413,21 @@ export async function reserveNotification(db, decoded) {
   if (error.code === '23505') {
     const { data, error: readErr } = await db
       .from('apple_iap_notifications')
-      .select('processing_status')
+      .select('processing_status, created_at, updated_at')
       .eq('notification_uuid', notificationUUID)
       .maybeSingle()
     if (readErr) throw readErr
-    if (data?.processing_status === 'failed') {
+    if (data?.processing_status === 'failed' || isStaleProcessingNotification(data)) {
       const { error: updateErr } = await db
         .from('apple_iap_notifications')
         .update(row)
         .eq('notification_uuid', notificationUUID)
-        .eq('processing_status', 'failed')
+        .in('processing_status', ['failed', 'processing'])
       if (updateErr) throw updateErr
       return { reserved: true, notificationUUID, retrying: true }
+    }
+    if (data?.processing_status === 'processing') {
+      return { reserved: false, notificationUUID, inProgress: true }
     }
     return { reserved: false, notificationUUID }
   }
