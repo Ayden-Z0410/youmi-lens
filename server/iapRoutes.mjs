@@ -220,7 +220,7 @@ function safeIapError(err) {
  * Verify one purchase payload and persist transaction + entitlement idempotently.
  * Returns { granted:boolean, code? } — throws on verification/DB failure.
  */
-async function verifyAndPersist(db, user, payload) {
+export async function verifyAndPersist(db, user, payload) {
   const verified = await verifyAppleTransaction(payload)
   const product = await loadBillingProduct(db, verified.productId)
   const binding = await findTransactionBinding(db, verified)
@@ -229,7 +229,11 @@ async function verifyAndPersist(db, user, payload) {
     : null
 
   if (existingGrant) {
-    await persistTransaction(db, user.userId, verified, product, existingGrant.status, binding)
+    await persistTransaction(db, user.userId, verified, product, verified.revoked ? 'revoked' : existingGrant.status, binding)
+    if (verified.revoked) {
+      await revokeByTransaction(db, verified.transactionId, verified.revokedAt)
+      return { granted: false, code: 'revoked' }
+    }
     return {
       granted:
         existingGrant.status === 'active' &&

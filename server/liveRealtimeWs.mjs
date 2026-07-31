@@ -310,7 +310,13 @@ export function attachLiveRealtimeWs(server) {
           ws._youmiDeepgramCostFinalize('restart')
           ws._youmiDeepgramCostFinalize = null
         }
-        // Drop any pending translation buffer/timer from the previous segment.
+        // Flush any pending translation from the previous segment before its
+        // closure state is replaced by the new stream_start.
+        if (typeof ws._youmiFlushTranslationBuffer === 'function') {
+          ws._youmiFlushTranslationBuffer()
+          ws._youmiFlushTranslationBuffer = null
+        }
+        // Drop any remaining translation buffer/timer from the previous segment.
         if (typeof ws._youmiClearTranslationBuffer === 'function') {
           ws._youmiClearTranslationBuffer()
           ws._youmiClearTranslationBuffer = null
@@ -420,6 +426,7 @@ export function attachLiveRealtimeWs(server) {
         let pendingFinalBuffer = ''
         let pendingFinalLastId = null
         let pendingFinalTimer = null
+        let finalTranslationStopRequested = false
 
         const translationEnabled = () =>
           translationRequired && process.env.YOUMI_LIVE_TRANSLATION_EXPERIMENT === 'enabled'
@@ -562,6 +569,10 @@ export function attachLiveRealtimeWs(server) {
           if (!translationEnabled()) return
           enqueueFinalTranslation(id, text)
         }
+        ws._youmiFlushTranslationBuffer = () => {
+          finalTranslationStopRequested = true
+          flushFinalTranslationBuffer()
+        }
         // Cross-scope cleanup: re-stream_start and WS close clear a stray buffer
         // timer (same pattern as ws._youmiLiveSessionEnd / cost finalize refs).
         ws._youmiClearTranslationBuffer = () => {
@@ -660,7 +671,7 @@ export function attachLiveRealtimeWs(server) {
           // boundary / max length is reached, otherwise after a short pause.
           pendingFinalBuffer = appendSegment(pendingFinalBuffer, trimmed)
           pendingFinalLastId = id
-          if (shouldFlushBuffer(pendingFinalBuffer) === 'flush') {
+          if (finalTranslationStopRequested || shouldFlushBuffer(pendingFinalBuffer) === 'flush') {
             flushFinalTranslationBuffer()
           } else {
             if (pendingFinalTimer) clearTimeout(pendingFinalTimer)
@@ -1044,6 +1055,9 @@ export function attachLiveRealtimeWs(server) {
       if (msg?.type === 'stream_stop') {
         console.info('[liveRealtimeWs] stream_stop_received', JSON.stringify({ wsSessionId, frameCount }))
         if (SRV_LIVE_VERBOSE) console.log('[YoumiLive][srv] stream_stop', JSON.stringify({ wsSessionId }))
+        if (typeof ws._youmiFlushTranslationBuffer === 'function') {
+          ws._youmiFlushTranslationBuffer()
+        }
         streamingSession?.stop()   // graceful: sends LAST_PACKET, waits for server final
         // Cost ledger (Deepgram only; once-guarded funnel).
         if (typeof ws._youmiDeepgramCostFinalize === 'function') {
@@ -1155,6 +1169,7 @@ export function attachLiveRealtimeWs(server) {
         ws._youmiClearTranslationBuffer()
         ws._youmiClearTranslationBuffer = null
       }
+      ws._youmiFlushTranslationBuffer = null
     })
   })
 
