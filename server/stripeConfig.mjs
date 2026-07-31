@@ -37,6 +37,26 @@ export function getGracePeriodDays() {
   return Number.isFinite(raw) && raw >= 0 ? raw : 0
 }
 
+/**
+ * PUBLIC COMMERCIALIZATION RELEASE SWITCH.
+ *
+ * Website commercialization is finished and TEST MODE verified, but Mac /
+ * Windows / iPad have not caught up, so paid Checkout must not be reachable by
+ * the public yet. This is the single backend authority for that.
+ *
+ * FAIL-CLOSED BY DESIGN: only the exact string 'true' opens Checkout. Missing,
+ * empty, 'false', or any other value keeps it closed, so a forgotten variable in
+ * a new environment can never accidentally expose paid checkout. Controlled
+ * TEST MODE verification sets PUBLIC_COMMERCIALIZATION_ENABLED=true explicitly.
+ *
+ * Scope is deliberately narrow — see handleCheckout. Portal, subscription
+ * status/refresh and the webhook are NEVER gated: existing subscribers must keep
+ * managing and cancelling their subscription while the public switch is off.
+ */
+export function isCommercializationEnabled() {
+  return process.env.PUBLIC_COMMERCIALIZATION_ENABLED?.trim().toLowerCase() === 'true'
+}
+
 /** A configured value that is still a repo placeholder must never be sold. */
 function isPlaceholderPriceId(value) {
   return !value || value.startsWith('price_REPLACE_ME')

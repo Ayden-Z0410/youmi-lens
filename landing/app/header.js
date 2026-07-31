@@ -25,9 +25,20 @@ export const NAV_LINKS = [
   ['/#support', 'Support'],
 ]
 
+/**
+ * Public release switch — Pricing is dropped from the toolbar while
+ * commercialization is off. Fail-closed: an absent/partial config hides it.
+ * The homepage keeps its own inline copy of this nav (index.html); both must
+ * hide Pricing together — websiteProduction.test.ts asserts they stay identical.
+ */
+function visibleNavLinks() {
+  const on = window.YOUMI_CONFIG?.isCommercializationEnabled?.() === true
+  return on ? NAV_LINKS : NAV_LINKS.filter(([href]) => href !== '/pricing/')
+}
+
 function render(signedIn, email) {
   const onPricing = location.pathname.startsWith('/pricing')
-  const links = NAV_LINKS.map(([href, label]) => {
+  const links = visibleNavLinks().map(([href, label]) => {
     const current = href === '/pricing/' && onPricing
     return `<a href="${href}"${current ? ' aria-current="page" class="is-current"' : ''}>${label}</a>`
   }).join('\n        ')

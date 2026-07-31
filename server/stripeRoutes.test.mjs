@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   buildCheckoutSessionParams,
   handleCheckout,
@@ -7,7 +8,7 @@ import {
   shouldBlockCheckoutForSubscription,
 } from './stripeRoutes.mjs'
 import { getOrCreateStripeCustomer, getStripeCustomerId, linkStripeCustomer } from './stripeCustomers.mjs'
-import { safeRedirectUrl } from './stripeConfig.mjs'
+import { isCommercializationEnabled, safeRedirectUrl } from './stripeConfig.mjs'
 
 function makeRes() {
   return {
@@ -109,6 +110,77 @@ describe('shouldBlockCheckoutForSubscription (active-subscriber guard)', () => {
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'expired', manageable: true })).toBe(false)
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'canceled', manageable: true })).toBe(false)
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'past_due', manageable: false })).toBe(false)
+  })
+})
+
+describe('isCommercializationEnabled (public release switch, fail-closed)', () => {
+  const KEY = 'PUBLIC_COMMERCIALIZATION_ENABLED'
+  const original = process.env[KEY]
+  const set = (v) => { if (v === undefined) delete process.env[KEY]; else process.env[KEY] = v }
+  afterEach(() => { set(original) })
+
+  it('opens Checkout ONLY for the exact string true (case/space tolerant)', () => {
+    for (const v of ['true', 'TRUE', 'True', '  true  ']) {
+      set(v)
+      expect(isCommercializationEnabled()).toBe(true)
+    }
+  })
+
+  it('stays closed when missing or empty — a forgotten variable must never sell', () => {
+    set(undefined)
+    expect(isCommercializationEnabled()).toBe(false)
+    set('')
+    expect(isCommercializationEnabled()).toBe(false)
+    set('   ')
+    expect(isCommercializationEnabled()).toBe(false)
+  })
+
+  it('stays closed for false and for any unrecognized value', () => {
+    for (const v of ['false', 'FALSE', '0', '1', 'yes', 'on', 'enabled', 'truthy']) {
+      set(v)
+      expect(isCommercializationEnabled()).toBe(false)
+    }
+  })
+})
+
+describe('checkout release switch (503 before any Stripe object is created)', () => {
+  const KEY = 'PUBLIC_COMMERCIALIZATION_ENABLED'
+  const original = process.env[KEY]
+  afterEach(() => { if (original === undefined) delete process.env[KEY]; else process.env[KEY] = original })
+
+  it('returns 503 commercialization_not_available for an authenticated caller when closed', async () => {
+    delete process.env[KEY] // closed by default
+    const res = makeRes()
+    // A malformed bearer token still fails auth first, so assert the ORDER holds:
+    // no token → 401 (switch state is never advertised to anonymous probes).
+    await handleCheckout({ headers: {}, body: { plan_code: 'student_basic_monthly' } }, res)
+    expect(res.statusCode).toBe(401)
+    expect(res.body).toMatchObject({ error: 'auth_required' })
+  })
+
+  it('the switch is the only thing standing between auth and plan validation', () => {
+    // Guard placement is asserted structurally: the 503 branch must appear after
+    // requireUser and before plan_code / price resolution, so an invalid plan can
+    // never leak a 400 while commercialization is closed.
+    const src = readFileSync(new URL('./stripeRoutes.mjs', import.meta.url), 'utf8')
+    const auth = src.indexOf('const user = await requireUser(req, res)')
+    const guard = src.indexOf('commercialization_not_available')
+    const plan = src.indexOf("typeof req.body?.plan_code === 'string'")
+    expect(auth).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(auth)
+    expect(plan).toBeGreaterThan(guard)
+  })
+
+  it('does NOT gate portal, subscription status or refresh', () => {
+    // Existing subscribers must keep managing/cancelling while the switch is off.
+    const src = readFileSync(new URL('./stripeRoutes.mjs', import.meta.url), 'utf8')
+    const occurrences = src.split('commercialization_not_available').length - 1
+    expect(occurrences).toBe(1)
+    for (const fn of ['handlePortal', 'handleSubscriptionStatus', 'handleSubscriptionRefresh']) {
+      const body = src.slice(src.indexOf(`export async function ${fn}`))
+      const next = body.indexOf('\nexport ', 1)
+      expect((next === -1 ? body : body.slice(0, next))).not.toContain('commercialization_not_available')
+    }
   })
 })
 

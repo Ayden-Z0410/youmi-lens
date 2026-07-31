@@ -67,9 +67,15 @@ function dashboardView(email, plan, sub, username) {
   const displayName = plan.displayName || (isPaid ? 'Student Basic' : 'Free Beta')
   const priceStr = isPaid && sub?.billingInterval ? `${usd((sub.billingInterval === 'year' ? PRICE.annual : PRICE.monthly).usdCents)} / ${sub.billingInterval === 'year' ? 'year' : 'month'}` : ''
   const m = plan.minutesLimit != null ? meterFill(plan.minutesUsed || 0, plan.minutesLimit) : null
+  // Public release switch: free users get NO purchase entry while
+  // commercialization is off. Paid users ALWAYS keep Manage plan / Fix payment —
+  // existing subscribers must never lose access to the Customer Portal.
+  const commercialOn = window.YOUMI_CONFIG?.isCommercializationEnabled?.() === true
   const action = isPaid
     ? `<button class="btn btn--primary" id="manage">${sub?.status === 'past_due' ? 'Fix payment' : 'Manage plan'}</button>`
-    : `<a class="btn btn--primary" href="/pricing/">Upgrade to Student Basic</a>`
+    : commercialOn
+      ? `<a class="btn btn--primary" href="/pricing/">Upgrade to Student Basic</a>`
+      : ''
 
   let details = `<dt>Email</dt><dd>${esc(emailText)}</dd><dt>Plan</dt><dd>${esc(displayName)}</dd><dt>Status</dt><dd><span class="badge badge--${tone}">${label}</span></dd>`
   if (sub && (sub.active || sub.status === 'canceled')) {

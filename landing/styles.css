@@ -1,3 +1,11 @@
+/* The HTML `hidden` attribute must win over component display rules. Several
+   selectors here set an explicit `display` (e.g. `.nav-links a`), which would
+   otherwise override the user-agent `[hidden] { display: none }` and leak
+   commercial surfaces that ship hidden behind the release switch. */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   --main-navy: #061b34;
   --text-navy: #071a33;

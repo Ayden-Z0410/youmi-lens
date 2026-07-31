@@ -52,7 +52,25 @@ function view() {
   </div>`
 }
 
+/**
+ * Public release switch — while commercialization is off the route is KEPT (it
+ * is indexed and linked) but renders a price-free Coming Soon placeholder: no
+ * amounts, no Monthly/Annual toggle, no comparison table, and no data-checkout
+ * button is ever created, so no visitor can reach TEST MODE Checkout.
+ */
+function comingSoonView() {
+  return `<div class="stage--pad" style="max-width:1160px;margin:0 auto">
+    <div class="section-head"><h1>Pricing is coming soon</h1>
+    <p>Youmi Lens is free to use while we finish bringing Mac, Windows, and iPad in line. Paid plans are not available yet — there is nothing to buy today.</p></div>
+    <div style="text-align:center;margin-top:8px"><a class="btn btn--primary" href="/">Back to home</a></div>
+  </div>`
+}
+
 function paint() {
+  if (window.YOUMI_CONFIG?.isCommercializationEnabled?.() !== true) {
+    root().innerHTML = comingSoonView()
+    return
+  }
   root().innerHTML = view()
   root().querySelectorAll('.seg [data-interval]').forEach((b) => b.addEventListener('click', () => { interval = b.dataset.interval; paint() }))
   root().querySelectorAll('[data-checkout]').forEach((b) => b.addEventListener('click', async () => {
@@ -68,6 +86,8 @@ function paint() {
 
 ;(async () => {
   paint() // render immediately with exact values
+  // Switch off → Coming Soon is already final; skip the session/quota lookups.
+  if (window.YOUMI_CONFIG?.isCommercializationEnabled?.() !== true) return
   const session = await getSession()
   signedIn = Boolean(session)
   if (signedIn) { const q = await getQuotaStatus(); if (q.ok) planType = q.body?.plan?.planType || 'public_trial' }

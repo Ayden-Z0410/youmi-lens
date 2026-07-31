@@ -18,6 +18,36 @@ window.YOUMI_CONFIG = {
   // same-origin URL). MUST be in the Supabase Auth "Redirect URLs" allow-list.
   authReturnPath: "/account/",
   resetReturnPath: "/reset-password/",
+
+  // PUBLIC COMMERCIALIZATION RELEASE SWITCH — the ONE front-end authority for
+  // whether Pricing / prices / Upgrade / Checkout are shown to the public.
+  // Website commercialization is finished and TEST MODE verified, but Mac /
+  // Windows / iPad have not caught up yet, so it stays off.
+  //
+  // FAIL-CLOSED: every commercial surface is hidden in static markup and only
+  // REVEALED when this is exactly true, so a visitor with JavaScript disabled
+  // never sees a price. Mirrors the backend PUBLIC_COMMERCIALIZATION_ENABLED.
+  //
+  // Flipping this REQUIRES bumping the ?v= cache-buster on every page that
+  // loads config.js, or Cloudflare will keep serving the old value.
+  // Existing subscribers keep Manage plan + Customer Portal either way.
+  commercializationEnabled: false,
+};
+
+/** Public commercial surfaces are shown only when the switch is exactly true. */
+window.YOUMI_CONFIG.isCommercializationEnabled = function () {
+  return window.YOUMI_CONFIG.commercializationEnabled === true;
+};
+
+/**
+ * Reveal elements marked `hidden data-commercial` when the switch is on.
+ * Static pages ship them hidden, so "off" needs no JavaScript at all.
+ */
+window.YOUMI_CONFIG.applyCommercialVisibility = function (root) {
+  if (!window.YOUMI_CONFIG.isCommercializationEnabled()) return;
+  (root || document).querySelectorAll("[data-commercial]").forEach(function (el) {
+    el.hidden = false;
+  });
 };
 
 /** True only when every required public value is present for this deploy. */

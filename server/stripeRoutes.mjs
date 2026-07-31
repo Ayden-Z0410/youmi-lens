@@ -13,6 +13,7 @@ import { verifyJwt } from './betaGate.mjs'
 import { getBillingAdminClient, getStripe, getStripeWebhookSecret, isStripeConfigured } from './stripeClient.mjs'
 import {
   isAllowedPlanCode,
+  isCommercializationEnabled,
   priceIdForPlanCode,
   getCheckoutUrls,
 } from './stripeConfig.mjs'
@@ -79,6 +80,18 @@ export function shouldBlockCheckoutForSubscription(subscription) {
 export async function handleCheckout(req, res) {
   const user = await requireUser(req, res)
   if (!user) return
+
+  // Public release switch (fail-closed). Placed after auth so an unauthenticated
+  // caller still gets 401 and the switch state is not advertised to anonymous
+  // probes. Blocks BEFORE any Stripe object would be created.
+  if (!isCommercializationEnabled()) {
+    res.status(503).json({
+      ok: false,
+      error: 'commercialization_not_available',
+      message: 'Subscriptions are not available yet.',
+    })
+    return
+  }
 
   const planCode = typeof req.body?.plan_code === 'string' ? req.body.plan_code : ''
   if (!isAllowedPlanCode(planCode)) {

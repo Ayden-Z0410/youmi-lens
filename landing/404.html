@@ -10,7 +10,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=2">
   <!-- Same stylesheet as every other route: tokens, buttons and type all come
        from the approved system. Only the centring below is local to this page. -->
-  <link rel="stylesheet" href="/styles.css?v=6">
+  <link rel="stylesheet" href="/styles.css?v=7">
   <style>
     .nf {
       min-height: 100vh;
@@ -61,8 +61,12 @@
     <p>The link may be out of date, or the page may have moved. Everything else is still where you left it.</p>
     <div class="nf-actions">
       <a class="button button-primary" href="/">Back to home</a>
-      <a class="button button-secondary" href="/pricing/">See pricing</a>
+      <a class="button button-secondary" href="/pricing/" data-commercial hidden>See pricing</a>
     </div>
   </main>
+  <!-- Public release switch: "See pricing" ships hidden and is revealed only
+       when config.js says commercialization is on. -->
+  <script src="/app/config.js?v=7"></script>
+  <script>window.YOUMI_CONFIG && window.YOUMI_CONFIG.applyCommercialVisibility();</script>
 </body>
 </html>
