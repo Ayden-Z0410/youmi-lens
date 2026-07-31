@@ -115,10 +115,16 @@ async function onCreate(e) {
   const uname = validateUsername(unameEl.value)
   username = unameEl.value.trim() // normalized; preserved if a later step fails
   if (!uname.ok) return failUsername(uname.message)
-  if (pw.length < 8) return fail('Password must be at least 8 characters.')
-  if (pw !== cf) return fail('Passwords don’t match.')
+  // Prefer the just-typed password; if the user returned here after a username
+  // collision with empty fields, reuse the in-memory value from the earlier step.
+  const password = pw || window._pw || ''
+  if (password.length < 8) return fail('Password must be at least 8 characters.')
+  if (pw) {
+    // Only enforce confirm when the user typed a fresh password in the form.
+    if (pw !== cf) return fail('Passwords don’t match.')
+  }
   if (!agreed) return fail('Please accept the Terms and Privacy Policy.')
-  window._pw = pw // held in-memory only for this flow; never logged/persisted
+  window._pw = password // held in-memory only for this flow; never logged/persisted
   const btn = document.getElementById('submit'); btn.disabled = true; btn.textContent = 'Sending code…'
   const chk = await checkEmail(email)
   if (chk.ok && chk.exists && chk.status === 'registered') {
@@ -138,15 +144,33 @@ async function onVerify(e) {
   const code = document.getElementById('code').value.replace(/\s/g, '')
   const verr = document.getElementById('verr')
   if (!/^\d{8}$/.test(code)) { verr.hidden = false; verr.textContent = 'Enter the full 8-digit code.'; return }
+  if (!window._pw || String(window._pw).length < 8) {
+    // Password was lost (e.g. full page reload). Send them back to re-enter it —
+    // never call verify with an empty password (that rejects before code checks).
+    step = 'form'
+    msg = { kind: 'err', html: 'Re-enter your password to finish creating your account.' }
+    return paint()
+  }
   const btn = document.getElementById('vsubmit'); btn.disabled = true; btn.textContent = 'Verifying…'
-  const r = await verifySignupCodeAndCreateUser(email, window._pw || '', code, username)
+  const r = await verifySignupCodeAndCreateUser(email, window._pw, code, username)
   if (r.ok) { window._pw = undefined; step = 'success'; msg = null; return paint() }
+  if (r.code === 'account_created_sign_in_required') {
+    // Backend created the auth user; only the session step failed. Do not leave
+    // the user on verify with a consumed code — send them to sign in.
+    window._pw = undefined
+    msg = null
+    location.assign('/login/?next=/account/')
+    return
+  }
   if (r.code === 'username_taken') {
     // Lost the race — no account was created. Back to the form, value kept.
+    // Keep window._pw so they can change only the username and resubmit.
     step = 'form'; msg = null; paint()
     return showUsernameTaken(r.message)
   }
-  window._pw = undefined
+  // Keep window._pw: a mistyped code (or a resend) must still be able to finish
+  // signup. Clearing it left users stuck on verify with every retry rejected as
+  // "Password must be at least 8 characters" before the code was even checked.
   msg = { kind: 'err', html: esc(r.message || 'That code didn’t work. Please try again.') }; paint()
 }
 

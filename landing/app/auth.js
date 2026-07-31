@@ -179,7 +179,18 @@ export async function verifySignupCodeAndCreateUser(email, password, code, usern
   })
   if (!verify.ok) return verify
   // Backend never returns a session — establish it with email+password.
-  return signInWithPassword(trimmedEmail, password)
+  const signedIn = await signInWithPassword(trimmedEmail, password)
+  if (!signedIn.ok) {
+    // Account already exists at this point. Do not surface a generic
+    // "invalid credentials" on the verify step — the code is consumed and a
+    // retry cannot recreate the user.
+    return {
+      ok: false,
+      code: 'account_created_sign_in_required',
+      message: 'Account created. Please sign in with your email and password.',
+    }
+  }
+  return { ok: true }
 }
 
 // ── password reset — SHARED CODE flow (identical to iPad + Desktop) ───────────

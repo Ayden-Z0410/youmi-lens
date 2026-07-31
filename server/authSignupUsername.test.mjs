@@ -215,6 +215,20 @@ describe('verify — creation, race handling and cleanup', () => {
     expect(state.deletedUsers).toEqual([state.createdUser.id])
   })
 
+  it('when race cleanup fails, does not claim username_taken (account can sign in)', async () => {
+    state.signupCodes = [pendingRow('Summer Zhang')]
+    state.upsertError = { code: '23505', message: 'duplicate key value violates unique constraint "profiles_username_lower_unique"' }
+    state.deleteError = { message: 'delete failed' }
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const r = res()
+    await handleVerifySignupCodeAndCreateUser(goodReq(), r)
+    expect(r.statusCode).toBe(500)
+    expect(r.body.error).toBe('account_created_sign_in_required')
+    expect(r.body.message).toMatch(/sign in/i)
+    expect(state.deletedUsers).toEqual([state.createdUser.id])
+    errSpy.mockRestore()
+  })
+
   it('detects the race by constraint name even without a SQLSTATE', async () => {
     state.signupCodes = [pendingRow('Summer Zhang')]
     state.upsertError = { message: 'profiles_username_lower_unique violated' }
