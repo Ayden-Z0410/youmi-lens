@@ -180,13 +180,18 @@ export async function grantEntitlement(db, userId, verified, product, window) {
 }
 
 /** Mark an entitlement + its transaction revoked (refund / revoke). */
-async function revokeByTransaction(db, transactionId, revokedAtIso) {
+async function revokeEntitlementByTransaction(db, transactionId, revokedAtIso) {
   const revoked_at = revokedAtIso || new Date().toISOString()
   const { error: entErr } = await db
     .from('user_entitlements')
     .update({ status: 'revoked', revoked_at })
     .eq('source_transaction_id', transactionId)
   if (entErr) throw entErr
+  return revoked_at
+}
+
+async function revokeByTransaction(db, transactionId, revokedAtIso) {
+  const revoked_at = await revokeEntitlementByTransaction(db, transactionId, revokedAtIso)
   const { error: txErr } = await revokeAppleIapTransaction(db, transactionId, revoked_at)
   if (txErr) throw txErr
 }
@@ -220,7 +225,7 @@ function safeIapError(err) {
  * Verify one purchase payload and persist transaction + entitlement idempotently.
  * Returns { granted:boolean, code? } — throws on verification/DB failure.
  */
-async function verifyAndPersist(db, user, payload) {
+export async function verifyAndPersist(db, user, payload) {
   const verified = await verifyAppleTransaction(payload)
   const product = await loadBillingProduct(db, verified.productId)
   const binding = await findTransactionBinding(db, verified)
@@ -229,6 +234,11 @@ async function verifyAndPersist(db, user, payload) {
     : null
 
   if (existingGrant) {
+    if (verified.revoked) {
+      await revokeEntitlementByTransaction(db, verified.transactionId, verified.revokedAt)
+      await persistTransaction(db, user.userId, verified, product, 'revoked', binding)
+      return { granted: false, code: 'revoked' }
+    }
     await persistTransaction(db, user.userId, verified, product, existingGrant.status, binding)
     return {
       granted:
