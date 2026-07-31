@@ -87,8 +87,8 @@ export async function byokSummarize(provider, transcript, course, title, apiKey)
     }
     if (!parsed) throw new Error('BYOK_SUMMARY_PARSE')
   }
-  const summaryEn = parsed.summary_en?.trim()
-  const summaryZh = parsed.summary_zh?.trim()
+  const summaryEn = parsed.source_summary?.trim() || parsed.summary_en?.trim()
+  const summaryZh = parsed.translated_summary?.trim() || parsed.summary_zh?.trim()
   if (!summaryEn || !summaryZh) throw new Error('BYOK_SUMMARY_SHAPE')
   return { summaryEn, summaryZh }
 }
