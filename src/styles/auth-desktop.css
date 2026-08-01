@@ -1,0 +1,97 @@
+/* ============================================================================
+   Youmi Lens — DESKTOP-ONLY auth overrides.
+
+   src/styles/auth-shell.css is a byte-identical copy of the Website's
+   landing/app/auth-shell.css and MUST NOT be edited (authShellParity.test.ts
+   asserts the two files match). Everything the desktop app needs on top of the
+   shared design system lives here instead.
+
+   Purpose: the Website's auth pages fill the browser viewport via `.yl-auth-full`,
+   which is scoped to the site. A Tauri window has no page chrome either, so the
+   auth surface must fill the whole window — no outer canvas, no floating card,
+   no gutter — at every window size including maximized.
+
+   Scoped to `.yl-auth-desktop`, which AuthScreens puts on the auth root, so none
+   of this leaks into the rest of the app.
+   ============================================================================ */
+
+/* The chain html → body → #root must all be full-height, or a percentage-height
+   child collapses. #root ships with `min-height: 100svh` (index.css) which is
+   enough on its own, but height:100% here makes the intent explicit and covers
+   the case where a parent gets an explicit height. */
+html.yl-auth-fullscreen,
+html.yl-auth-fullscreen body {
+  height: 100%;
+  margin: 0;
+}
+
+html.yl-auth-fullscreen #root {
+  min-height: 100%;
+  height: 100%;
+  max-width: none;
+  margin: 0;
+}
+
+/* Auth root: fills the window, no page background of its own showing anywhere. */
+.yl-auth-desktop {
+  width: 100%;
+  height: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  box-sizing: border-box;
+}
+
+/* The surface itself becomes the window: edge to edge, square, no shadow.
+   `height: auto` with `min-height: 100%` lets a short window grow the surface
+   instead of clipping it, which is what makes the internal scroll below work. */
+.yl-auth-desktop .yl-auth-surface {
+  width: 100%;
+  max-width: none;
+  min-height: 100%;
+  height: auto;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Both columns run the full height of the window. */
+.yl-auth-desktop .yl-auth-brand,
+.yl-auth-desktop .yl-auth-form {
+  min-height: 100%;
+}
+
+/* Only when the window is too short for the form does the FORM column scroll —
+   the navy panel stays put, so the layout never tears. `min-height: 0` is
+   required for a grid child to be allowed to shrink and scroll at all. */
+.yl-auth-desktop .yl-auth-form {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* A very short window (or a tall step like Create account) should not squeeze the
+   card; keep it centred when there is room and top-aligned when there is not. */
+.yl-auth-desktop .yl-auth-form {
+  align-items: center;
+}
+@media (max-height: 700px) {
+  .yl-auth-desktop .yl-auth-form {
+    align-items: flex-start;
+  }
+}
+
+/* Narrow windows: the shared stylesheet's `.compact` modifier already retunes the
+   column split and padding. Below the Website's single-column breakpoint, stack
+   the panels the same way the Website does and let the whole surface scroll. */
+@media (max-width: 640px) {
+  .yl-auth-desktop .yl-auth-surface {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .yl-auth-desktop .yl-auth-brand {
+    min-height: 0;
+  }
+}

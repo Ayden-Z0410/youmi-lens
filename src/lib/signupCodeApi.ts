@@ -1,13 +1,17 @@
 /**
- * Typed wrappers for the backend signup-code endpoints used by Create Profile.
- * Both endpoints live behind the same API base as the rest of the app (`getAiApiBase`).
+ * Typed wrappers for the backend signup-code endpoints used by Create Account.
+ * All endpoints live behind the same API base as the rest of the app (`getAiApiBase`).
  *
  * Backend routes:
+ *   POST /api/auth/check-email                            — body: { email }
  *   POST /api/auth/send-signup-code                       — body: { email, username }
  *   POST /api/auth/verify-signup-code-and-create-user     — body: { email, username, password, code }
  *
  * The backend itself never returns a session — after a successful verify the caller is expected
  * to sign in via `supabase.auth.signInWithPassword`.
+ *
+ * These are the SAME endpoints the Website calls from landing/app/auth.js, so both
+ * surfaces share one registration mechanism.
  */
 
 import { getAiApiBase } from './ai/apiBase'
@@ -84,6 +88,54 @@ export type SignupCodeResult = {
   error: string | null
   /** Stable error code from the backend (or our wrapper) when `error` is non-null. */
   code: SignupCodeBackendError | string | null
+}
+
+/** Outcome of the pre-flight email check. Mirrors `checkEmail` in landing/app/auth.js. */
+export type CheckEmailResult = {
+  /** False when the endpoint could not be reached or answered — callers proceed anyway. */
+  ok: boolean
+  exists: boolean
+  /** 'registered' | 'pending' | 'available' from the backend, or null when unknown. */
+  status: string | null
+}
+
+/**
+ * Pre-flight: does this email already have an account?
+ *
+ * Advisory only. The Website treats a failed check as "keep going" and lets
+ * send-signup-code be the authority (it returns `email_exists`), so a backend
+ * hiccup can never block a legitimate signup. We do the same.
+ *
+ * The endpoint answers `{ exists, status }` WITHOUT an `ok` flag, so this cannot
+ * reuse `postJson` — it inspects the raw body directly.
+ */
+export async function checkEmail(email: string): Promise<CheckEmailResult> {
+  let base: string
+  try {
+    base = getAiApiBase()
+  } catch {
+    return { ok: false, exists: false, status: null }
+  }
+  try {
+    const res = await fetch(`${base}/auth/check-email`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim() }),
+    })
+    if (!res.ok) return { ok: false, exists: false, status: null }
+    const parsed: unknown = await res.json().catch(() => null)
+    const body = (parsed && typeof parsed === 'object' ? parsed : {}) as {
+      exists?: unknown
+      status?: unknown
+    }
+    return {
+      ok: true,
+      exists: Boolean(body.exists),
+      status: typeof body.status === 'string' ? body.status : null,
+    }
+  } catch {
+    return { ok: false, exists: false, status: null }
+  }
 }
 
 export async function sendSignupCode(args: {

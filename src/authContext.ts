@@ -1,5 +1,6 @@
 import { createContext } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
+import type { CheckEmailResult } from './lib/signupCodeApi'
 
 export type AuthMethodResult = { error: string | null }
 
@@ -17,8 +18,13 @@ export type AuthContextValue = {
    * the auth flow until this clears (via signOut after updatePassword succeeds).
    */
   inPasswordRecovery: boolean
-  signInWithGoogle: () => Promise<void>
-  signInWithApple: () => Promise<void>
+  /**
+   * OAuth entry points. On desktop these open the system browser and return via the
+   * `lecturecompanion://auth-callback` deep link; the result reports only whether the
+   * handoff STARTED — the session arrives later through onAuthStateChange.
+   */
+  signInWithGoogle: () => Promise<AuthMethodResult>
+  signInWithApple: () => Promise<AuthMethodResult>
   /**
    * Legacy magic-link entry. Retained for deep-link / backwards-compatibility paths; not used by
    * the main login UI in the password-aligned flow.
@@ -26,7 +32,9 @@ export type AuthContextValue = {
   signInWithEmailOtp: (email: string) => Promise<AuthMethodResult>
   /** Email + password sign-in (iPad-aligned primary UX). */
   signInWithPassword: (email: string, password: string) => Promise<AuthMethodResult>
-  /** Step 1 of Create Profile: send 8-digit signup verification code via backend. */
+  /** Pre-flight: is this email already registered? Advisory — never blocks signup. */
+  checkEmail: (email: string) => Promise<CheckEmailResult>
+  /** Step 1 of Create Account: send 8-digit signup verification code via backend. */
   requestSignupCode: (args: { email: string; username: string }) => Promise<SignupAuthMethodResult>
   /**
    * Step 2 of Create Profile: backend verifies code and creates the auth user + profile.
@@ -40,14 +48,17 @@ export type AuthContextValue = {
   }) => Promise<SignupAuthMethodResult>
   /**
    * Forgot Password step 1: ask Supabase to send a recovery email containing `{{ .Token }}`.
-   * Caller should always show the safe "If an account exists…" message regardless of error.
+   * Sent WITHOUT redirectTo, matching Website + iPad. A missing account still resolves
+   * with `error: null` (no enumeration); a real send failure DOES report an error so the
+   * UI never advances to a code screen for a code that was never sent.
    */
   requestPasswordResetCode: (email: string) => Promise<AuthMethodResult>
-  /** Forgot Password step 2: verify the 6-digit recovery code. Establishes a recovery session. */
+  /** Forgot Password step 2: verify the emailed recovery code. Establishes a recovery session. */
   verifyPasswordResetCode: (email: string, code: string) => Promise<AuthMethodResult>
   /** Forgot Password step 3: update the password on the current (recovery) session. */
   updatePassword: (newPassword: string) => Promise<AuthMethodResult>
-  signOut: () => Promise<void>
+  /** Always resolves (never throws), like the Website's signOut. */
+  signOut: () => Promise<AuthMethodResult>
   /** Non-null when a deep-link auth callback was received but the token exchange failed. */
   deepLinkAuthError: string | null
   clearDeepLinkAuthError: () => void

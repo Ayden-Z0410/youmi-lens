@@ -1,4 +1,5 @@
 import type { Session, SupabaseClient } from '@supabase/supabase-js'
+import { authTrace, redactUrl } from './authTrace'
 
 const LOG = '[lc-auth deep-link]'
 
@@ -132,6 +133,26 @@ export async function applySessionFromSupabaseCallbackUrl(
   callbackUrl: string,
   meta: { source: 'getCurrent' | 'onOpenUrl' | 'webLocation' },
 ): Promise<ApplySessionResult> {
+  const result = await applySessionInner(supabase, callbackUrl, meta)
+  // One line per attempt naming the branch taken (exchange_code vs set_session_implicit
+  // vs verify_*), whether Supabase returned a session, and the failure reason if any.
+  // This is what tells you whether the callback was PKCE or implicit without ever
+  // logging the code or the tokens.
+  authTrace('deeplink.apply.result', {
+    source: meta.source,
+    branch: result.branch,
+    ok: result.error === null,
+    hasSession: Boolean(result.session),
+    error: result.error,
+  })
+  return result
+}
+
+async function applySessionInner(
+  supabase: SupabaseClient,
+  callbackUrl: string,
+  meta: { source: 'getCurrent' | 'onOpenUrl' | 'webLocation' },
+): Promise<ApplySessionResult> {
   let params: Record<string, string>
   try {
     params = parseParametersFromURL(callbackUrl)
@@ -141,6 +162,7 @@ export async function applySessionFromSupabaseCallbackUrl(
   }
 
   console.info(`${LOG} applySession start [${meta.source}]`, inspectAuthCallbackUrl(callbackUrl))
+  authTrace('deeplink.apply.start', { source: meta.source, url: redactUrl(callbackUrl) })
 
   if (params.error || params.error_description) {
     console.warn(`${LOG} branch: oauth_error (not attempting session) [${meta.source}]`)

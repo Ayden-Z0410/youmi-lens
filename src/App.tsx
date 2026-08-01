@@ -108,6 +108,7 @@ import { UpdaterEntry } from './components/UpdaterEntry'
 import { AccessUsageModal } from './components/AccessUsageModal'
 import { BillingPlanModal } from './components/BillingPlanModal'
 import { AuthScreens } from './components/AuthScreens'
+import { authTrace } from './lib/authTrace'
 import { RecordingAudioPlayer } from './components/RecordingAudioPlayer'
 import { OnboardingUsername } from './components/OnboardingUsername'
 import { SmoothCaption } from './components/SmoothCaption'
@@ -1119,6 +1120,9 @@ export default function App() {
     if (authUiGateLogged.current !== gate) {
       authUiGateLogged.current = gate
       console.info('[lc-auth ui] render gate', detail)
+      // Answers "why is it still showing the login screen?" directly: the gate name
+      // plus the exact inputs that chose it.
+      authTrace('gate.render', detail)
     }
   }, [cloudReady, auth.loading, auth.session, auth.user, supabase, auth.inPasswordRecovery])
 
@@ -1191,7 +1195,9 @@ export default function App() {
       userId={auth.user.id}
       userEmail={auth.user.email ?? null}
       userLabel={auth.user.email ?? auth.user.user_metadata?.full_name ?? 'Account'}
-      onSignOut={() => void auth.signOut()}
+      // Returns the promise so the Sign out button can actually await it — `void`
+      // here made the busy state finish instantly and dropped any failure.
+      onSignOut={() => auth.signOut()}
     />
   )
 }
@@ -1207,7 +1213,8 @@ function AuthenticatedApp({
   userId: string
   userEmail: string | null
   userLabel: string
-  onSignOut: () => void
+  /** May return a promise; the Sign out button awaits it for its busy state. */
+  onSignOut: () => void | Promise<unknown>
 }) {
   const [profile, setProfile] = useState<UserProfileRow | null>(null)
   const [profileLoading, setProfileLoading] = useState(true)
@@ -1359,7 +1366,8 @@ function RecordingWorkspace({
   /** Cloud: current profile row for account panel. */
   profileRow?: UserProfileRow | null
   onProfileRowChange?: (row: UserProfileRow | null) => void
-  onSignOut?: () => void
+  /** May return a promise; the Sign out button awaits it for its busy state. */
+  onSignOut?: () => void | Promise<unknown>
   /** After user adds Supabase to .env, reload to switch to login + cloud. */
   onReloadAfterCloudEnv?: boolean
   /** Top bar welcome; cloud mode only */
