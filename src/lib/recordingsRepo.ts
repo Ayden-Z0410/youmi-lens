@@ -299,9 +299,7 @@ export async function uploadLectureAudioViaServer(
   form.append('file', blob, `recording.${mime.includes('mp4') || mime.includes('m4a') ? 'm4a' : 'webm'}`)
   form.append('recordingId', recordingId)
   form.append('mime', mime || 'audio/webm')
-  if (durationSec != null && durationSec > 0) {
-    form.append('duration_sec', String(Math.round(durationSec)))
-  }
+  form.append('duration_sec', String(Math.max(1, Math.round(durationSec ?? 0) || 1)))
   if (metadata) {
     form.append('course', metadata.course)
     form.append('title', metadata.title)
