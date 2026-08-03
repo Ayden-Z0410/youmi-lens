@@ -51,6 +51,23 @@ export const RECOVERABLE_SESSION_STATUSES: readonly RecordingSessionStatus[] = [
   'kept',
 ]
 
+/**
+ * Heartbeat writes every 15s while capture is live. Sessions newer than this are
+ * treated as still owned by an active tab — recovery Save/Delete must not touch them
+ * (another tab would truncate or erase the in-progress lecture).
+ */
+export const LIVE_HEARTBEAT_STALE_MS = 45_000
+
+/** True when status is recording/paused and updatedAt is still within the live window. */
+export function isActivelyLiveSession(
+  session: Pick<RecordingSessionMeta, 'status' | 'updatedAt'>,
+  now = Date.now(),
+  staleMs = LIVE_HEARTBEAT_STALE_MS,
+): boolean {
+  if (session.status !== 'recording' && session.status !== 'paused') return false
+  return now - session.updatedAt < staleMs
+}
+
 export function chunkRowId(sessionId: string, index: number): string {
   return `${sessionId}:${index}`
 }
@@ -137,17 +154,23 @@ export function withHeartbeat(
   }
 }
 
-/** Sessions the current owner may recover (never another user). */
+/**
+ * Sessions the current owner may recover (never another user).
+ * Excludes actively-live capture (fresh heartbeat) so a second tab cannot
+ * Save/Delete a lecture that is still being recorded elsewhere.
+ */
 export function visibleRecoverableSessions(
   all: RecordingSessionMeta[],
   ownerKey: string,
+  now = Date.now(),
 ): RecordingSessionMeta[] {
   return all
     .filter(
       (s) =>
         s.ownerKey === ownerKey &&
         RECOVERABLE_SESSION_STATUSES.includes(s.status) &&
-        s.chunkCount > 0,
+        s.chunkCount > 0 &&
+        !isActivelyLiveSession(s, now),
     )
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }

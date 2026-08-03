@@ -8,7 +8,7 @@
  *   - file:         audio binary
  *   - recordingId:  UUID string
  *   - mime:         MIME type, e.g. "audio/webm" or "audio/mp4"
- *   - duration_sec: recording duration in seconds (optional, used for early duration check)
+ *   - duration_sec: recording duration in seconds (required; used for duration gate)
  *   - course:       lecture course/title grouping (optional; defaults to "Course")
  *   - title:        lecture title (optional; defaults to "Lecture")
  *   - live_transcript: canonical live caption text (optional)
@@ -28,6 +28,7 @@ import {
   verifyJwt,
   getEffectiveQuota,
   checkUploadAllowed,
+  parsePositiveDurationSec,
   recordBetaUsage,
   BETA_ERROR_CODES,
 } from './betaGate.mjs'
@@ -113,7 +114,13 @@ export async function handleUploadAudio(req, res) {
   }
 
   const mime = (rawMime || 'audio/webm').trim()
-  const durationSec = rawDuration ? Number(rawDuration) : 0
+  const durationSec = parsePositiveDurationSec(rawDuration)
+  if (durationSec == null) {
+    return res.status(400).json({
+      error: 'invalid_request',
+      message: 'duration_sec is required and must be a positive number of seconds.',
+    })
+  }
   const course = cleanText(rawCourse, 'Course')
   const title = cleanText(rawTitle, 'Lecture')
   const liveTranscript = nullableText(rawLiveTranscript)
@@ -124,8 +131,8 @@ export async function handleUploadAudio(req, res) {
     translationLanguage: rawTranslationLanguage,
   })
 
-  // ── Beta gate: per-recording duration check ───────────────────────────────
-  if (durationSec > 0) {
+  // ── Beta gate: per-recording duration check (always; never skip on omit/zero) ─
+  {
     const quota = await getEffectiveQuota(userId, email)
     const gate = checkUploadAllowed(quota, durationSec)
     if (!gate.allowed) {
@@ -227,7 +234,7 @@ export async function handleUploadAudio(req, res) {
     user_id: userId,
     course,
     title,
-    duration_sec: Math.round(durationSec) || 0,
+    duration_sec: durationSec,
     mime,
     storage_path: storagePath,
     live_transcript: liveTranscript,
