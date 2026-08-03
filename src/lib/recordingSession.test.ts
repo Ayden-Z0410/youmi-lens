@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   applyAcceptedChunk,
   createRecordingSessionMeta,
+  isActivelyLiveSession,
+  LIVE_HEARTBEAT_STALE_MS,
   ownerKeyForUser,
   planFinalize,
   planPostPersistCleanup,
@@ -76,15 +78,42 @@ describe('recordingSession pure model (Phase 2D-4)', () => {
   })
 
   it('startup recovery lists only the owner’s unfinished sessions with chunks', () => {
+    const now = 1_000_000
     const all = [
-      session({ id: 'a', ownerKey: 'user-A', status: 'recording', chunkCount: 3 }),
-      session({ id: 'b', ownerKey: 'user-B', status: 'recording', chunkCount: 9 }),
-      session({ id: 'c', ownerKey: 'user-A', status: 'kept', chunkCount: 2 }),
-      session({ id: 'd', ownerKey: 'user-A', status: 'recording', chunkCount: 0 }),
-      session({ id: 'e', ownerKey: 'user-A', status: 'finalized', chunkCount: 5 }),
+      session({ id: 'a', ownerKey: 'user-A', status: 'recording', chunkCount: 3, updatedAt: now - LIVE_HEARTBEAT_STALE_MS }),
+      session({ id: 'b', ownerKey: 'user-B', status: 'recording', chunkCount: 9, updatedAt: now - LIVE_HEARTBEAT_STALE_MS }),
+      session({ id: 'c', ownerKey: 'user-A', status: 'kept', chunkCount: 2, updatedAt: now }),
+      session({ id: 'd', ownerKey: 'user-A', status: 'recording', chunkCount: 0, updatedAt: now - LIVE_HEARTBEAT_STALE_MS }),
+      session({ id: 'e', ownerKey: 'user-A', status: 'finalized', chunkCount: 5, updatedAt: now }),
     ]
-    expect(visibleRecoverableSessions(all, 'user-A').map((s) => s.id).sort()).toEqual(['a', 'c'])
-    expect(visibleRecoverableSessions(all, 'user-B').map((s) => s.id)).toEqual(['b'])
+    expect(visibleRecoverableSessions(all, 'user-A', now).map((s) => s.id).sort()).toEqual(['a', 'c'])
+    expect(visibleRecoverableSessions(all, 'user-B', now).map((s) => s.id)).toEqual(['b'])
+  })
+
+  it('hides actively-live recording/paused sessions from recovery (multi-tab safety)', () => {
+    const now = 5_000_000
+    expect(isActivelyLiveSession(session({ status: 'recording', updatedAt: now - 1_000 }), now)).toBe(true)
+    expect(isActivelyLiveSession(session({ status: 'paused', updatedAt: now - 1_000 }), now)).toBe(true)
+    expect(
+      isActivelyLiveSession(
+        session({ status: 'recording', updatedAt: now - LIVE_HEARTBEAT_STALE_MS }),
+        now,
+      ),
+    ).toBe(false)
+    expect(isActivelyLiveSession(session({ status: 'finalizing', updatedAt: now }), now)).toBe(false)
+
+    const all = [
+      session({ id: 'live', ownerKey: 'user-A', status: 'recording', chunkCount: 4, updatedAt: now - 5_000 }),
+      session({
+        id: 'stale',
+        ownerKey: 'user-A',
+        status: 'recording',
+        chunkCount: 4,
+        updatedAt: now - LIVE_HEARTBEAT_STALE_MS,
+      }),
+      session({ id: 'kept', ownerKey: 'user-A', status: 'kept', chunkCount: 2, updatedAt: now }),
+    ]
+    expect(visibleRecoverableSessions(all, 'user-A', now).map((s) => s.id).sort()).toEqual(['kept', 'stale'])
   })
 
   it('ownerKey isolates local vs cloud vs anonymous', () => {
@@ -122,6 +151,13 @@ describe('recordingSession wiring regressions (App + recorder)', () => {
   it('deletion of recovered recording requires confirmation', () => {
     expect(appSrc).toContain('recoveryDeleteConfirmId')
     expect(appSrc).toContain('Confirm delete')
+  })
+
+  it('recovery refuses actively-live sessions (multi-tab cannot Save/Delete in-progress capture)', () => {
+    expect(appSrc).toContain('isActivelyLiveSession')
+    expect(appSrc).toContain('getRecordingSession')
+    expect(appSrc).toContain('recorder.activeSessionId === s.id')
+    expect(appSrc).toContain('20_000')
   })
 
   it('no shorter-lecture / 25 MB gate messaging regression', () => {

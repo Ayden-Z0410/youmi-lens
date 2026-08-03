@@ -53,10 +53,15 @@ import {
   beginFinalizeRecordingSession,
   completeRecordingSessionPersist,
   deleteRecordingSession,
+  getRecordingSession,
   keepRecordingSessionForLater,
   listRecoverableRecordingSessions,
 } from './lib/recordingSessionStore'
-import { ownerKeyForUser, type RecordingSessionMeta } from './lib/recordingSession'
+import {
+  isActivelyLiveSession,
+  ownerKeyForUser,
+  type RecordingSessionMeta,
+} from './lib/recordingSession'
 import {
   visiblePendingUploads,
   sanitizeUploadErrorCategory,
@@ -2944,9 +2949,11 @@ const [editLectureModal, setEditLectureModal] = useState<{
 
   // Phase 2D-4: detect unfinished durable recording sessions on startup / owner change.
   // Never auto-resume mic, never auto-upload — user chooses Save / Keep / Delete.
+  // Poll so a crashed live session (heartbeat went stale) appears without a full reload,
+  // while an in-progress capture in another tab stays hidden (fresh heartbeat).
   useEffect(() => {
     let cancelled = false
-    void (async () => {
+    const refresh = async () => {
       try {
         const ownerKey = ownerKeyForUser(userId, Boolean(localOnly))
         const sessions = await listRecoverableRecordingSessions(ownerKey)
@@ -2954,9 +2961,14 @@ const [editLectureModal, setEditLectureModal] = useState<{
       } catch {
         if (!cancelled) setRecoveredSessions([])
       }
-    })()
+    }
+    void refresh()
+    const id = window.setInterval(() => {
+      void refresh()
+    }, 20_000)
     return () => {
       cancelled = true
+      window.clearInterval(id)
     }
   }, [userId, localOnly])
 
@@ -3037,6 +3049,13 @@ const [editLectureModal, setEditLectureModal] = useState<{
     async (session: RecordingSessionMeta) => {
       if (recoveryBusyId || saveInFlightRef.current) return
       if (recorder.status === 'recording' || recorder.status === 'paused') return
+      if (recorder.activeSessionId && recorder.activeSessionId === session.id) return
+      // Re-read: refuse if another tab is still heartbeating this capture.
+      const latest = await getRecordingSession(session.id)
+      if (!latest || isActivelyLiveSession(latest)) {
+        setRecoveredSessions((prev) => prev.filter((s) => s.id !== session.id))
+        return
+      }
       setRecoveryBusyId(session.id)
       saveInFlightRef.current = true
       dispatchFlow({ type: 'CAPTURE_BEGIN', recordingId: session.id })
@@ -3203,6 +3222,7 @@ const [editLectureModal, setEditLectureModal] = useState<{
     [
       recoveryBusyId,
       recorder.status,
+      recorder.activeSessionId,
       course,
       title,
       localOnly,
@@ -3216,21 +3236,35 @@ const [editLectureModal, setEditLectureModal] = useState<{
   )
 
   const handleRecoverKeep = useCallback(async (sessionId: string) => {
+    // Never mutate the in-progress capture (this tab or another tab's live heartbeat).
+    if (recorder.activeSessionId === sessionId) return
+    const latest = await getRecordingSession(sessionId)
+    if (!latest || isActivelyLiveSession(latest)) {
+      setRecoveredSessions((prev) => prev.filter((s) => s.id !== sessionId))
+      return
+    }
     await keepRecordingSessionForLater(sessionId)
     setRecoveredSessions((prev) =>
       prev.map((s) => (s.id === sessionId ? { ...s, status: 'kept' as const } : s)),
     )
-  }, [])
+  }, [recorder.activeSessionId])
 
   const handleRecoverDelete = useCallback(async (sessionId: string) => {
+    if (recorder.activeSessionId === sessionId) return
     if (recoveryDeleteConfirmId !== sessionId) {
       setRecoveryDeleteConfirmId(sessionId)
+      return
+    }
+    const latest = await getRecordingSession(sessionId)
+    if (!latest || isActivelyLiveSession(latest)) {
+      setRecoveryDeleteConfirmId(null)
+      setRecoveredSessions((prev) => prev.filter((s) => s.id !== sessionId))
       return
     }
     await deleteRecordingSession(sessionId)
     setRecoveryDeleteConfirmId(null)
     setRecoveredSessions((prev) => prev.filter((s) => s.id !== sessionId))
-  }, [recoveryDeleteConfirmId])
+  }, [recoveryDeleteConfirmId, recorder.activeSessionId])
 
   const handleStopAndSave = async () => {
     if (saveInFlightRef.current) return
@@ -6328,7 +6362,11 @@ useEffect(() => {
                   <button
                     type="button"
                     className="btn primary small"
-                    disabled={Boolean(recoveryBusyId) || recorder.status !== 'idle'}
+                    disabled={
+                      Boolean(recoveryBusyId) ||
+                      recorder.status !== 'idle' ||
+                      recorder.activeSessionId === s.id
+                    }
                     onClick={() => void handleRecoverSave(s)}
                   >
                     {recoveryBusyId === s.id ? 'Saving…' : 'Save and process'}
@@ -6336,7 +6374,7 @@ useEffect(() => {
                   <button
                     type="button"
                     className="btn ghost small"
-                    disabled={Boolean(recoveryBusyId)}
+                    disabled={Boolean(recoveryBusyId) || recorder.activeSessionId === s.id}
                     onClick={() => void handleRecoverKeep(s.id)}
                   >
                     Keep for later
@@ -6344,7 +6382,7 @@ useEffect(() => {
                   <button
                     type="button"
                     className="btn ghost small"
-                    disabled={Boolean(recoveryBusyId)}
+                    disabled={Boolean(recoveryBusyId) || recorder.activeSessionId === s.id}
                     onClick={() => void handleRecoverDelete(s.id)}
                   >
                     {recoveryDeleteConfirmId === s.id ? 'Confirm delete' : 'Delete'}
