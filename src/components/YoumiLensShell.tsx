@@ -188,17 +188,6 @@ export function YoumiLensShell({
         )}
       </aside>
 
-      <div
-        className="yl-col-resizer yl-col-resizer--left"
-        role="separator"
-        aria-label="Resize sidebar and main panel"
-        onPointerDown={(e) => {
-          if (e.button !== 0) return
-          e.preventDefault()
-          startResize('left', e.clientX)
-        }}
-      />
-
       <section
         className={`record-workspace${showRightPanel ? ' record-workspace--with-summary' : ''}`}
         aria-label="Record workspace"

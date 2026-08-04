@@ -1,0 +1,80 @@
+/* ============================================================================
+   Desktop V2 — design tokens.
+
+   Ported verbatim from the approved mockup (youmi-lens-desktop-v2-mockup/
+   tokens.css). Values are NOT re-designed here; this file only changes the unit.
+
+   WHY PIXELS INSTEAD OF REM
+   The mockup is authored in rem against a 16px root. This app sets
+   `:root { font: 18px/145% }` above 1024px (src/index.css), so every rem in the
+   mockup would render 12.5% larger — that is exactly why QA measured a 756px
+   record panel (42rem x 18) instead of 672px, and a 58px start button instead of
+   51px. Converting the V2 scale to px at the mockup's own 16px basis makes this
+   surface immune to the global root font-size without touching legacy styles.
+
+   Scoped to `.desktop-v2` so nothing here can leak into the legacy shell.
+   ============================================================================ */
+
+.desktop-v2 {
+  /* Surfaces */
+  --v2-paper: #ffffff;
+  --v2-paper-2: #f7f7f8;
+  --v2-paper-3: #f1f1f3;
+
+  /* Ink */
+  --v2-ink: #0b1f3b;
+  --v2-ink-2: #1b2b4b;
+  --v2-muted: #596273;
+  --v2-faint: #858b98;
+
+  /* Rules */
+  --v2-rule: #dfe1e5;
+  --v2-rule-2: #ececef;
+
+  /* Brand */
+  --v2-navy: #0b1f3b;
+  --v2-navy-deep: #061b34;
+  --v2-navy-ink: #ffffff;
+  --v2-accent: #1769e0;
+  --v2-focus: #1769e0;
+
+  /* States */
+  --v2-record: #d63b45;
+  --v2-record-soft: #fff1f2;
+  --v2-danger-ink: #a51d29;
+  --v2-success: #21835a;
+  --v2-success-soft: #edf8f2;
+  --v2-success-ink: #17603f;
+  --v2-warning-soft: #fff6e8;
+  --v2-warning-ink: #844309;
+
+  /* Course identity chips */
+  --v2-course-green: #3d7a56;
+  --v2-course-green-soft: #eef5f0;
+
+  --v2-shadow-soft: rgb(6 27 52 / 7%);
+
+  --v2-font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+  --v2-font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+
+  /* Type scale — mockup rem x 16 */
+  --v2-text-xs: 11px;    /* .6875rem */
+  --v2-text-sm: 13px;    /* .8125rem */
+  --v2-text-base: 15px;  /* .9375rem */
+  --v2-text-lg: 22px;    /* 1.375rem  */
+
+  /* Radii — mockup rem x 16 */
+  --v2-radius-xs: 6px;
+  --v2-radius-sm: 8px;
+  --v2-radius-md: 12px;
+  --v2-radius-lg: 16px;
+  --v2-radius-pill: 999px;
+
+  /* Layout — the numbers Phase 1A is measured against */
+  --v2-sidebar-width: 232px; /* 14.5rem */
+  --v2-rail-width: 72px;     /* 4.5rem  */
+  --v2-toolbar-height: 56px; /* 3.5rem  */
+  --v2-panel-width: 672px;   /* 42rem   */
+
+  --v2-dur-micro: 120ms;
+}

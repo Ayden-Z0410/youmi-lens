@@ -12,6 +12,7 @@ import { OverlayApp } from './OverlayApp.tsx'
 // so none of its code or CSS ships in the main bundle for normal users.
 import { BASE_PATH as YOUMI_WATCH_BASE } from './youmi-watch/routes'
 import { YoumiWatchApp } from './youmi-watch/lazy'
+import { LanguagePreferencesProvider } from './LanguagePreferencesProvider.tsx'
 
 const isOverlay =
   typeof window !== 'undefined' && window.location.hash === '#__overlay'
@@ -57,12 +58,14 @@ createRoot(document.getElementById('root')!).render(
       <TauriAuthBridge />
     ) : (
       <AuthProvider>
-        {import.meta.env.DEV ? (
-          <div className="debug-build-banner" aria-hidden="true">
-            DEBUG BUILD V3
-          </div>
-        ) : null}
-        <App />
+        <LanguagePreferencesProvider>
+          {import.meta.env.DEV ? (
+            <div className="debug-build-banner" aria-hidden="true">
+              DEBUG BUILD V3
+            </div>
+          ) : null}
+          <App />
+        </LanguagePreferencesProvider>
       </AuthProvider>
     )}
   </StrictMode>,

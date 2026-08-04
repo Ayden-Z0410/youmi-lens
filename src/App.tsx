@@ -168,10 +168,31 @@ import {
   type TrashDeletionScope,
 } from './lib/lectureLibraryScope'
 import { YoumiLensShell } from './components/YoumiLensShell'
+
+/** Settings sections that Phase 1A has not migrated yet map to their own label. */
+const SETTINGS_PLACEHOLDER_TITLE = {
+  appearance: 'settings.appearance',
+  capture: 'settings.capture',
+  language: 'settings.language',
+  liveCaptions: 'settings.liveCaptions',
+  dataBackup: 'settings.dataBackup',
+  autoUpdate: 'settings.autoUpdate',
+  account: 'settings.account',
+  planUsage: 'settings.planUsage',
+  advancedAi: 'settings.advancedAi',
+  support: 'settings.support',
+} as const
+import { DesktopV2Shell } from './components/DesktopV2Shell'
+import { RecordHome } from './components/RecordHome'
+import { SettingsLanguagePage } from './components/SettingsLanguagePage'
+import { SettingsLayout, SettingsPlaceholder, SettingsRow } from './components/SettingsLayout'
+import { DEFAULT_SETTINGS_SECTION, type SettingsSection } from './lib/settingsSections'
+import { useLanguagePreferences } from './languagePreferencesContext'
 import { YoumiLensMonogramY } from './branding/YoumiLensMonogramY'
 import { designTokens } from './design-system/tokens'
 import './design-system/tokens.css'
 import './App.css'
+import './styles/desktop-v2.css'
 
 // ── Overlay bridge ─────────────────────────────────────────────────────────────
 // Emits caption and status events to the floating Lecture Overlay window via the
@@ -1389,6 +1410,9 @@ function RecordingWorkspace({
   const [hostedHealthUnreachable, setHostedHealthUnreachable] = useState(false)
   const [sidebarPlanUsage, setSidebarPlanUsage] = useState<SidebarPlanUsage>(FALLBACK_PLAN_USAGE)
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('record')
+  /** Which Settings detail is open. Starts on the Settings page itself. */
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>(DEFAULT_SETTINGS_SECTION)
+  const { preferences: languagePreferences, setPreference: setLanguagePreference, t: tDesktop } = useLanguagePreferences()
   const hostedConfigured = isHostedAiConfigured(hostedHealth)
   const stubMode = isStubAiEnabled(hostedHealth)
   /** Cloud Youmi: health not fetched yet — treat pipeline as available until /health proves otherwise (avoids dead UI on login). */
@@ -4547,8 +4571,109 @@ useEffect(() => {
     setLibraryFolderNotice('Select a folder or lecture first.')
   }
 
+  const legacySettingsEnabled: boolean = false
+
+  /**
+   * Desktop V2 owns two views in Phase 1A: the idle Record home and Settings.
+   * Anything else — including an ACTIVE recording — stays on the legacy shell.
+   * This is a single source of truth so the shell choice and the page choice can
+   * never disagree.
+   */
+  const desktopV2View: 'record' | 'settings' | null =
+    workspaceView === 'settings'
+      ? 'settings'
+      : workspaceView === 'record' && recorder.status === 'idle'
+        ? 'record'
+        : null
+
+  const settingsDetail =
+    settingsSection === 'language' ? (
+      <SettingsLanguagePage
+        preferences={languagePreferences}
+        onPreferenceChange={setLanguagePreference}
+      />
+    ) : settingsSection === 'appearance' ? (
+      <>
+        <h2>{tDesktop('settings.appearance')}</h2>
+        <p className="settings-v2__lead">{tDesktop('settings.languageLead')}</p>
+        <div className="settings-v2__group">
+          <SettingsRow name="Theme" help="Desktop V2 uses the light appearance." />
+          <SettingsRow name="Text size" help="Applies to captions and reading views." />
+        </div>
+      </>
+    ) : settingsSection === 'account' ? (
+      <>
+        <SettingsPlaceholder
+          title={tDesktop('settings.account')}
+          note="Profile, sign-in methods and sign out."
+        />
+        <div className="settings-v2__group">
+          <SettingsRow
+            name={tDesktop('settings.account')}
+            help={userEmail ?? undefined}
+            control={
+              showAccountPanel ? (
+                <button type="button" className="v2-btn" onClick={() => setAccountSettingsOpen(true)}>
+                  Open
+                </button>
+              ) : undefined
+            }
+          />
+        </div>
+      </>
+    ) : (
+      <SettingsPlaceholder
+        title={tDesktop(SETTINGS_PLACEHOLDER_TITLE[settingsSection])}
+        note="Not migrated to Desktop V2 yet — these controls still live in the previous interface."
+      />
+    )
+
+  const desktopV2Page =
+    desktopV2View === 'record' ? (
+      <RecordHome
+        course={course}
+        title={title}
+        preferences={languagePreferences}
+        disabled={saveOrFinishBusy}
+        recentLectures={recordingsInLibrary
+          .slice()
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .slice(0, 3)
+          .map((recording) => ({
+            id: recording.id,
+            title: recording.title?.trim() || 'Untitled lecture',
+            course: recording.course?.trim() || 'Unfiled',
+            duration: formatClock(recording.durationSec),
+            status:
+              recording.aiStatus === 'failed'
+                ? ('Failed' as const)
+                : recording.aiStatus && !['done', 'transcript_ready'].includes(recording.aiStatus)
+                  ? ('Processing' as const)
+                  : ('Ready' as const),
+          }))}
+        onTitleChange={setTitle}
+        onStartRecording={startRecording}
+        onOpenSettings={() => {
+          setSettingsSection('language')
+          setWorkspaceView('settings')
+        }}
+        onChangeCourse={() => setWorkspaceView('courses')}
+        onNewCourse={() => setWorkspaceView('courses')}
+        onViewAll={() => setWorkspaceView('courses')}
+        onOpenLecture={(id) => {
+          setSelectedId(id)
+          setWorkspaceView('courses')
+        }}
+      />
+    ) : desktopV2View === 'settings' ? (
+      <SettingsLayout section={settingsSection} onSectionChange={setSettingsSection}>
+        {settingsDetail}
+      </SettingsLayout>
+    ) : null
+
   const workspacePage =
     workspaceView === 'courses' ? (
+
       <section className="workspace-page courses-workspace-page" aria-labelledby="courses-title">
         <div className="workspace-page-head">
           <p className="yl-recording-strip__eyebrow">Workspace</p>
@@ -4911,7 +5036,7 @@ useEffect(() => {
           </DndContext>
         </div>
       </section>
-    ) : workspaceView === 'settings' ? (
+    ) : legacySettingsEnabled ? (
       <section className="workspace-page workspace-placeholder-page" aria-labelledby="settings-title">
         <div className="workspace-page-head">
           <p className="yl-recording-strip__eyebrow">Workspace</p>
@@ -5426,6 +5551,22 @@ useEffect(() => {
           </div>
         </div>
       ) : null}
+      {/* EITHER the V2 shell OR the legacy shell — never both, and the hidden
+          one is not rendered at all rather than suppressed with CSS. */}
+      {desktopV2Page ? (
+        <DesktopV2Shell
+          activeView={workspaceView === 'settings' ? 'settings' : 'record'}
+          onNavigate={(view) => setWorkspaceView(view)}
+          toolbarTitle={
+            desktopV2View === 'settings' ? tDesktop('settings.title') : tDesktop('nav.record')
+          }
+          accountName={profileRow?.username?.trim() || userLabel}
+          accountPlan={localOnly ? 'Local only' : getDisplayAccessLabel(sidebarPlanUsage)}
+          onAccountClick={showAccountPanel ? () => setAccountSettingsOpen(true) : undefined}
+        >
+          {desktopV2Page}
+        </DesktopV2Shell>
+      ) : (
       <YoumiLensShell
       workspacePage={workspacePage}
       showWorkspaceSummary={workspaceView === 'courses'}
@@ -6785,6 +6926,7 @@ useEffect(() => {
         </div>
       }
     />
+      )}
     </>
   )
 

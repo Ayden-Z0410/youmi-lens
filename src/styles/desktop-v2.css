@@ -1,0 +1,561 @@
+/* ============================================================================
+   Desktop V2 — Phase 1A stylesheet.
+
+   Ported from the approved mockup (youmi-lens-desktop-v2-mockup/app.css). Every
+   size is the mockup's own value converted from rem to px at its 16px basis —
+   see desktop-v2-tokens.css for why.
+
+   RULES THIS FILE OBEYS
+     · Everything is scoped under `.desktop-v2`. No `.yl-*` selector appears.
+     · Nothing is hidden with `display:none !important` — the legacy shell simply
+       does not render on V2 views, so there is no old DOM to suppress.
+     · No dependency on the global 18px root font-size.
+   ============================================================================ */
+
+@import './desktop-v2-tokens.css';
+
+/* ── Shell ───────────────────────────────────────────────────────────────── */
+
+.desktop-v2 {
+  display: flex;
+  width: 100%;
+  min-height: 100dvh;
+  background: var(--v2-paper);
+  color: var(--v2-ink);
+  font-family: var(--v2-font-body);
+  font-size: var(--v2-text-base);
+  line-height: 1.45;
+  letter-spacing: normal;
+  -webkit-font-smoothing: antialiased;
+}
+.desktop-v2 *,
+.desktop-v2 *::before,
+.desktop-v2 *::after { box-sizing: border-box; }
+.desktop-v2 a { color: inherit; text-decoration: none; }
+.desktop-v2 button,
+.desktop-v2 input,
+.desktop-v2 select { color: inherit; font-family: inherit; letter-spacing: normal; }
+.desktop-v2 h1,
+.desktop-v2 h2,
+.desktop-v2 p { margin-top: 0; min-width: 0; }
+.desktop-v2 :focus { outline: none; }
+.desktop-v2 :focus-visible { outline: 2px solid var(--v2-focus); outline-offset: 2px; }
+.desktop-v2 .v2-sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+
+.desktop-v2-sidebar {
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  display: flex;
+  flex: 0 0 var(--v2-sidebar-width);
+  flex-direction: column;
+  width: var(--v2-sidebar-width);
+  height: 100dvh;
+  padding: 24px 12px 16px;
+  border-inline-end: 1px solid var(--v2-rule);
+  background: var(--v2-paper-2);
+}
+
+/* Official wordmark. Height is driven by the box and width stays auto so the
+   asset's own ratio is never altered. */
+.desktop-v2-brand {
+  display: flex;
+  align-items: center;
+  height: 95px;               /* 5.95rem */
+  padding: 3px 17px 25px;     /* .2rem 1.05rem 1.55rem */
+}
+.desktop-v2-brand img {
+  width: 154px;               /* 9.6rem */
+  height: auto;
+  object-fit: contain;
+  object-position: left center;
+}
+
+.desktop-v2-nav { display: grid; gap: 4px; }
+.desktop-v2-nav button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 44px;           /* 2.75rem */
+  gap: 12px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: var(--v2-radius-sm);
+  background: transparent;
+  color: var(--v2-muted);
+  font-size: var(--v2-text-base);
+  font-weight: 550;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--v2-dur-micro), color var(--v2-dur-micro);
+}
+.desktop-v2-nav button:hover { background: var(--v2-paper-3); color: var(--v2-ink-2); }
+.desktop-v2-nav button:active { transform: translateY(1px); }
+/* Selected state is a quiet tint plus a navy edge marker — never a large pale
+   blue block. */
+.desktop-v2-nav button[aria-current='page'] {
+  background: var(--v2-paper-3);
+  color: var(--v2-navy);
+  font-weight: 680;
+}
+.desktop-v2-nav button[aria-current='page']::before {
+  position: absolute;
+  inset-block: 9px;
+  inset-inline-start: -12px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--v2-navy);
+  content: '';
+}
+.desktop-v2-nav svg { width: 18px; height: 18px; flex: 0 0 auto; }
+
+.desktop-v2-sidebar__spacer { flex: 1; }
+
+.desktop-v2-sidebar__foot { padding-top: 12px; border-top: 1px solid var(--v2-rule); }
+.desktop-v2-account {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  min-height: 48px;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--v2-radius-sm);
+  background: transparent;
+  color: var(--v2-muted);
+  text-align: left;
+  cursor: pointer;
+}
+.desktop-v2-account:disabled { cursor: default; }
+.desktop-v2-account:not(:disabled):hover { background: var(--v2-paper-3); }
+.desktop-v2-avatar {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--v2-navy);
+  color: var(--v2-navy-ink);
+  font-size: var(--v2-text-xs);
+  font-weight: 750;
+}
+.desktop-v2-account__copy { min-width: 0; }
+.desktop-v2-account__name {
+  display: block;
+  overflow: hidden;
+  color: var(--v2-ink-2);
+  font-size: var(--v2-text-sm);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desktop-v2-account__plan {
+  display: block;
+  overflow: hidden;
+  color: var(--v2-faint);
+  font-size: var(--v2-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Main / toolbar / page ───────────────────────────────────────────────── */
+
+.desktop-v2-main {
+  min-width: 0;
+  flex: 1;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--v2-paper);
+}
+
+.desktop-v2-toolbar {
+  display: flex;
+  min-height: var(--v2-toolbar-height);
+  flex: 0 0 var(--v2-toolbar-height);
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--v2-rule-2);
+  background: var(--v2-paper);
+}
+.desktop-v2-toolbar__title {
+  color: var(--v2-ink-2);
+  font-size: var(--v2-text-sm);
+  font-weight: 680;
+}
+.desktop-v2-toolbar__spacer { flex: 1; }
+
+.desktop-v2-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 40px clamp(24px, 4vw, 72px) 72px;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+
+.desktop-v2 .v2-btn,
+.desktop-v2 .v2-select {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border: 1px solid var(--v2-rule);
+  border-radius: var(--v2-radius-sm);
+  background: var(--v2-paper);
+  color: var(--v2-ink-2);
+  font-size: var(--v2-text-sm);
+  font-weight: 620;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--v2-dur-micro), background var(--v2-dur-micro),
+    transform var(--v2-dur-micro);
+}
+.desktop-v2 .v2-btn:hover,
+.desktop-v2 .v2-select:hover { border-color: var(--v2-faint); background: var(--v2-paper-2); }
+.desktop-v2 .v2-btn:active,
+.desktop-v2 .v2-select:active { transform: translateY(1px); }
+.desktop-v2 .v2-btn:disabled,
+.desktop-v2 .v2-select:disabled { opacity: .45; cursor: default; transform: none; }
+
+.desktop-v2 .v2-btn--record {
+  min-width: 200px;
+  min-height: 48px;
+  border-color: var(--v2-navy);
+  border-radius: var(--v2-radius-pill);
+  background: var(--v2-navy);
+  color: var(--v2-navy-ink);
+}
+.desktop-v2 .v2-btn--record:hover:not(:disabled) {
+  border-color: var(--v2-navy-deep);
+  background: var(--v2-navy-deep);
+}
+
+.desktop-v2 .v2-quiet-link {
+  border: 0;
+  background: transparent;
+  color: var(--v2-muted);
+  font-size: var(--v2-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.desktop-v2 .v2-quiet-link:hover { color: var(--v2-navy); }
+
+.desktop-v2 .v2-badge {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: var(--v2-radius-pill);
+  font-size: var(--v2-text-xs);
+  font-weight: 680;
+  white-space: nowrap;
+}
+.desktop-v2 .v2-badge[data-status='ready'] { background: var(--v2-success-soft); color: var(--v2-success-ink); }
+.desktop-v2 .v2-badge[data-status='processing'] { background: var(--v2-warning-soft); color: var(--v2-warning-ink); }
+.desktop-v2 .v2-badge[data-status='failed'] { background: var(--v2-record-soft); color: var(--v2-danger-ink); }
+
+/* ── Record Home ─────────────────────────────────────────────────────────── */
+
+.record-home-v2 { width: min(100%, var(--v2-panel-width)); margin: 0 auto; }
+.record-home-v2__heading {
+  margin-bottom: 6px;
+  color: var(--v2-ink);
+  font-family: var(--v2-font-display);
+  font-size: clamp(28.8px, 3vw, 37.6px); /* 1.8rem – 2.35rem */
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -.035em;
+}
+.record-home-v2__intro {
+  max-width: 608px;
+  margin-bottom: 28px;
+  color: var(--v2-muted);
+}
+
+.record-home-v2__setup {
+  margin-top: 22px;
+  padding: 18px;
+  border: 1px solid var(--v2-rule);
+  border-radius: var(--v2-radius-lg);
+  background: var(--v2-paper);
+  box-shadow: 0 12px 34px var(--v2-shadow-soft);
+}
+
+/* Course is an identity row, not a text field: it carries the course's colour
+   chip, its name, and the two actions that belong to it. */
+.record-home-v2__course {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-height: 68px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--v2-rule-2);
+}
+.record-home-v2__course-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 11px;
+  background: var(--v2-course-green-soft);
+  color: var(--v2-course-green);
+  font-size: var(--v2-text-sm);
+  font-weight: 720;
+}
+.record-home-v2__course-copy { min-width: 0; flex: 1; }
+.record-home-v2__course-label {
+  display: block;
+  color: var(--v2-faint);
+  font-size: var(--v2-text-xs);
+  font-weight: 600;
+}
+.record-home-v2__course-value {
+  display: block;
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--v2-ink-2);
+  font-size: var(--v2-text-base);
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.record-home-v2__course-add {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px dashed var(--v2-rule);
+  border-radius: 11px;
+  background: transparent;
+  color: var(--v2-muted);
+  font-size: var(--v2-text-lg);
+  cursor: pointer;
+}
+.record-home-v2__course-add:hover { border-color: var(--v2-faint); background: var(--v2-paper-2); }
+
+.record-home-v2__title-field { display: grid; gap: 6px; padding: 16px 10px 6px; }
+.record-home-v2__title-field label {
+  color: var(--v2-faint);
+  font-size: var(--v2-text-xs);
+  font-weight: 600;
+}
+.record-home-v2__title-field label span { font-weight: 450; }
+.record-home-v2__title-field input {
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 13px;
+  border: 1px solid var(--v2-rule);
+  border-radius: var(--v2-radius-sm);
+  outline: 2px solid transparent;
+  outline-offset: 1px;
+  background: var(--v2-paper);
+  color: var(--v2-ink);
+  font-size: var(--v2-text-base);
+}
+.record-home-v2__title-field input:hover { background: var(--v2-paper-2); }
+.record-home-v2__title-field input:focus-visible { border-color: var(--v2-navy); outline-color: var(--v2-focus); }
+
+.record-home-v2__action { display: flex; margin-top: 16px; }
+.record-home-v2__action .v2-btn--record { width: 100%; min-height: 51px; }
+
+/* Read-only language summary. A status dot, the pair, the mode, and one link to
+   the place the setting actually lives. */
+.record-home-v2__summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px 2px;
+  color: var(--v2-muted);
+  font-size: var(--v2-text-sm);
+}
+.record-home-v2__summary::before {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--v2-success);
+  content: '';
+}
+.record-home-v2__summary strong { color: var(--v2-ink-2); font-weight: 600; }
+.record-home-v2__summary span { color: var(--v2-faint); }
+.record-home-v2__summary button {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--v2-navy);
+  font-size: var(--v2-text-sm);
+  font-weight: 620;
+  cursor: pointer;
+}
+.record-home-v2__summary button:hover { text-decoration: underline; }
+
+.record-home-v2__recent {
+  width: min(100%, var(--v2-panel-width));
+  margin: 48px auto 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--v2-rule);
+}
+.record-home-v2__recent-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 6px;
+}
+.record-home-v2__recent-head h2 {
+  margin: 0;
+  color: var(--v2-ink-2);
+  font-size: var(--v2-text-sm);
+  font-weight: 680;
+}
+.record-home-v2__recent-head button { margin-left: auto; }
+.record-home-v2__recent-row {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-height: 54px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--v2-rule-2);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.record-home-v2__recent-row:hover .record-home-v2__recent-title { color: var(--v2-navy); }
+.record-home-v2__recent-title {
+  display: block;
+  overflow: hidden;
+  color: var(--v2-ink-2);
+  font-size: var(--v2-text-sm);
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.record-home-v2__recent-meta {
+  display: block;
+  margin-top: 2px;
+  color: var(--v2-faint);
+  font-size: var(--v2-text-xs);
+}
+
+/* ── Settings ────────────────────────────────────────────────────────────── */
+
+.settings-v2 {
+  display: grid;
+  width: min(100%, 928px);                     /* 58rem */
+  grid-template-columns: 192px minmax(0, 1fr); /* 12rem */
+  gap: 40px;
+  margin: 0 auto;
+}
+.settings-v2__list h1 { margin-bottom: 16px; font-size: var(--v2-text-lg); }
+.settings-v2__list nav { display: grid; gap: 2px; }
+.settings-v2__list button {
+  min-height: 35px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--v2-radius-xs);
+  background: transparent;
+  color: var(--v2-muted);
+  font-size: var(--v2-text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.settings-v2__list button:hover { background: var(--v2-paper-3); }
+.settings-v2__list button[aria-current='page'] {
+  background: var(--v2-paper-3);
+  color: var(--v2-navy);
+  font-weight: 650;
+}
+.settings-v2__detail h2 { margin-bottom: 4px; font-size: var(--v2-text-lg); }
+.settings-v2__lead { color: var(--v2-muted); font-size: var(--v2-text-sm); }
+
+.settings-v2__group {
+  margin-top: 20px;
+  overflow: hidden;
+  border: 1px solid var(--v2-rule);
+  border-radius: var(--v2-radius-md);
+  background: var(--v2-paper);
+}
+.settings-v2__row {
+  display: flex;
+  min-height: 67px;             /* 4.2rem */
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--v2-rule-2);
+}
+.settings-v2__row:last-child { border-bottom: 0; }
+.settings-v2__row-copy { min-width: 0; }
+.settings-v2__name { color: var(--v2-ink-2); font-size: var(--v2-text-sm); font-weight: 600; }
+.settings-v2__help { margin-top: 2px; color: var(--v2-faint); font-size: var(--v2-text-xs); }
+.settings-v2__control { flex: 0 0 auto; }
+.settings-v2__note { margin-top: 12px; color: var(--v2-faint); font-size: var(--v2-text-xs); }
+
+/* ── Narrow window: 72px icon rail ───────────────────────────────────────── */
+
+@media (max-width: 860px) {
+  .desktop-v2-sidebar {
+    flex-basis: var(--v2-rail-width);
+    width: var(--v2-rail-width);
+    padding-inline: 9px;
+  }
+  /* The official app icon replaces the wordmark on the rail — the wordmark is
+     hidden rather than squashed into a square, so neither asset is distorted and
+     no substitute glyph is drawn. Mirrors the mockup's `.brand-link::before`. */
+  .desktop-v2-brand {
+    height: 64px;
+    justify-content: center;
+    padding: 0 0 16px;
+    overflow: hidden;
+  }
+  .desktop-v2-brand img { display: none; }
+  .desktop-v2-brand::before {
+    width: 41px;
+    height: 41px;
+    background: url('/brand/youmi-lens-app-icon.png') center / contain no-repeat;
+    content: '';
+  }
+  .desktop-v2-nav button { justify-content: center; padding-inline: 0; }
+  .desktop-v2-nav button[aria-current='page']::before { inset-inline-start: -9px; }
+  .desktop-v2-nav button > span,
+  .desktop-v2-account__copy { display: none; }
+  .desktop-v2-account { justify-content: center; padding-inline: 0; }
+  .desktop-v2-page { padding-inline: 24px; }
+  .settings-v2 { grid-template-columns: 168px minmax(0, 1fr); gap: 24px; }
+}
+
+/* Short windows (800x600): tighten the vertical rhythm so the panel starts
+   ~80px below the toolbar instead of ~96px. */
+@media (max-width: 860px) and (max-height: 650px) {
+  .desktop-v2-page { padding-top: 24px; }
+  .record-home-v2__heading { font-size: 29.6px; }
+  .record-home-v2__intro { margin-bottom: 14px; }
+  .record-home-v2__recent { margin-top: 32px; }
+}
+
+@media (max-width: 640px) {
+  .settings-v2 { grid-template-columns: 1fr; }
+  .settings-v2__list nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desktop-v2 *,
+  .desktop-v2 *::before,
+  .desktop-v2 *::after { transition-duration: .01ms !important; }
+}
