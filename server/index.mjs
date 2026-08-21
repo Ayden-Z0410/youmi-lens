@@ -20,6 +20,7 @@ import {
 import { attachLiveRealtimeWs } from './liveRealtimeWs.mjs'
 import * as dashEnv from './dashscopeEnv.mjs'
 import { audioUploadMiddleware, handleUploadAudio } from './uploadAudio.mjs'
+import { handleGetLectureAudio } from './lectureAudioRoutes.mjs'
 import { handleBetaUsageStatus, handleQuotaStatus } from './betaUsageStatus.mjs'
 import { handleAuthCheckEmail } from './authCheckEmail.mjs'
 import { handleSendSignupCode, handleVerifySignupCodeAndCreateUser } from './authSignupCode.mjs'
@@ -416,6 +417,16 @@ app.post('/api/byok/translate-caption', (req, res) => {
 /** Proxy audio upload from Tauri WKWebView → Railway → Supabase Storage (avoids WKWebView binary fetch instability). */
 app.post('/api/upload-audio', audioUploadMiddleware, (req, res) => {
   void handleUploadAudio(req, res)
+})
+
+// Cloud Library — authenticated audio retrieval for any client holding a
+// Lecture ID (Mac/Windows/second iPad). Ownership-scoped, returns a short-lived
+// signed URL. See server/lectureAudioRoutes.mjs.
+app.get('/api/lectures/:id/audio', (req, res) => {
+  void handleGetLectureAudio(req, res).catch((err) => {
+    console.error('[lecture-audio]', err)
+    if (!res.headersSent) res.status(500).json({ error: 'server_error' })
+  })
 })
 
 app.post('/api/process-recording', express.json({ limit: '256kb' }), (req, res) => {
