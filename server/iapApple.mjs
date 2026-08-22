@@ -210,11 +210,14 @@ export function normalizeDecodedTransaction(decoded, { expectedBundleId, expecte
   }
 
   const autoRenewable = expectedProductType === Type.AUTO_RENEWABLE_SUBSCRIPTION
+  if (autoRenewable && (typeof decoded.expiresDate !== 'number' || !Number.isFinite(decoded.expiresDate))) {
+    throw new Error('Verified subscription transaction is missing expiresDate')
+  }
   if (autoRenewable && String(decoded.subscriptionGroupIdentifier ?? '') !== STUDENT_SUBSCRIPTION_GROUP_ID) {
-    throw new Error('Verified subscription group does not match the supported group')
+    throw new Error('Verified subscription transaction is from the wrong subscription group')
   }
   if (autoRenewable && !SUPPORTED_OWNERSHIP_TYPES.has(decoded.inAppOwnershipType)) {
-    throw new Error('Verified subscription ownership type is not supported')
+    throw new Error('Verified subscription transaction has an invalid ownership type')
   }
 
   return {
@@ -234,7 +237,10 @@ export function normalizeDecodedTransaction(decoded, { expectedBundleId, expecte
     appAccountToken: decoded.appAccountToken ?? null,
     subscriptionGroupId: decoded.subscriptionGroupIdentifier ?? null,
     ownershipType: decoded.inAppOwnershipType ?? null,
-    rawTransaction: decoded,
+    autoRenewable,
+    // Legacy rows retain their existing decoded payload behavior. New
+    // subscriptions persist only normalized fields, never the full JWS payload.
+    rawTransaction: autoRenewable ? null : decoded,
   }
 }
 

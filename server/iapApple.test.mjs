@@ -68,6 +68,43 @@ describe('normalizeDecodedTransaction', () => {
   it('rejects auto-renewable subscription transactions', () => {
     expect(() => normalize({ type: Type.AUTO_RENEWABLE_SUBSCRIPTION })).toThrow(/type/)
   })
+
+  it('normalizes a monthly auto-renewable subscription with the ownership fields', () => {
+    const result = normalize({
+      productId: 'com.aydenz.youmilensipad.student.monthly',
+      type: Type.AUTO_RENEWABLE_SUBSCRIPTION,
+      subscriptionGroupIdentifier: '22109238',
+      inAppOwnershipType: 'PURCHASED',
+      appAccountToken: '00000000-0000-4000-8000-000000000000',
+      expiresDate: Date.parse('2099-01-01T00:00:00Z'),
+    })
+    expect(result.autoRenewable).toBe(true)
+    expect(result.subscriptionGroupId).toBe('22109238')
+    expect(result.ownershipType).toBe('PURCHASED')
+    expect(result.appAccountToken).toBe('00000000-0000-4000-8000-000000000000')
+    // Subscription JWS payload must never be persisted.
+    expect(result.rawTransaction).toBeNull()
+  })
+
+  it('rejects an auto-renewable subscription missing expiresDate', () => {
+    expect(() => normalize({
+      productId: 'com.aydenz.youmilensipad.student.monthly',
+      type: Type.AUTO_RENEWABLE_SUBSCRIPTION,
+      subscriptionGroupIdentifier: '22109238',
+      inAppOwnershipType: 'PURCHASED',
+      expiresDate: undefined,
+    })).toThrow(/expiresDate/)
+  })
+
+  it('rejects an auto-renewable subscription from the wrong group', () => {
+    expect(() => normalize({
+      productId: 'com.aydenz.youmilensipad.student.monthly',
+      type: Type.AUTO_RENEWABLE_SUBSCRIPTION,
+      subscriptionGroupIdentifier: '99999999',
+      inAppOwnershipType: 'PURCHASED',
+      expiresDate: Date.parse('2099-01-01T00:00:00Z'),
+    })).toThrow(/group/)
+  })
 })
 
 describe('environmentTryOrder', () => {
