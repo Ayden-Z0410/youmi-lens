@@ -223,7 +223,7 @@ async function revokeByTransaction(db, transactionId, revokedAtIso) {
 
 // ── Verify (core) ────────────────────────────────────────────────────────────
 
-function safeIapError(err) {
+export function safeIapError(err) {
   if (isAppleIapLedgerUnavailableError(err)) {
     return { status: 503, error: 'iap_temporarily_unavailable', message: 'In-app purchase service is temporarily unavailable.' }
   }
@@ -243,7 +243,14 @@ function safeIapError(err) {
     return { status: 409, error: 'iap_already_linked', message: 'This App Store subscription is already linked to another account.' }
   }
   if (err instanceof SubscriptionAccountTokenError) {
-    return { status: 409, error: 'iap_account_token_mismatch', message: 'This App Store subscription does not match this account.' }
+    // Client-facing code is normalized to the SAME `iap_already_linked` the
+    // client already handles (distinct SubscriptionResultCode, distinct
+    // non-Restore-suggesting copy) — this and SubscriptionAlreadyLinkedError
+    // are the same product-level condition: this Apple subscription lineage
+    // belongs to another Youmi Lens account. Internal diagnostics still tell
+    // the two apart via `errorClass` in logIapFailure (see below); no
+    // previous account/transaction identifier is ever included here.
+    return { status: 409, error: 'iap_already_linked', message: 'This App Store subscription is already linked to another account.' }
   }
   const message = err instanceof Error ? err.message : 'IAP verification failed'
   if (message.includes('not configured') || message.includes('root certificates') || message.includes('APPLE_')) {
@@ -465,7 +472,21 @@ export async function handleIapRestore(req, res) {
         res.status(safe.status).json({ ok: false, error: safe.error, message: safe.message })
         return
       }
-      if (err instanceof AlreadyLinkedError || err instanceof DeletedAccountBindingError) alreadyLinked = true
+      if (
+        err instanceof AlreadyLinkedError ||
+        err instanceof DeletedAccountBindingError ||
+        err instanceof SubscriptionAlreadyLinkedError ||
+        err instanceof SubscriptionAccountTokenError
+      ) {
+        // Ownership conflict — surface it (never silently swallow) so the
+        // client shows "linked to another account" instead of the wrong
+        // "No active purchase was found". No binding is written here; this
+        // purchase's verifyAndPersist call already threw BEFORE any claim/
+        // write, so restore cannot rebind or grant the wrong account.
+        alreadyLinked = true
+        logIapFailure('restore', user, purchase, err)
+        continue
+      }
       // Ignore individually unverifiable/expired purchases during restore.
     }
   }
@@ -695,6 +716,10 @@ function logIapFailure(scope, user, body, err) {
       userIdPrefix: user.userId.slice(0, 8),
       productId: body?.productId ?? null,
       transactionId: body?.transactionId ?? null,
+      // Internal-only: distinguishes an appAccountToken mismatch from an
+      // existing-binding conflict even though both normalize to the SAME
+      // client-facing `iap_already_linked` code. Never sent to the client.
+      errorClass: err?.constructor?.name ?? null,
       message: err instanceof Error ? err.message : String(err),
     }),
   )
