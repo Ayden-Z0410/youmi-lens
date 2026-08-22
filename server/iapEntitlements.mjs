@@ -271,7 +271,20 @@ export async function getActiveEntitlement(db, userId, nowIso) {
   // Commercialization V2: an active auto-renewing subscription is the primary
   // entitlement source. It is projected into the same row shape the rest of the
   // entitlement/status pipeline already consumes, so callers are unchanged.
-  const subscription = await getEffectiveSubscription(db, userId)
+  //
+  // Subscription state is an ADDITIVE source. A lookup error (schema drift,
+  // transient DB/RLS failure, etc.) must never take down the whole entitlement
+  // or quota-status response — it falls through to the legacy/free lookup, which
+  // is what keeps an ordinary account (no subscription) answering normally.
+  let subscription = null
+  try {
+    subscription = await getEffectiveSubscription(db, userId)
+  } catch (err) {
+    console.warn(
+      '[iapEntitlements] subscription lookup failed; falling back to legacy entitlement',
+      err instanceof Error ? err.message : String(err),
+    )
+  }
   if (subscription?.active) {
     const safe = safeSubscriptionEntitlement(subscription)
     return {
