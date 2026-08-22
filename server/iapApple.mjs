@@ -34,9 +34,15 @@ const VALID_ENVIRONMENTS = new Set([
 ])
 export const STUDENT_BASIC_PRODUCT_ID = 'com.aydenz.youmilensipad.studentbasic30d'
 export const LEGACY_STUDENT_PASS_PRODUCT_ID = 'com.aydenz.youmilensipad.studentpass30d'
+export const STUDENT_MONTHLY_PRODUCT_ID = 'com.aydenz.youmilensipad.student.monthly'
+export const STUDENT_ANNUAL_PRODUCT_ID = 'com.aydenz.youmilensipad.student.annual'
+export const STUDENT_SUBSCRIPTION_GROUP_ID = '22109238'
+const SUPPORTED_OWNERSHIP_TYPES = new Set(['PURCHASED', 'FAMILY_SHARED'])
 const SUPPORTED_PRODUCT_TYPES = new Map([
   [STUDENT_BASIC_PRODUCT_ID, Type.CONSUMABLE],
   [LEGACY_STUDENT_PASS_PRODUCT_ID, Type.NON_CONSUMABLE],
+  [STUDENT_MONTHLY_PRODUCT_ID, Type.AUTO_RENEWABLE_SUBSCRIPTION],
+  [STUDENT_ANNUAL_PRODUCT_ID, Type.AUTO_RENEWABLE_SUBSCRIPTION],
 ])
 
 const verifiers = new Map()
@@ -203,6 +209,14 @@ export function normalizeDecodedTransaction(decoded, { expectedBundleId, expecte
     throw new Error('Verified transaction type does not match the supported product')
   }
 
+  const autoRenewable = expectedProductType === Type.AUTO_RENEWABLE_SUBSCRIPTION
+  if (autoRenewable && String(decoded.subscriptionGroupIdentifier ?? '') !== STUDENT_SUBSCRIPTION_GROUP_ID) {
+    throw new Error('Verified subscription group does not match the supported group')
+  }
+  if (autoRenewable && !SUPPORTED_OWNERSHIP_TYPES.has(decoded.inAppOwnershipType)) {
+    throw new Error('Verified subscription ownership type is not supported')
+  }
+
   return {
     productId: decoded.productId,
     transactionId: decoded.transactionId,
@@ -211,11 +225,15 @@ export function normalizeDecodedTransaction(decoded, { expectedBundleId, expecte
     productType: decoded.type ?? null,
     purchaseDateMs: decoded.purchaseDate,
     purchaseDate: isoFromAppleMs(decoded.purchaseDate),
-    // Apple `expiresDate` is informational only. Stored as apple_expires_date;
-    // never used for the fixed 30-day entitlement.
+    // Consumables ignore Apple's expiresDate; for auto-renewable subscriptions it
+    // is the current period end / next renewal boundary and drives entitlement.
     appleExpiresDate: isoFromAppleMs(decoded.expiresDate),
+    expiresDateMs: typeof decoded.expiresDate === 'number' ? decoded.expiresDate : null,
     revokedAt: isoFromAppleMs(decoded.revocationDate),
     revoked: Boolean(decoded.revocationDate),
+    appAccountToken: decoded.appAccountToken ?? null,
+    subscriptionGroupId: decoded.subscriptionGroupIdentifier ?? null,
+    ownershipType: decoded.inAppOwnershipType ?? null,
     rawTransaction: decoded,
   }
 }
@@ -293,11 +311,32 @@ export async function verifyAppleNotification(signedPayload) {
     })
   }
 
+  let renewal = null
+  const signedRenewalInfo = decoded?.data?.signedRenewalInfo
+  if (signedRenewalInfo) {
+    const renewalInfo = await getVerifierForEnvironment(verifiedEnvironment).verifyAndDecodeRenewalInfo(signedRenewalInfo)
+    if (renewalInfo.environment && renewalInfo.environment !== verifiedEnvironment) {
+      throw new Error('Renewal info environment does not match notification')
+    }
+    renewal = {
+      originalTransactionId: renewalInfo.originalTransactionId ?? null,
+      productId: renewalInfo.productId ?? null,
+      autoRenewProductId: renewalInfo.autoRenewProductId ?? null,
+      autoRenewStatus: renewalInfo.autoRenewStatus === 1,
+      isInBillingRetryPeriod: renewalInfo.isInBillingRetryPeriod === true,
+      gracePeriodExpiresDate: isoFromAppleMs(renewalInfo.gracePeriodExpiresDate),
+      renewalDate: isoFromAppleMs(renewalInfo.renewalDate),
+      expirationIntent: renewalInfo.expirationIntent ?? null,
+      appAccountToken: renewalInfo.appAccountToken ?? null,
+    }
+  }
+
   return {
     notificationType: decoded?.notificationType ?? null,
     subtype: decoded?.subtype ?? null,
     notificationUUID: decoded?.notificationUUID ?? null,
     environment: env,
     transaction,
+    renewal,
   }
 }

@@ -16,6 +16,7 @@
  * rules and are unit-tested directly. DB helpers are thin and injectable.
  */
 import { findAppleIapTransactionBinding } from './iapLedger.mjs'
+import { getEffectiveSubscription, safeSubscriptionEntitlement } from './iapSubscriptions.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 export const STUDENT_BASIC_PRODUCT_ID = 'com.aydenz.youmilensipad.studentbasic30d'
@@ -267,6 +268,29 @@ export async function findTransactionOwner(db, transaction) {
  * user held multiple active grants.
  */
 export async function getActiveEntitlement(db, userId, nowIso) {
+  // Commercialization V2: an active auto-renewing subscription is the primary
+  // entitlement source. It is projected into the same row shape the rest of the
+  // entitlement/status pipeline already consumes, so callers are unchanged.
+  const subscription = await getEffectiveSubscription(db, userId)
+  if (subscription?.active) {
+    const safe = safeSubscriptionEntitlement(subscription)
+    return {
+      product_id: safe.productId,
+      plan_type: safe.planType,
+      starts_at: safe.startsAt,
+      expires_at: safe.expiresAt,
+      status: safe.status,
+      revoked_at: safe.revocationAt,
+      source_transaction_id: safe.latestTransactionId,
+      original_transaction_id: safe.originalTransactionId,
+      auto_renew_status: safe.autoRenewStatus,
+      subscription_group_id: safe.subscriptionGroupId,
+      source: safe.source,
+    }
+  }
+
+  // Source-agnostic fallback: an active grant projected from a Stripe or legacy
+  // Apple transaction (both carry plan_type='student_pass') resolves here.
   const { data, error } = await db
     .from('user_entitlements')
     .select('product_id, plan_type, starts_at, expires_at, status, revoked_at, source_transaction_id')

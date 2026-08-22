@@ -1,17 +1,18 @@
 /**
- * Student Basic IAP routes (server is the source of truth).
+ * Apple IAP routes (server is the source of truth).
  *
- *   POST /api/iap/apple/verify         — verify a StoreKit 2 signed transaction,
- *                                        grant a server-computed 30-day window.
- *   GET  /api/iap/entitlement          — current effective entitlement.
+ *   POST /api/iap/apple/verify         — verify StoreKit 2 signed transactions
+ *                                        (auto-renewable + legacy Student Access).
+ *   GET  /api/iap/entitlement          — normalized effective entitlement.
  *   POST /api/iap/restore              — re-verify + restore prior purchases.
  *   POST /api/iap/apple/notifications  — App Store Server Notifications V2
- *                                        (REFUND / REVOKE → revoke entitlement).
+ *                                        (renew/fail/expire/refund/revoke/grace/retry).
  *   POST /api/iap/verify               — legacy alias for /api/iap/apple/verify.
  *
- * The decoded Apple transaction is authoritative; entitlement windows are
- * computed by the backend from the verified purchaseDate. One Apple transaction
- * is bound to exactly one Youmi Lens account. Secrets/JWS/JWT are never logged.
+ * Auto-renewable subscriptions persist to app_store_subscription_* tables.
+ * Legacy consumable/non-consumable SKUs keep the apple_iap_transactions +
+ * user_entitlements path. One Apple original_transaction_id binds to exactly
+ * one Youmi Lens account. Secrets/JWS/JWT are never logged.
  */
 import { createClient } from '@supabase/supabase-js'
 import { NotificationTypeV2 } from '@apple/app-store-server-library'
@@ -41,6 +42,35 @@ import {
   markNotificationProcessed,
   markNotificationFailed,
 } from './iapEntitlements.mjs'
+import {
+  SubscriptionAlreadyLinkedError,
+  SubscriptionAccountTokenError,
+  claimSubscriptionBinding,
+  findSubscriptionBinding,
+  getEffectiveSubscription,
+  isAutoRenewableProduct,
+  safeSubscriptionEntitlement,
+  shouldBlockSubscriptionGrant,
+  upsertSubscriptionState,
+  verifyAndPersistSubscription,
+} from './iapSubscriptions.mjs'
+
+/** ASN V2 types that refresh subscription state (idempotent upsert). */
+const SUBSCRIPTION_STATUS_NOTIFICATIONS = new Set([
+  NotificationTypeV2.DID_RENEW,
+  NotificationTypeV2.DID_FAIL_TO_RENEW,
+  NotificationTypeV2.EXPIRED,
+  NotificationTypeV2.GRACE_PERIOD_EXPIRED,
+  NotificationTypeV2.OFFER_REDEEMED,
+  NotificationTypeV2.PRICE_INCREASE,
+  NotificationTypeV2.REFUND,
+  NotificationTypeV2.REVOKE,
+  NotificationTypeV2.SUBSCRIBED,
+  NotificationTypeV2.DID_CHANGE_RENEWAL_STATUS,
+  NotificationTypeV2.DID_CHANGE_RENEWAL_PREF,
+  NotificationTypeV2.RENEWAL_EXTENDED,
+  NotificationTypeV2.RENEWAL_EXTENSION,
+])
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -209,6 +239,12 @@ function safeIapError(err) {
   if (err instanceof DeletedAccountBindingError) {
     return { status: 409, error: 'iap_deleted_account_binding', message: 'This App Store purchase is linked to another account.' }
   }
+  if (err instanceof SubscriptionAlreadyLinkedError) {
+    return { status: 409, error: 'iap_already_linked', message: 'This App Store subscription is already linked to another account.' }
+  }
+  if (err instanceof SubscriptionAccountTokenError) {
+    return { status: 409, error: 'iap_account_token_mismatch', message: 'This App Store subscription does not match this account.' }
+  }
   const message = err instanceof Error ? err.message : 'IAP verification failed'
   if (message.includes('not configured') || message.includes('root certificates') || message.includes('APPLE_')) {
     return { status: 503, error: 'iap_not_configured', message: 'In-app purchase verification is not configured.' }
@@ -223,6 +259,41 @@ function safeIapError(err) {
 async function verifyAndPersist(db, user, payload) {
   const verified = await verifyAppleTransaction(payload)
   const product = await loadBillingProduct(db, verified.productId)
+  if (isAutoRenewableProduct(product)) {
+    const existingBinding = await findSubscriptionBinding(db, verified.originalTransactionId)
+    const blockReason = shouldBlockSubscriptionGrant({ product, verified, existingBinding })
+    if (blockReason) {
+      await recordBillingEvent(db, user.userId, {
+        event_type: 'kill_switch_block',
+        product_id: verified.productId,
+        transaction_id: verified.transactionId,
+        environment: verified.environment,
+        detail: { reason: 'subscription_sales_closed' },
+      })
+      return {
+        granted: false,
+        code: blockReason,
+        message: 'Subscription sales are not open yet.',
+        transactionId: verified.transactionId,
+      }
+    }
+    const subscription = await verifyAndPersistSubscription(db, user.userId, verified)
+    await recordBillingEvent(db, user.userId, {
+      event_type: existingBinding
+        ? (subscription.active ? 'subscription_renewed' : 'subscription_status_changed')
+        : (subscription.active ? 'subscription_started' : 'subscription_status_changed'),
+      product_id: verified.productId,
+      transaction_id: verified.transactionId,
+      environment: verified.environment,
+      detail: { status: subscription.status },
+    })
+    return {
+      granted: subscription.active,
+      code: subscription.status,
+      transactionId: verified.transactionId,
+      entitlement: safeSubscriptionEntitlement({ ...subscription, active: subscription.active }),
+    }
+  }
   const binding = await findTransactionBinding(db, verified)
   const existingGrant = binding?.userId === user.userId
     ? await getEntitlementBySourceTransactionId(db, verified.transactionId)
@@ -236,6 +307,7 @@ async function verifyAndPersist(db, user, payload) {
         !existingGrant.revoked_at &&
         new Date(existingGrant.expires_at).getTime() > Date.now(),
       code: 'idempotent_replay',
+      transactionId: verified.transactionId,
     }
   }
 
@@ -256,7 +328,7 @@ async function verifyAndPersist(db, user, payload) {
     await recordBillingEvent(db, user.userId, decision.event)
     if (decision.code === 'already_linked') throw new AlreadyLinkedError(decision.message)
     if (decision.code === 'account_deleted') throw new DeletedAccountBindingError(decision.message)
-    return { granted: false, code: decision.code, message: decision.message }
+    return { granted: false, code: decision.code, message: decision.message, transactionId: verified.transactionId }
   }
 
   const ledgerStatus = decision.active ? 'active' : decision.entitlementStatus
@@ -267,7 +339,7 @@ async function verifyAndPersist(db, user, payload) {
   }
   await recordBillingEvent(db, user.userId, { ...decision.event, event_type: 'verify_ok' })
   await recordBillingEvent(db, user.userId, decision.event)
-  return { granted: decision.active, code: decision.active ? 'granted' : decision.entitlementStatus }
+  return { granted: decision.active, code: decision.active ? 'granted' : decision.entitlementStatus, transactionId: verified.transactionId }
 }
 
 export async function handleIapVerify(req, res) {
@@ -286,6 +358,7 @@ export async function handleIapVerify(req, res) {
   try {
     const result = await verifyAndPersist(db, user, req.body)
     const quotaStatus = await buildQuotaStatus(user.userId, user.email)
+    const entitlement = result.entitlement ?? quotaStatus?.entitlement ?? null
     if (!result.granted) {
       res.status(result.code === 'sales_closed' ? 403 : 200).json({
         ok: result.code !== 'sales_closed' && result.code !== 'unknown_product',
@@ -293,7 +366,7 @@ export async function handleIapVerify(req, res) {
         reason: result.code,
         message: result.message ?? null,
         planType: quotaStatus?.planType ?? null,
-        entitlement: quotaStatus?.entitlement ?? null,
+        entitlement,
         quotaStatus,
       })
       return
@@ -302,7 +375,7 @@ export async function handleIapVerify(req, res) {
       ok: true,
       granted: true,
       planType: quotaStatus?.planType ?? null,
-      entitlement: quotaStatus?.entitlement ?? null,
+      entitlement,
       quotaStatus,
     })
   } catch (err) {
@@ -348,10 +421,12 @@ export async function handleIapRestore(req, res) {
   let restoredActive = 0
   let restoredCount = 0
   let alreadyLinked = false
+  const verifiedTransactionIds = []
   for (const purchase of purchases) {
     try {
       const result = await verifyAndPersist(db, user, purchase)
       restoredCount += 1
+      if (result.transactionId) verifiedTransactionIds.push(result.transactionId)
       if (result.granted) restoredActive += 1
     } catch (err) {
       if (isAppleIapLedgerUnavailableError(err)) {
@@ -374,6 +449,7 @@ export async function handleIapRestore(req, res) {
     restoredCount,
     activeRestoredCount: restoredActive,
     alreadyLinked,
+    verifiedTransactionIds,
   })
 }
 
@@ -386,10 +462,15 @@ export async function handleIapEntitlement(req, res) {
     return
   }
   await getOrCreateUserQuota(user.userId, user.email)
+  const subscription = await getEffectiveSubscription(db, user.userId)
+  if (subscription?.active) {
+    res.json({ ok: true, entitlement: safeSubscriptionEntitlement(subscription) })
+    return
+  }
   const entitlement = await getActiveEntitlement(db, user.userId, new Date().toISOString())
   if (!entitlement) {
     const latestEntitlement = await getLatestStudentPassEntitlement(db, user.userId)
-    if (!latestEntitlement) {
+    if (!latestEntitlement && !subscription) {
       res.json({
         ok: true,
         entitlement: {
@@ -402,6 +483,10 @@ export async function handleIapEntitlement(req, res) {
           latestEntitlement: null,
         },
       })
+      return
+    }
+    if (subscription) {
+      res.json({ ok: true, entitlement: safeSubscriptionEntitlement(subscription) })
       return
     }
     const latestRevocationEventType = await getLatestRevocationEventType(db, latestEntitlement)
@@ -477,9 +562,35 @@ export async function handleAppleNotifications(req, res) {
     }
 
     const tx = decoded.transaction
-    const ownerUserId = tx ? await findTransactionOwner(db, tx) : null
+    let ownerUserId = tx ? await findTransactionOwner(db, tx) : null
 
-    if (REVOKING_NOTIFICATIONS.has(decoded.notificationType) && tx) {
+    if (tx?.autoRenewable) {
+      let binding = await findSubscriptionBinding(db, tx.originalTransactionId)
+      if (!binding && tx.appAccountToken) {
+        // appAccountToken is the Supabase user UUID set by the iPad client.
+        binding = await claimSubscriptionBinding(db, tx.appAccountToken, tx)
+      }
+      ownerUserId = binding?.owner_state === 'active' ? binding.user_id : null
+      if (ownerUserId && SUBSCRIPTION_STATUS_NOTIFICATIONS.has(decoded.notificationType)) {
+        const state = await upsertSubscriptionState(db, ownerUserId, tx, {
+          renewal: decoded.renewal,
+          notificationType: decoded.notificationType,
+          subtype: decoded.subtype,
+          source: 'notification_v2',
+        })
+        await recordBillingEvent(db, ownerUserId, {
+          event_type: decoded.notificationType === NotificationTypeV2.DID_RENEW
+            ? 'subscription_renewed'
+            : 'subscription_status_changed',
+          product_id: tx.productId,
+          transaction_id: tx.transactionId,
+          environment: decoded.environment,
+          detail: { notificationType: decoded.notificationType, subtype: decoded.subtype ?? null, status: state.status },
+        })
+      }
+    }
+
+    if (REVOKING_NOTIFICATIONS.has(decoded.notificationType) && tx && !tx.autoRenewable) {
       // Preserve transaction + history; flip status to revoked.
       await revokeByTransaction(db, tx.transactionId, tx.revokedAt)
       await recordBillingEvent(db, ownerUserId, {

@@ -21,9 +21,22 @@ function entitlementQuery(result) {
     limit() { return this },
     async maybeSingle() { return { data: result, error: null } },
   }
+  // Commercialization V2: getActiveEntitlement checks the subscription state
+  // FIRST. This test's "no active subscription" path resolves that lookup to an
+  // empty list before it falls through to the legacy user_entitlements query.
+  const emptySubscriptionQuery = {
+    select() { return this },
+    eq() { return this },
+    order() { return this },
+    limit() { return this },
+    then(onFulfilled, onRejected) {
+      return Promise.resolve({ data: [], error: null }).then(onFulfilled, onRejected)
+    },
+  }
   return {
     db: {
       from(table) {
+        if (table === 'app_store_subscription_states') return emptySubscriptionQuery
         expect(table).toBe('user_entitlements')
         return query
       },
