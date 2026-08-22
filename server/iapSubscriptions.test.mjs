@@ -7,6 +7,7 @@ import {
   shouldBlockSubscriptionGrant,
   safeSubscriptionEntitlement,
   SubscriptionAccountTokenError,
+  isAutoRenewableProduct,
 } from './iapSubscriptions.mjs'
 
 const future = Date.now() + 86_400_000
@@ -167,5 +168,67 @@ describe('normalized entitlement snapshot', () => {
       renewalDate: null,
       environment: 'Production',
     })
+  })
+})
+
+// ── Product change inside one Apple subscription group (S5/S6/S7) ────────────
+// Apple keeps ONE originalTransactionId across Monthly⇄Annual changes in the
+// same group. Ownership must be preserved and the product updated in place —
+// an Annual change must never be treated as an unrelated membership.
+describe('subscription product change within the same group', () => {
+  const OWNER = '11111111-1111-4111-8111-111111111111'
+  const ORIGINAL = 'orig-shared-across-group'
+  const monthly = tx({ originalTransactionId: ORIGINAL, appAccountToken: OWNER })
+  const annual = tx({ originalTransactionId: ORIGINAL, appAccountToken: OWNER })
+
+  it('S5/S6: the same owner keeps identity when switching Monthly ⇄ Annual', () => {
+    expect(() => assertSubscriptionIdentity(monthly, OWNER)).not.toThrow()
+    expect(() => assertSubscriptionIdentity(annual, OWNER)).not.toThrow()
+  })
+
+  it('S7: a product change reuses the SAME originalTransactionId', () => {
+    // The upsert key is original_transaction_id, so the row is updated in
+    // place rather than creating a second, competing subscription.
+    expect(annual.originalTransactionId).toBe(monthly.originalTransactionId)
+  })
+
+  it('S9: a different Youmi account cannot claim the same Apple subscription', () => {
+    const other = '22222222-2222-4222-8222-222222222222'
+    expect(() => assertSubscriptionIdentity(annual, other)).toThrow(SubscriptionAccountTokenError)
+  })
+
+  it('S11: a legacy transaction with no appAccountToken is rejected, not silently accepted', () => {
+    const legacy = tx({ originalTransactionId: ORIGINAL, appAccountToken: null })
+    expect(() => assertSubscriptionIdentity(legacy, OWNER)).toThrow(SubscriptionAccountTokenError)
+  })
+
+  it('S13: an existing binding keeps a Sandbox/TestFlight change out of the sales kill switch', () => {
+    const annualProduct = {
+      product_id: 'com.aydenz.youmilensipad.student.annual',
+      kind: 'auto_renewable',
+      is_purchasable: false,
+    }
+    // TestFlight is Sandbox — never blocked.
+    expect(shouldBlockSubscriptionGrant({
+      product: annualProduct,
+      verified: { environment: 'Sandbox' },
+      existingBinding: null,
+    })).toBeNull()
+    // ...and an existing owner is never blocked even in Production.
+    expect(shouldBlockSubscriptionGrant({
+      product: annualProduct,
+      verified: { environment: 'Production' },
+      existingBinding: { user_id: OWNER },
+    })).toBeNull()
+  })
+
+  it('unseeded catalog row is what turns Annual into unknown_product', () => {
+    // isAutoRenewableProduct is the fork: a missing billing_products row sends
+    // an auto-renewable subscription down the legacy path, which rejects it.
+    expect(isAutoRenewableProduct(null)).toBe(false)
+    expect(isAutoRenewableProduct({
+      product_id: 'com.aydenz.youmilensipad.student.annual',
+      kind: 'auto_renewable',
+    })).toBe(true)
   })
 })

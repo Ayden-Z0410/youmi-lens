@@ -258,7 +258,25 @@ function safeIapError(err) {
  */
 async function verifyAndPersist(db, user, payload) {
   const verified = await verifyAppleTransaction(payload)
+  safeSubscriptionStage('apple_verify_ok', user, {
+    productId: verified.productId,
+    environment: verified.environment,
+    hasOriginalTransactionId: Boolean(verified.originalTransactionId),
+    hasAppAccountToken: Boolean(verified.appAccountToken),
+    hasExpiresDate: Boolean(verified.appleExpiresDate),
+    subscriptionGroupId: verified.subscriptionGroupId ?? null,
+    ownershipType: verified.ownershipType ?? null,
+  })
   const product = await loadBillingProduct(db, verified.productId)
+  // Distinguishes "catalog row missing/misconfigured" from every other
+  // rejection: without this an unseeded product silently falls through to the
+  // legacy path and returns `unknown_product` with no trace.
+  safeSubscriptionStage('product_lookup', user, {
+    productId: verified.productId,
+    productFound: Boolean(product),
+    productKind: product?.kind ?? null,
+    autoRenewable: isAutoRenewableProduct(product),
+  })
   if (isAutoRenewableProduct(product)) {
     const existingBinding = await findSubscriptionBinding(db, verified.originalTransactionId)
     const blockReason = shouldBlockSubscriptionGrant({ product, verified, existingBinding })
@@ -277,7 +295,18 @@ async function verifyAndPersist(db, user, payload) {
         transactionId: verified.transactionId,
       }
     }
+    safeSubscriptionStage('binding_lookup', user, {
+      productId: verified.productId,
+      bindingExists: Boolean(existingBinding),
+      bindingIsSameUser: existingBinding ? existingBinding.user_id === user.userId : null,
+      bindingOwnerState: existingBinding?.owner_state ?? null,
+    })
     const subscription = await verifyAndPersistSubscription(db, user.userId, verified)
+    safeSubscriptionStage('subscription_state_write_ok', user, {
+      productId: verified.productId,
+      status: subscription.status,
+      active: subscription.active,
+    })
     await recordBillingEvent(db, user.userId, {
       event_type: existingBinding
         ? (subscription.active ? 'subscription_renewed' : 'subscription_status_changed')
@@ -360,6 +389,7 @@ export async function handleIapVerify(req, res) {
     const quotaStatus = await buildQuotaStatus(user.userId, user.email)
     const entitlement = result.entitlement ?? quotaStatus?.entitlement ?? null
     if (!result.granted) {
+      logIapOutcome('verify', user, result)
       res.status(result.code === 'sales_closed' ? 403 : 200).json({
         ok: result.code !== 'sales_closed' && result.code !== 'unknown_product',
         granted: false,
@@ -625,6 +655,38 @@ export async function handleAppleNotifications(req, res) {
 }
 
 // ── Logging (never logs JWS/JWT/secrets) ─────────────────────────────────────
+
+/**
+ * Structured, audit-safe subscription stage trace.
+ *
+ * Never logs tokens, JWS, receipts, keys, or email — only a stage name, the
+ * product, and BOOLEAN presence of identity fields. This exists because the
+ * non-granted verify path returns HTTP 200 and previously logged nothing at
+ * all, so a rejection like `unknown_product` was invisible in production and
+ * reached the client as a generic "could not be verified".
+ */
+export function safeSubscriptionStage(stage, user, detail = {}) {
+  console.warn(
+    '[iap/stage]',
+    JSON.stringify({
+      stage,
+      userIdPrefix: user?.userId ? String(user.userId).slice(0, 8) : null,
+      ...detail,
+    }),
+  )
+}
+
+/** Log a verify/restore that completed without granting. */
+function logIapOutcome(scope, user, result, verified = null) {
+  safeSubscriptionStage(`${scope}_not_granted`, user, {
+    reason: result?.code ?? null,
+    productId: verified?.productId ?? null,
+    environment: verified?.environment ?? null,
+    hasOriginalTransactionId: Boolean(verified?.originalTransactionId),
+    hasAppAccountToken: Boolean(verified?.appAccountToken),
+    hasExpiresDate: Boolean(verified?.appleExpiresDate),
+  })
+}
 
 function logIapFailure(scope, user, body, err) {
   console.warn(
