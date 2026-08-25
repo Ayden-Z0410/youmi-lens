@@ -31,7 +31,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js'
-import { getActiveEntitlement, resolveEffectivePlanType } from './iapEntitlements.mjs'
+import { getActiveEntitlement, isEntitlementActive, resolveEffectivePlanType } from './iapEntitlements.mjs'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -291,9 +291,6 @@ export async function getEffectiveQuota(userId, email) {
   const quota = await getOrCreateUserQuota(userId, email)
   if (!quota) return null
 
-  // Admin remains the only stored override above a paid entitlement.
-  if (quota.plan_type === 'admin') return quota
-
   const db = getAdminClient()
   if (!db) return quota // fail safe: behave as stored plan if DB unavailable
 
@@ -307,13 +304,23 @@ export async function getEffectiveQuota(userId, email) {
     return quota
   }
 
+  // Quota TIER and subscription OWNERSHIP are independent dimensions. Admin
+  // still outranks every entitlement for access/limits — that precedence lives
+  // in resolveEffectivePlanType and is unchanged — but an admin who also holds
+  // a real paid subscription must still be REPORTED as owning it. Attaching
+  // `_entitlement` independently of the tier decision is what lets
+  // buildQuotaStatus answer studentPassActive truthfully for those accounts;
+  // previously admin returned early here, so an active subscription was
+  // silently dropped and the Plans screen showed no Student Basic at all.
+  const activeEntitlement = isEntitlementActive(entitlement, nowMs) ? entitlement : null
+
   const effectivePlan = resolveEffectivePlanType({
     storedPlanType: quota.plan_type,
     entitlement,
     nowMs,
   })
-  if (effectivePlan === quota.plan_type) return quota
-  return { ...quota, plan_type: effectivePlan, _entitlement: entitlement }
+  if (effectivePlan === quota.plan_type && !activeEntitlement) return quota
+  return { ...quota, plan_type: effectivePlan, _entitlement: activeEntitlement }
 }
 
 export function quotaPatchForPlan(planType) {
