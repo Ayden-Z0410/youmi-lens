@@ -16,7 +16,7 @@
  * rules and are unit-tested directly. DB helpers are thin and injectable.
  */
 import { findAppleIapTransactionBinding } from './iapLedger.mjs'
-import { getEffectiveSubscription, safeSubscriptionEntitlement } from './iapSubscriptions.mjs'
+import { SUBSCRIPTION_ACTIVE_STATUSES, getEffectiveSubscription, safeSubscriptionEntitlement } from './iapSubscriptions.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 export const STUDENT_BASIC_PRODUCT_ID = 'com.aydenz.youmilensipad.studentbasic30d'
@@ -223,7 +223,15 @@ export function resolveEffectivePlanType({ storedPlanType, entitlement, nowMs })
 /** Pure: is this entitlement currently active (status active, within window, not revoked)? */
 export function isEntitlementActive(entitlement, nowMs) {
   if (!entitlement) return false
-  if (entitlement.status !== 'active') return false
+  // Uses the ONE canonical active-status vocabulary shared with the
+  // subscription layer, so a subscription that is genuinely still entitled
+  // (grace_period, or cancelled-but-not-yet-expired) is no longer rejected
+  // here and shown as Free before its expires_at. Legacy user_entitlements
+  // rows only ever carry 'active', so they are unaffected.
+  //
+  // Expiry stays authoritative regardless of status: the starts_at/expires_at
+  // window below still gates every one of these statuses.
+  if (!SUBSCRIPTION_ACTIVE_STATUSES.includes(entitlement.status)) return false
   if (entitlement.revoked_at) return false
   const startsMs = entitlement.starts_at ? new Date(entitlement.starts_at).getTime() : null
   const expiresMs = entitlement.expires_at ? new Date(entitlement.expires_at).getTime() : null

@@ -49,8 +49,32 @@ export function shouldBlockSubscriptionGrant({ product, verified, existingBindin
   return 'sales_closed'
 }
 
+/**
+ * The single canonical vocabulary of "still entitled" subscription statuses.
+ *
+ * Both the subscription layer (subscriptionStatusIsActive, below) and the
+ * entitlement layer (isEntitlementActive in iapEntitlements.mjs) derive from
+ * this set, so the two can no longer drift apart. Previously a subscription in
+ * grace_period or cancelled_but_active_until_expiry was reported active by the
+ * subscription layer and then rejected by the entitlement layer, surfacing as
+ * Free before expires_at.
+ *
+ * billing_retry is deliberately NOT active: Apple's billing-retry period means
+ * the renewal has FAILED and is being retried, so it must not silently extend
+ * access. Terminal states (expired/revoked/refunded) and non-committal ones
+ * (verification_pending/unknown) are likewise inactive.
+ */
+export const SUBSCRIPTION_ACTIVE_STATUSES = Object.freeze([
+  'active',
+  'grace_period',
+  'cancelled_but_active_until_expiry',
+])
+
+/** Statuses that authoritatively END access, even when out of expiry order. */
+export const SUBSCRIPTION_TERMINAL_STATUSES = Object.freeze(['revoked', 'refunded'])
+
 export function subscriptionStatusIsActive(status, expiresAt, nowMs = Date.now()) {
-  if (!['active', 'grace_period', 'cancelled_but_active_until_expiry'].includes(status)) return false
+  if (!SUBSCRIPTION_ACTIVE_STATUSES.includes(status)) return false
   const expiresMs = expiresAt ? new Date(expiresAt).getTime() : NaN
   if (status === 'grace_period') return true
   return Number.isFinite(expiresMs) && expiresMs > nowMs
@@ -102,13 +126,79 @@ export async function claimSubscriptionBinding(db, userId, verified) {
   throw error
 }
 
+/**
+ * Decide whether an incoming subscription state may replace the stored one.
+ *
+ * Every renewal, plan change, and trial-to-paid transition inside one Apple
+ * auto-renewable lineage shares a single originalTransactionId — which is this
+ * table's conflict key — so all of them collapse onto ONE row. Restore submits
+ * the full StoreKit history (Transaction.all), and App Store Server
+ * Notifications can arrive out of order, so without this guard an OLDER
+ * transaction can silently overwrite a NEWER valid subscription state.
+ *
+ * Chronology signal: purchaseDate (the period's own start), which strictly
+ * advances across renewals and plan changes. expires_at alone is NOT sufficient
+ * — a refund/revoke must be able to end access without carrying a later expiry.
+ *
+ * Policy:
+ *   - no stored row                         -> accept (first write)
+ *   - incoming period is newer              -> accept (renewal / plan change)
+ *   - incoming period is older              -> REJECT (stale restore item or
+ *                                              out-of-order notification)
+ *   - same period, terminal event           -> accept (refund/revoke of the
+ *                                              current period is authoritative)
+ *   - same period, expiry not going backward-> accept (replay / metadata refresh)
+ *   - same period, expiry going backward    -> REJECT
+ *
+ * A terminal event for an OLDER period is rejected on purpose: refunding a
+ * past period must not revoke a newer, still-valid one.
+ */
+export function shouldReplaceSubscriptionState(stored, incoming) {
+  if (!stored) return true
+  const ms = (v) => (v ? new Date(v).getTime() : NaN)
+  const storedStart = ms(stored.purchased_at)
+  const incomingStart = ms(incoming.purchased_at)
+  // Without usable chronology on either side, fall back to accepting the write
+  // rather than freezing the row forever.
+  if (!Number.isFinite(storedStart) || !Number.isFinite(incomingStart)) return true
+  if (incomingStart > storedStart) return true
+  if (incomingStart < storedStart) return false
+
+  if (SUBSCRIPTION_TERMINAL_STATUSES.includes(incoming.status)) return true
+  const storedExpiry = ms(stored.expires_at)
+  const incomingExpiry = ms(incoming.expires_at)
+  if (!Number.isFinite(storedExpiry) || !Number.isFinite(incomingExpiry)) return true
+  return incomingExpiry >= storedExpiry
+}
+
+async function loadSubscriptionState(db, originalTransactionId) {
+  if (!originalTransactionId) return null
+  const { data, error } = await db
+    .from('app_store_subscription_states')
+    .select('user_id, product_id, status, purchased_at, expires_at, auto_renew_status')
+    .eq('original_transaction_id', originalTransactionId)
+    .maybeSingle()
+  if (error) throw error
+  return data ?? null
+}
+
 export async function upsertSubscriptionState(db, userId, verified, {
   renewal = null,
   notificationType = null,
   subtype = null,
   source = 'storekit_jws',
 } = {}) {
-  const status = deriveSubscriptionStatus({ transaction: verified, renewal, notificationType, subtype })
+  const stored = await loadSubscriptionState(db, verified.originalTransactionId)
+
+  // Renewal metadata merge: ABSENT incoming metadata must never destroy
+  // known-good stored state. The restore path carries no renewalInfo at all, so
+  // without this a restore would blank auto_renew_status and downgrade a
+  // cancelled-but-still-valid subscription back to a plain "active" reading.
+  const storedAutoRenew = stored?.auto_renew_status ?? null
+  const effectiveRenewal =
+    renewal ?? (storedAutoRenew === null ? null : { autoRenewStatus: storedAutoRenew })
+
+  const status = deriveSubscriptionStatus({ transaction: verified, renewal: effectiveRenewal, notificationType, subtype })
   const row = {
     original_transaction_id: verified.originalTransactionId,
     user_id: userId,
@@ -120,13 +210,30 @@ export async function upsertSubscriptionState(db, userId, verified, {
     app_account_token: verified.appAccountToken,
     purchased_at: verified.purchaseDate,
     expires_at: verified.appleExpiresDate,
-    auto_renew_status: renewal?.autoRenewStatus ?? null,
+    auto_renew_status: effectiveRenewal?.autoRenewStatus ?? null,
     status,
     revocation_at: verified.revokedAt,
     source,
     last_notification_type: notificationType,
     last_verified_at: new Date().toISOString(),
   }
+
+  // Stale-write protection. A rejected write is NOT an error — restore
+  // legitimately replays historical transactions — so the stored (newer) state
+  // is returned unchanged and the caller proceeds normally.
+  if (!shouldReplaceSubscriptionState(stored, row)) {
+    return {
+      ...row,
+      product_id: stored.product_id,
+      status: stored.status,
+      purchased_at: stored.purchased_at,
+      expires_at: stored.expires_at,
+      auto_renew_status: stored.auto_renew_status ?? null,
+      active: subscriptionStatusIsActive(stored.status, stored.expires_at),
+      stale: true,
+    }
+  }
+
   const { error } = await db.from('app_store_subscription_states').upsert(row, { onConflict: 'original_transaction_id' })
   if (error) throw error
   return { ...row, active: subscriptionStatusIsActive(status, row.expires_at) }

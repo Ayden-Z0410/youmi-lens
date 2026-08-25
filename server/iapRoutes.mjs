@@ -455,11 +455,25 @@ export async function handleIapRestore(req, res) {
   // Ensure a quota row exists even when there is nothing to restore.
   await getOrCreateUserQuota(user.userId, user.email)
 
+  // Defense in depth ONLY. Restore submits the full StoreKit history in
+  // whatever order Transaction.all yielded it; processing oldest-first means
+  // the newest state is written last and naturally wins. Apple transaction ids
+  // increase monotonically, so they order the lineage without needing to verify
+  // first. Entries without a usable numeric id keep their relative order and
+  // sort last. The real protection is shouldReplaceSubscriptionState in the
+  // write layer — notifications can still arrive out of order, restore order
+  // can change, and future callers may bypass this sort entirely.
+  const orderKey = (p) => {
+    const n = Number(p?.transactionId)
+    return Number.isSafeInteger(n) && n > 0 ? n : Number.MAX_SAFE_INTEGER
+  }
+  const orderedPurchases = [...purchases].sort((a, b) => orderKey(a) - orderKey(b))
+
   let restoredActive = 0
   let restoredCount = 0
   let alreadyLinked = false
   const verifiedTransactionIds = []
-  for (const purchase of purchases) {
+  for (const purchase of orderedPurchases) {
     try {
       const result = await verifyAndPersist(db, user, purchase)
       restoredCount += 1
