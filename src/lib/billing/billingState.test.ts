@@ -19,6 +19,9 @@ function sub(over: Partial<SubscriptionRecord> = {}): SubscriptionRecord {
 
 const studentQuota: QuotaStatusPayload = {
   planType: 'student_pass',
+  effectivePlanType: 'student_pass',
+  studentPassActive: false,
+  entitlement: { active: false },
   unlimited: false,
   monthlyMinutesLimit: 600,
   minutesUsed: 12,
@@ -27,6 +30,12 @@ const studentQuota: QuotaStatusPayload = {
   recordingsUsedToday: 1,
   recordingsRemainingToday: 5,
   maxProcessingJobsPerDay: 10,
+}
+
+const activeStudentQuota: QuotaStatusPayload = {
+  ...studentQuota,
+  studentPassActive: true,
+  entitlement: { active: true, planType: 'student_pass' },
 }
 
 describe('normalizeBillingInterval', () => {
@@ -108,7 +117,7 @@ describe('deriveBillingState', () => {
         currentPeriodEnd: '2026-08-01T00:00:00.000Z',
         manageable: true,
       }),
-      quota: studentQuota,
+      quota: activeStudentQuota,
       error: null,
     })
     expect(state).toMatchObject({
@@ -118,6 +127,39 @@ describe('deriveBillingState', () => {
       currentPeriodEnd: '2026-08-01T00:00:00.000Z',
       manageable: true,
     })
+  })
+
+  it('uses an active Apple or legacy entitlement even with no Stripe subscription', () => {
+    for (const plan of [
+      { ...activeStudentQuota, entitlement: { active: true, planType: 'student_pass' } },
+      { ...activeStudentQuota, entitlement: { active: true, planType: 'student_pass' }, studentPassActive: true },
+    ]) {
+      const state = deriveBillingState({
+        signedIn: true,
+        loading: false,
+        subscription: sub({ status: 'none', provider: null, manageable: false }),
+        quota: plan,
+        error: null,
+      })
+      expect(state).toMatchObject({ status: 'active', planCode: null, manageable: false })
+    }
+  })
+
+  it('does not treat expired or revoked entitlement payloads as active', () => {
+    for (const plan of [
+      { ...studentQuota, studentPassActive: false, entitlement: { active: false } },
+      { ...studentQuota, studentPassActive: false, entitlement: { active: true, revoked: true } },
+    ]) {
+      expect(
+        deriveBillingState({
+          signedIn: true,
+          loading: false,
+          subscription: sub({ status: 'none' }),
+          quota: plan,
+          error: null,
+        }).status,
+      ).toBe('free')
+    }
   })
 
   it('active annual', () => {
@@ -131,7 +173,7 @@ describe('deriveBillingState', () => {
         billingInterval: 'year',
         manageable: true,
       }),
-      quota: studentQuota,
+      quota: activeStudentQuota,
       error: null,
     })
     expect(state).toMatchObject({ status: 'active', interval: 'annual', planCode: 'student_basic_annual' })
@@ -150,7 +192,7 @@ describe('deriveBillingState', () => {
         currentPeriodEnd: '2026-09-01T00:00:00.000Z',
         manageable: true,
       }),
-      quota: studentQuota,
+      quota: activeStudentQuota,
       error: null,
     })
     expect(state).toMatchObject({
@@ -173,7 +215,7 @@ describe('deriveBillingState', () => {
         graceUntil: '2026-07-04T00:00:00.000Z',
         manageable: true,
       }),
-      quota: studentQuota,
+      quota: activeStudentQuota,
       error: null,
     })
     expect(state).toMatchObject({
@@ -237,7 +279,7 @@ describe('deriveBillingState', () => {
       signedIn: true,
       loading: false,
       subscription: sub({ status: 'none' }),
-      quota: studentQuota,
+      quota: activeStudentQuota,
       error: new BillingApiError('http', 'Billing is temporarily unavailable.', {
         status: 503,
         code: 'stripe_not_configured',
@@ -262,7 +304,7 @@ describe('deriveBillingState', () => {
         billingInterval: 'fortnight',
         manageable: true,
       }),
-      quota: studentQuota,
+      quota: activeStudentQuota,
       error: null,
     })
     expect(state).toMatchObject({ status: 'active', interval: null })

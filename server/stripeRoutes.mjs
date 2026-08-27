@@ -10,6 +10,7 @@
  *   POST /api/subscription/refresh    — pull latest from Stripe and re-project.
  */
 import { verifyJwt } from './betaGate.mjs'
+import { buildQuotaStatus } from './betaUsageStatus.mjs'
 import { getBillingAdminClient, getStripe, getStripeWebhookSecret, isStripeConfigured } from './stripeClient.mjs'
 import {
   isAllowedPlanCode,
@@ -76,6 +77,20 @@ export function shouldBlockCheckoutForSubscription(subscription) {
   return false
 }
 
+/**
+ * The quota status is the single provider-neutral membership authority. An
+ * Apple or legacy entitlement intentionally has no Stripe subscription row,
+ * so Stripe status alone cannot decide whether Checkout is safe to create.
+ */
+export function shouldBlockCheckoutForEffectiveEntitlement(plan) {
+  if (!plan || typeof plan !== 'object' || plan.status === 'suspended') return false
+  const entitlement = plan.entitlement
+  if (entitlement && typeof entitlement === 'object' && entitlement.active === true && entitlement.revoked !== true) {
+    return true
+  }
+  return plan.studentPassActive === true
+}
+
 // ── POST /api/billing/checkout ───────────────────────────────────────────────
 export async function handleCheckout(req, res) {
   const user = await requireUser(req, res)
@@ -112,6 +127,16 @@ export async function handleCheckout(req, res) {
   }
 
   try {
+    const quotaStatus = await buildQuotaStatus(user.userId, user.email)
+    if (shouldBlockCheckoutForEffectiveEntitlement(quotaStatus)) {
+      res.status(409).json({
+        ok: false,
+        error: 'entitlement_already_active',
+        message: 'Your Student Basic membership is already active.',
+      })
+      return
+    }
+
     const subscription = await buildSubscriptionStatus(db, user.userId, Date.now())
     if (shouldBlockCheckoutForSubscription(subscription)) {
       res.status(409).json({

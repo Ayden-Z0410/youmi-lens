@@ -54,8 +54,21 @@ export type PortalPayload = {
  */
 export type QuotaStatusPayload = {
   planType?: string
+  /** Provider-neutral effective plan; this is the membership authority for Desktop. */
+  effectivePlanType?: string
   displayName?: string
   status?: string
+  /** True only while the backend's current entitlement is active. */
+  studentPassActive?: boolean
+  entitlement?: {
+    active?: boolean
+    status?: string
+    productId?: string | null
+    planType?: string | null
+    startsAt?: string | null
+    expiresAt?: string | null
+    revoked?: boolean
+  }
   unlimited?: boolean
   monthlyMinutesLimit?: number | null
   minutesUsed?: number | null

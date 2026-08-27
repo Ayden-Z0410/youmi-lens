@@ -142,6 +142,22 @@ describe('BillingPlanContent states', () => {
     expect(html).not.toContain('Choose a new plan')
   })
 
+  it('provider-neutral active membership has no Checkout or Stripe portal CTA', () => {
+    const html = renderContent({
+      status: 'active',
+      planCode: null,
+      interval: null,
+      currentPeriodEnd: null,
+      manageable: false,
+      quota: studentQuota,
+    }, { onUpgrade: () => {}, onManage: () => {} })
+    expect(html).toContain('Student Basic')
+    expect(html).toContain('Active')
+    expect(html).not.toContain('Upgrade')
+    expect(html).not.toContain('Choose a new plan')
+    expect(html).not.toContain('Manage subscription')
+  })
+
   it('canceling', () => {
     const html = renderContent({
       status: 'canceling',

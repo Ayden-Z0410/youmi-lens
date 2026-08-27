@@ -17,6 +17,12 @@ function emptySub(over: Partial<SubscriptionRecord> = {}): SubscriptionRecord {
   }
 }
 
+const activeStudentPlan = {
+  unlimited: false,
+  studentPassActive: true,
+  entitlement: { active: true, planType: 'student_pass' },
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (err: unknown) => void
@@ -55,7 +61,7 @@ describe('createBillingController / useBilling behavior', () => {
     const getQuotaStatus = vi.fn(async () => ({
       ok: true as const,
       plan: {
-        unlimited: false,
+        ...activeStudentPlan,
         monthlyMinutesLimit: 600,
         maxRecordingsPerDay: 6,
         maxProcessingJobsPerDay: 10,
@@ -90,7 +96,7 @@ describe('createBillingController / useBilling behavior', () => {
     }))
     const getQuotaStatus = vi.fn(async () => ({
       ok: true as const,
-      plan: { unlimited: false, monthlyMinutesLimit: 600 },
+      plan: { ...activeStudentPlan, monthlyMinutesLimit: 600 },
     }))
     const c = createBillingController({ refreshSubscription, getSubscriptionStatus, getQuotaStatus })
     c.setAuthLoading(false)
@@ -168,7 +174,7 @@ describe('createBillingController / useBilling behavior', () => {
         manageable: true,
       }),
     }))
-    const getQuotaStatus = vi.fn(async () => ({ ok: true as const, plan: { unlimited: false } }))
+    const getQuotaStatus = vi.fn(async () => ({ ok: true as const, plan: activeStudentPlan }))
     const openPortal = vi.fn(async () => {
       throw new BillingApiError('http', 'Could not open the billing portal.', {
         status: 502,
@@ -233,7 +239,7 @@ describe('createBillingController / useBilling behavior', () => {
       subscription: SubscriptionRecord
     }>()
     const getSubscriptionStatus = vi.fn(() => gate.promise)
-    const getQuotaStatus = vi.fn(async () => ({ ok: true as const, plan: { unlimited: false } }))
+    const getQuotaStatus = vi.fn(async () => ({ ok: true as const, plan: activeStudentPlan }))
     const c = createBillingController({ getSubscriptionStatus, getQuotaStatus })
     c.setAuthLoading(false)
     c.setSignedIn(true)
@@ -264,7 +270,7 @@ describe('createBillingController / useBilling behavior', () => {
         manageable: true,
       }),
     }))
-    const getQuotaStatus = vi.fn(async () => ({ ok: true as const, plan: { unlimited: false } }))
+    const getQuotaStatus = vi.fn(async () => ({ ok: true as const, plan: activeStudentPlan }))
     const c = createBillingController({ getSubscriptionStatus, getQuotaStatus })
     c.setAuthLoading(false)
     c.setSignedIn(true)

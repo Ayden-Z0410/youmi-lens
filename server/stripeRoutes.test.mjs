@@ -5,6 +5,7 @@ import {
   handleCheckout,
   handlePortal,
   handleSubscriptionStatus,
+  shouldBlockCheckoutForEffectiveEntitlement,
   shouldBlockCheckoutForSubscription,
 } from './stripeRoutes.mjs'
 import { getOrCreateStripeCustomer, getStripeCustomerId, linkStripeCustomer } from './stripeCustomers.mjs'
@@ -110,6 +111,32 @@ describe('shouldBlockCheckoutForSubscription (active-subscriber guard)', () => {
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'expired', manageable: true })).toBe(false)
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'canceled', manageable: true })).toBe(false)
     expect(shouldBlockCheckoutForSubscription({ active: false, status: 'past_due', manageable: false })).toBe(false)
+  })
+})
+
+describe('shouldBlockCheckoutForEffectiveEntitlement (provider-neutral guard)', () => {
+  it('blocks Apple, Stripe, and legacy active Student Basic entitlement payloads', () => {
+    for (const plan of [
+      { status: 'active', studentPassActive: true, entitlement: { active: true, planType: 'student_pass' } },
+      { status: 'active', studentPassActive: true, entitlement: { active: true, planType: 'student_pass' } },
+      { status: 'active', studentPassActive: true, entitlement: { active: true, planType: 'student_pass' } },
+    ]) {
+      expect(shouldBlockCheckoutForEffectiveEntitlement(plan)).toBe(true)
+    }
+  })
+
+  it('allows expired, revoked, and absent entitlement payloads', () => {
+    expect(shouldBlockCheckoutForEffectiveEntitlement({ status: 'active', studentPassActive: false, entitlement: { active: false } })).toBe(false)
+    expect(shouldBlockCheckoutForEffectiveEntitlement({ status: 'active', studentPassActive: false, entitlement: { active: true, revoked: true } })).toBe(false)
+    expect(shouldBlockCheckoutForEffectiveEntitlement({ status: 'suspended', studentPassActive: true, entitlement: { active: true } })).toBe(false)
+  })
+
+  it('invokes the effective-entitlement guard before any Stripe customer/session creation', () => {
+    const src = readFileSync(new URL('./stripeRoutes.mjs', import.meta.url), 'utf8')
+    const guard = src.indexOf('shouldBlockCheckoutForEffectiveEntitlement(quotaStatus)')
+    const customer = src.indexOf('getOrCreateStripeCustomer', guard)
+    expect(guard).toBeGreaterThan(-1)
+    expect(customer).toBeGreaterThan(guard)
   })
 })
 

@@ -139,6 +139,17 @@ function isTerminalInactiveStatus(status: string): boolean {
   )
 }
 
+/**
+ * `/api/quota/status` is the provider-neutral membership authority. Stripe
+ * status is deliberately not used to decide whether the user owns Student
+ * Basic: an Apple or legacy entitlement has no Stripe subscription row.
+ */
+export function hasActiveEffectiveEntitlement(plan: QuotaStatusPayload | null | undefined): boolean {
+  if (!plan || plan.status === 'suspended') return false
+  if (plan.entitlement?.active === true && plan.entitlement.revoked !== true) return true
+  return plan.studentPassActive === true
+}
+
 function unavailableFromError(
   error: NonNullable<DeriveBillingStateInput['error']>,
 ): Extract<BillingState, { status: 'unavailable' }> {
@@ -176,11 +187,10 @@ function unavailableFromError(
  * 1. signed_out
  * 2. loading
  * 3. unavailable / request failure
- * 4. past_due
- * 5. active + cancelAtPeriodEnd → canceling
- * 6. active
- * 7. terminal inactive/revoked/expired/canceled → expired
- * 8. no subscription → free
+ * 4. provider-neutral active entitlement (with Stripe management metadata)
+ * 5. Stripe past_due / cancellation presentation where applicable
+ * 6. terminal inactive Stripe metadata → expired
+ * 7. no active entitlement → free
  */
 export function deriveBillingState(input: DeriveBillingStateInput): BillingState {
   if (!input.signedIn) return { status: 'signed_out' }
@@ -197,6 +207,7 @@ export function deriveBillingState(input: DeriveBillingStateInput): BillingState
   }
 
   const quota = normalizeQuota(input.quota)
+  const activeEntitlement = hasActiveEffectiveEntitlement(input.quota)
   const planCode = normalizePlanCode(subscription.planCode)
   const interval = normalizeBillingInterval(subscription.billingInterval)
   const manageable = Boolean(subscription.manageable)
@@ -208,13 +219,13 @@ export function deriveBillingState(input: DeriveBillingStateInput): BillingState
       interval,
       currentPeriodEnd: subscription.currentPeriodEnd,
       graceUntil: subscription.graceUntil,
-      accessActive: Boolean(subscription.active),
+      accessActive: activeEntitlement,
       manageable,
       quota,
     }
   }
 
-  if (subscription.active && subscription.cancelAtPeriodEnd) {
+  if (activeEntitlement && subscription.active && subscription.cancelAtPeriodEnd) {
     return {
       status: 'canceling',
       planCode,
@@ -225,7 +236,7 @@ export function deriveBillingState(input: DeriveBillingStateInput): BillingState
     }
   }
 
-  if (subscription.active) {
+  if (activeEntitlement) {
     return {
       status: 'active',
       planCode,
