@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   lectureRecordingInsertPayload,
@@ -49,6 +50,7 @@ describe('mapDbRowToRecording', () => {
     expect(r.aiError).toBeUndefined()
     expect(r.aiUpdatedAt).toBeUndefined()
     expect(r.title).toBe('t')
+    expect(r.storagePath).toBe('u/00000000-0000-4000-8000-000000000001.webm')
   })
 
   it('maps populated ai fields', () => {
@@ -82,5 +84,57 @@ describe('lectureRecordingInsertPayload', () => {
     expect(p.ai_status).toBe('pending')
     expect(p.ai_error).toBeNull()
     expect(p.ai_updated_at).toBe('2030-01-01T00:00:00.000Z')
+  })
+
+  it('persists the selected canonical Course UUID alongside the legacy label', () => {
+    const p = lectureRecordingInsertPayload({
+      id: 'i', userId: 'u', course: 'CS 250', courseId: 'course-uuid', title: 't',
+      durationSec: 1, mime: 'audio/webm', storagePath: 'p', liveTranscript: '', liveTranscriptRaw: '',
+    })
+    expect(p).toMatchObject({ course: 'CS 250', course_id: 'course-uuid' })
+  })
+})
+
+/**
+ * Cloud audio resolution — must never depend on another device's local state.
+ *
+ * Verified live against staging in the Cloud Library acceptance pass: a
+ * completely fresh client session (no local blob, no IndexedDB row, never the
+ * device that recorded it) generated a working signed URL and downloaded the
+ * exact bytes another session had uploaded. This pins the SOURCE property that
+ * made that possible: `getRecordingDetail` resolves audio from the cloud row's
+ * own `storage_path` alone.
+ */
+describe('cloud audio resolution is device-independent', () => {
+  const source = readFileSync(new URL('./recordingsRepo.ts', import.meta.url), 'utf8')
+
+  function body(name: string): string {
+    const start = source.indexOf(`export async function ${name}(`)
+    expect(start, name).toBeGreaterThan(-1)
+    const next = source.indexOf('\nexport ', start + 1)
+    return source.slice(start, next === -1 ? undefined : next)
+  }
+
+  it('getRecordingDetail signs audio from the ROW\'s own storage_path, not a local field', () => {
+    const fn = body('getRecordingDetail')
+    expect(fn).toContain('getRecordingAudioUrl(supabase, row.storage_path)')
+    for (const local of ['localAudioUri', 'audioBlob', 'IndexedDB', 'indexedDB', 'objectUrl', 'ObjectURL']) {
+      expect(fn, local).not.toContain(local)
+    }
+  })
+
+  it('getRecordingAudioUrl takes storagePath as an explicit argument, not an ambient/local one', () => {
+    const fn = body('getRecordingAudioUrl')
+    expect(fn).toContain('supabase.storage')
+    expect(fn).not.toContain('localAudioUri')
+    expect(fn).not.toContain('IndexedDB')
+  })
+
+  it('the Supabase and userId scoping is the ONLY identity check — no device/session-local gate', () => {
+    // The two `.eq(...)` calls are what RLS-style ownership scoping looks like
+    // here; nothing about THIS device or a prior local recording is consulted.
+    const fn = body('getRecordingDetail')
+    expect(fn).toContain(".eq('id', id)")
+    expect(fn).toContain(".eq('user_id', userId)")
   })
 })
