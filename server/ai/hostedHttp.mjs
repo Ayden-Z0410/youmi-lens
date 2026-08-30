@@ -45,15 +45,6 @@ export async function handleHostedTranscribe(req, res) {
   const t0 = Date.now()
   const marker = process.env.YOUMI_DEPLOY_MARKER || 'dev'
 
-  if (process.env.YOUMI_TRANSCRIBE_FORCE_TEST === '1') {
-    console.warn(
-      '[hosted/transcribe] FORCE_TEST',
-      JSON.stringify({ reqId, marker, totalMs: Date.now() - t0 }),
-    )
-    res.json({ text: 'test' })
-    return
-  }
-
   // Auth
   const user = await requireAuth(req, res)
   if (!user) return
@@ -70,6 +61,15 @@ export async function handleHostedTranscribe(req, res) {
   const gate = await checkHostedActionAllowed(quota, user.userId)
   if (!gate.allowed) {
     res.status(gate.status).json(gate.body)
+    return
+  }
+
+  if (process.env.YOUMI_TRANSCRIBE_FORCE_TEST === '1') {
+    console.warn(
+      '[hosted/transcribe] FORCE_TEST',
+      JSON.stringify({ reqId, marker, totalMs: Date.now() - t0 }),
+    )
+    res.json({ text: 'test' })
     return
   }
 
