@@ -133,4 +133,12 @@ describe('recordingSession wiring regressions (App + recorder)', () => {
   it('updater remains blocked while recovering a durable session', () => {
     expect(appSrc).toContain('recoveringSession: Boolean(recoveryBusyId)')
   })
+
+  it('Discard clears MediaRecorder ondataavailable and abandons persist before delete', () => {
+    // Regression: stop() queues a final dataavailable; leaving the handler installed
+    // persisted private audio after Discard and could recreate the session row.
+    expect(recorderSrc).toMatch(/mr\.ondataavailable\s*=\s*null/)
+    expect(recorderSrc).toContain('persistEpochRef')
+    expect(recorderSrc).toContain('deleteRecordingSession(sessionId)')
+  })
 })
