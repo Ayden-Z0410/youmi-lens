@@ -9,6 +9,7 @@ import {
 import {
   getEffectiveQuota,
   checkProcessingAllowed,
+  parsePositiveDurationSec,
   recordBetaUsage,
   BETA_ERROR_CODES,
 } from './betaGate.mjs'
@@ -246,7 +247,21 @@ export async function handleProcessRecording(req, res) {
   // Both consume quota; action_type distinguishes them in beta_usage.
   const isRegeneration = row.ai_status === 'done' || row.ai_status === 'transcript_ready'
   const betaActionType = isRegeneration ? 'regenerate_summary' : 'process_recording'
-  const durationSec = Number(row.duration_sec) || 0
+  // Fail closed: omitted / zeroed / negative duration_sec must not bill as 0 minutes
+  // or skip the per-recording length gate (client can UPDATE own rows via RLS).
+  const durationSec = parsePositiveDurationSec(row.duration_sec)
+  if (durationSec == null) {
+    console.warn(
+      '[process-recording] missing_duration',
+      JSON.stringify({ userId: userId.slice(0, 8), recordingId, raw: row.duration_sec }),
+    )
+    res.status(400).json({
+      error: BETA_ERROR_CODES.RECORDING_TOO_LONG,
+      message: 'Recording duration is missing or invalid. Re-save the lecture, then try again.',
+      details: { recording_minutes: 0 },
+    })
+    return
+  }
   const email = userData.user?.email || ''
 
   const quota = await getEffectiveQuota(userId, email)

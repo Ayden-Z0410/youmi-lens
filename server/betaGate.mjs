@@ -425,6 +425,28 @@ export function betaError(code, message, details = {}) {
 }
 
 /**
+ * Parse a client-supplied recording duration.
+ * Returns a positive integer second count, or null when missing/invalid/non-positive.
+ * Callers must fail closed — never treat null as "0 minutes free".
+ */
+export function parsePositiveDurationSec(raw) {
+  if (raw == null || raw === '') return null
+  const n = typeof raw === 'number' ? raw : Number(String(raw).trim())
+  if (!Number.isFinite(n) || n <= 0) return null
+  return Math.max(1, Math.round(n))
+}
+
+/**
+ * Billable whole minutes for a trusted positive duration. Never negative.
+ * Sub-minute clips still bill 1 minute once a job is allowed.
+ */
+export function billableMinutesFromDurationSec(durationSec) {
+  const sec = Number(durationSec)
+  if (!Number.isFinite(sec) || sec <= 0) return 0
+  return Math.max(1, Math.ceil(sec / 60))
+}
+
+/**
  * Check whether a cloud audio upload is allowed for this user.
  * Only enforces per-recording duration limit (to prevent uploading 2-hour files).
  * Quota (daily/monthly) is enforced at process time, not at upload time.
@@ -445,6 +467,18 @@ export function checkUploadAllowed(quota, durationSec) {
   }
 
   if (quota.plan_type === 'admin') return { allowed: true }
+
+  if (!Number.isFinite(durationSec) || durationSec <= 0) {
+    return {
+      allowed: false,
+      status: 400,
+      body: betaError(
+        BETA_ERROR_CODES.RECORDING_TOO_LONG,
+        'Recording duration is required to enforce plan limits.',
+        { recording_minutes: 0, limit_minutes: Number(planLimit(quota, 'max_recording_minutes') ?? DEFAULT_MAX_RECORDING_MINUTES) },
+      ),
+    }
+  }
 
   const maxRecordingMinutes = Number(planLimit(quota, 'max_recording_minutes') ?? DEFAULT_MAX_RECORDING_MINUTES)
   const maxSec = maxRecordingMinutes * 60
@@ -488,6 +522,22 @@ export async function checkProcessingAllowed(quota, userId, durationSec) {
 
   if (quota.plan_type === 'admin') return { allowed: true }
 
+  // Fail closed: client-omitted / zeroed / negative duration must not bill as 0 minutes.
+  if (!Number.isFinite(durationSec) || durationSec <= 0) {
+    return {
+      allowed: false,
+      status: 400,
+      body: betaError(
+        BETA_ERROR_CODES.RECORDING_TOO_LONG,
+        'Recording duration is missing or invalid. Re-save the lecture, then try again.',
+        {
+          recording_minutes: 0,
+          limit_minutes: Number(planLimit(quota, 'max_recording_minutes') ?? DEFAULT_MAX_RECORDING_MINUTES),
+        },
+      ),
+    }
+  }
+
   // Per-recording duration check
   const maxRecordingMinutes = Number(planLimit(quota, 'max_recording_minutes') ?? DEFAULT_MAX_RECORDING_MINUTES)
   const maxSec = maxRecordingMinutes * 60
@@ -525,7 +575,7 @@ export async function checkProcessingAllowed(quota, userId, durationSec) {
     }
   }
 
-  const billableMinutes = Math.ceil((durationSec || 0) / 60)
+  const billableMinutes = billableMinutesFromDurationSec(durationSec)
 
   // Daily MINUTE check. Enforces a strict per-UTC-day ceiling on billable
   // minutes — independent of and stricter than max_recordings_per_day x
@@ -765,8 +815,15 @@ export async function recordBetaUsage(userId, email, recordingUuid, actionType, 
   const db = getAdminClient()
   if (!db) return
   const BILLABLE_ACTIONS = new Set(['process_recording', 'regenerate_summary'])
+  const safeDurationSec = (() => {
+    const n = Number(durationSec)
+    if (!Number.isFinite(n) || n <= 0) return 0
+    return Math.round(n)
+  })()
+  // Never write negative billable_minutes (a negative client duration used to
+  // credit quota via Math.ceil on a negative value).
   const billableMinutes = BILLABLE_ACTIONS.has(actionType)
-    ? Math.ceil((durationSec || 0) / 60)
+    ? billableMinutesFromDurationSec(safeDurationSec)
     : 0
   try {
     const { error } = await db.from('beta_usage').insert({
@@ -774,7 +831,7 @@ export async function recordBetaUsage(userId, email, recordingUuid, actionType, 
       email: (email || '').toLowerCase(),
       recording_id: recordingUuid || null,
       action_type: actionType,
-      duration_sec: Math.round(durationSec) || 0,
+      duration_sec: safeDurationSec,
       billable_minutes: billableMinutes,
     })
     if (error) {
