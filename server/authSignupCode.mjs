@@ -445,15 +445,24 @@ export async function handleVerifySignupCodeAndCreateUser(req, res) {
     if (isUsernameUniqueViolation(profileErr)) {
       const { error: cleanupErr } = await db.auth.admin.deleteUser(created.user.id)
       if (cleanupErr) {
-        // Sanitized: no email, no username, no owner details — id prefix only.
+        // Auth user remains — do NOT tell the client "username_taken" (they would
+        // retry under a new name and then hit email_exists with no clear path).
+        // Consume the code; the password they chose can sign in.
+        await db.from('signup_codes').update({ consumed: true }).eq('id', row.id)
         console.error(
           '[verify-signup-code] username race cleanup failed',
           JSON.stringify({ userIdPrefix: created.user.id.slice(0, 8), reason: 'delete_failed' }),
         )
+        res.status(500).json({
+          ok: false,
+          error: 'account_created_sign_in_required',
+          message: 'Account created, but profile setup hit a conflict. Please sign in with your email and password.',
+        })
+        return
       }
       console.warn(
         '[verify-signup-code] username taken at insert',
-        JSON.stringify({ userIdPrefix: created.user.id.slice(0, 8), cleanedUp: !cleanupErr }),
+        JSON.stringify({ userIdPrefix: created.user.id.slice(0, 8), cleanedUp: true }),
       )
       res.status(409).json({ ok: false, error: 'username_taken', message: USERNAME_TAKEN_MESSAGE })
       return
