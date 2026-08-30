@@ -360,7 +360,15 @@ describe('notification idempotency', () => {
               eq() {
                 return {
                   eq() {
-                    return { error: null }
+                    return {
+                      select() {
+                        return {
+                          maybeSingle() {
+                            return { data: { notification_uuid: 'retry' }, error: null }
+                          },
+                        }
+                      },
+                    }
                   },
                 }
               },
@@ -375,6 +383,118 @@ describe('notification idempotency', () => {
       retrying: true,
     })
     expect(updates[0]).toMatchObject({ processing_status: 'processing', safe_error: null })
+  })
+
+  it('does not acknowledge duplicate notification UUIDs that are still processing', async () => {
+    const db = {
+      from() {
+        return {
+          insert() {
+            return { error: { code: '23505', message: 'duplicate key' } }
+          },
+          select() {
+            return {
+              eq() {
+                return {
+                  maybeSingle() {
+                    return {
+                      data: {
+                        processing_status: 'processing',
+                        updated_at: '2026-07-11T11:00:00.000Z',
+                      },
+                      error: null,
+                    }
+                  },
+                }
+              },
+            }
+          },
+        }
+      },
+    }
+
+    await expect(
+      reserveNotification(
+        db,
+        { notificationUUID: 'in-flight' },
+        { nowMs: Date.parse('2026-07-11T11:01:00Z'), processingStaleMs: 10 * 60 * 1000 },
+      ),
+    ).resolves.toEqual({
+      reserved: false,
+      notificationUUID: 'in-flight',
+      retryable: true,
+    })
+  })
+
+  it('reclaims stale processing notification UUIDs for retry', async () => {
+    const updates = []
+    const lteCalls = []
+    const db = {
+      from() {
+        return {
+          insert() {
+            return { error: { code: '23505', message: 'duplicate key' } }
+          },
+          select() {
+            return {
+              eq() {
+                return {
+                  maybeSingle() {
+                    return {
+                      data: {
+                        processing_status: 'processing',
+                        updated_at: '2026-07-11T10:45:00.000Z',
+                      },
+                      error: null,
+                    }
+                  },
+                }
+              },
+            }
+          },
+          update(row) {
+            updates.push(row)
+            return {
+              eq() {
+                return {
+                  eq() {
+                    return {
+                      lte(column, value) {
+                        lteCalls.push([column, value])
+                        return {
+                          select() {
+                            return {
+                              maybeSingle() {
+                                return { data: { notification_uuid: 'stale' }, error: null }
+                              },
+                            }
+                          },
+                        }
+                      },
+                    }
+                  },
+                }
+              },
+            }
+          },
+        }
+      },
+    }
+
+    await expect(
+      reserveNotification(
+        db,
+        { notificationUUID: 'stale' },
+        { nowMs: Date.parse('2026-07-11T11:00:00Z'), processingStaleMs: 10 * 60 * 1000 },
+      ),
+    ).resolves.toMatchObject({
+      reserved: true,
+      notificationUUID: 'stale',
+      retrying: true,
+      reclaimed: true,
+    })
+    expect(updates[0]).toMatchObject({ processing_status: 'processing', safe_error: null })
+    expect(lteCalls).toEqual([['updated_at', '2026-07-11T10:50:00.000Z']])
   })
 })
 

@@ -622,6 +622,10 @@ export async function handleAppleNotifications(req, res) {
   try {
     const reservation = await reserveNotification(db, decoded)
     if (!reservation.reserved) {
+      if (reservation.retryable) {
+        res.status(503).json({ ok: false, error: 'notification_processing_in_progress' })
+        return
+      }
       res.json({ ok: true, deduped: true })
       return
     }

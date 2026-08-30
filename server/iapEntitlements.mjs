@@ -433,7 +433,18 @@ export function safeNotificationError(err) {
   return message.slice(0, 240)
 }
 
-export async function reserveNotification(db, decoded) {
+export const NOTIFICATION_PROCESSING_STALE_MS = 10 * 60 * 1000
+
+function isStaleProcessingNotification(row, nowMs, processingStaleMs) {
+  const updatedMs = row?.updated_at ? new Date(row.updated_at).getTime() : NaN
+  return Number.isFinite(updatedMs) && updatedMs <= nowMs - processingStaleMs
+}
+
+export async function reserveNotification(
+  db,
+  decoded,
+  { nowMs = Date.now(), processingStaleMs = NOTIFICATION_PROCESSING_STALE_MS } = {},
+) {
   const notificationUUID = decoded?.notificationUUID
   if (!notificationUUID) return { reserved: true, notificationUUID: null }
   const row = {
@@ -450,18 +461,38 @@ export async function reserveNotification(db, decoded) {
   if (error.code === '23505') {
     const { data, error: readErr } = await db
       .from('apple_iap_notifications')
-      .select('processing_status')
+      .select('processing_status, updated_at')
       .eq('notification_uuid', notificationUUID)
       .maybeSingle()
     if (readErr) throw readErr
     if (data?.processing_status === 'failed') {
-      const { error: updateErr } = await db
+      const { data: updated, error: updateErr } = await db
         .from('apple_iap_notifications')
         .update(row)
         .eq('notification_uuid', notificationUUID)
         .eq('processing_status', 'failed')
+        .select('notification_uuid')
+        .maybeSingle()
       if (updateErr) throw updateErr
+      if (!updated) return { reserved: false, notificationUUID, retryable: true }
       return { reserved: true, notificationUUID, retrying: true }
+    }
+    if (data?.processing_status === 'processing') {
+      if (isStaleProcessingNotification(data, nowMs, processingStaleMs)) {
+        const staleCutoffIso = new Date(nowMs - processingStaleMs).toISOString()
+        const { data: updated, error: updateErr } = await db
+          .from('apple_iap_notifications')
+          .update(row)
+          .eq('notification_uuid', notificationUUID)
+          .eq('processing_status', 'processing')
+          .lte('updated_at', staleCutoffIso)
+          .select('notification_uuid')
+          .maybeSingle()
+        if (updateErr) throw updateErr
+        if (!updated) return { reserved: false, notificationUUID, retryable: true }
+        return { reserved: true, notificationUUID, retrying: true, reclaimed: true }
+      }
+      return { reserved: false, notificationUUID, retryable: true }
     }
     return { reserved: false, notificationUUID }
   }
