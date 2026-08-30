@@ -51,6 +51,9 @@ const VOICE_ENERGY_THRESHOLD = 500
 // PCM queue capacity while waiting for WS+ASR handshake.
 // 200 × ~43ms ≈ 8.6s — covers the full DashScope handshake even on a slow connection.
 const PCM_QUEUE_CAP = 200
+const RECORDING_RECONNECT_BASE_MS = 500
+const RECORDING_RECONNECT_MAX_BACKOFF_MS = 8_000
+const RECORDING_RECONNECT_MAX_FAILURES = 6
 
 // ── YoumiLiveAdapter ──────────────────────────────────────────────────────────
 
@@ -78,6 +81,10 @@ export class YoumiLiveAdapter {
   private lastWarmSampleRate: number | null = null
   /** How many idle (pre-recording) auto-reconnect attempts have been made since last successful onReady. */
   private idleReconnectCount = 0
+  /** Active-recording reconnects are driven by incoming PCM; throttle them after failures. */
+  private recordingReconnectFailures = 0
+  private recordingReconnectNotBeforeMs = 0
+  private recordingReconnectExhaustedLogged = false
 
   /** Single-flight: avoid overlapping initSession for same warm call site. */
   private sessionInitGeneration = 0
@@ -119,6 +126,7 @@ export class YoumiLiveAdapter {
     this.recordingPcmSeen = false
     this.lastWarmSampleRate = null
     this.idleReconnectCount = 0
+    this.resetRecordingReconnectBudget()
     this.rejectAllHandshakeWaiters(new Error('adapter_restarted'))
     this.clearHandshakeTimeout()
     this.clearWarmIdleTimer()
@@ -254,6 +262,7 @@ export class YoumiLiveAdapter {
   private notifyUpstreamReady() {
     this.upstreamHandshakeComplete = true
     this.sessionReady = true
+    this.resetRecordingReconnectBudget()
     this.resolveHandshakeWaiters()
     this.scheduleWarmIdleTimer()
     log('upstream ready (stream_ready)')
@@ -315,6 +324,57 @@ export class YoumiLiveAdapter {
 
   // ── Audio input ───────────────────────────────────────────────────────────
 
+  private queuePcm(buffer: ArrayBuffer) {
+    this.pcmQueue.push(buffer)
+    if (this.pcmQueue.length > PCM_QUEUE_CAP) this.pcmQueue.shift()
+  }
+
+  private resetRecordingReconnectBudget() {
+    this.recordingReconnectFailures = 0
+    this.recordingReconnectNotBeforeMs = 0
+    this.recordingReconnectExhaustedLogged = false
+  }
+
+  private noteRecordingReconnectFailure(reason: string) {
+    if (!this.recordingPcmSeen || this.closed) return
+
+    this.recordingReconnectFailures += 1
+    if (this.recordingReconnectFailures > RECORDING_RECONNECT_MAX_FAILURES) {
+      this.recordingReconnectNotBeforeMs = Number.POSITIVE_INFINITY
+      if (!this.recordingReconnectExhaustedLogged) {
+        this.recordingReconnectExhaustedLogged = true
+        log('recording reconnect budget exhausted', {
+          failures: this.recordingReconnectFailures,
+          reason,
+        })
+        this.listener?.({
+          type: 'error',
+          code: 'live_reconnect_exhausted',
+          message: 'Live captions lost connection and could not reconnect.',
+          recoverable: true,
+        })
+      }
+      return
+    }
+
+    const backoffMs = Math.min(
+      RECORDING_RECONNECT_MAX_BACKOFF_MS,
+      RECORDING_RECONNECT_BASE_MS * 2 ** (this.recordingReconnectFailures - 1),
+    )
+    this.recordingReconnectNotBeforeMs = Date.now() + backoffMs
+    log('recording reconnect backoff scheduled', {
+      failures: this.recordingReconnectFailures,
+      backoffMs,
+      reason,
+    })
+  }
+
+  private canStartRecordingReconnectFromPcm(): boolean {
+    if (!this.recordingPcmSeen) return true
+    if (this.recordingReconnectFailures > RECORDING_RECONNECT_MAX_FAILURES) return false
+    return Date.now() >= this.recordingReconnectNotBeforeMs
+  }
+
   pushPcm(buffer: ArrayBuffer, sampleRate: number) {
     if (this.closed) return
 
@@ -349,7 +409,13 @@ export class YoumiLiveAdapter {
       }
     }
 
-    if (!this.session) this.initSession(sampleRate)
+    if (!this.session) {
+      if (!this.canStartRecordingReconnectFromPcm()) {
+        this.queuePcm(buffer)
+        return
+      }
+      this.initSession(sampleRate)
+    }
 
     if (this.sessionReady) {
       if (!this.loggedFirstPcmForwarded) {
@@ -373,8 +439,7 @@ export class YoumiLiveAdapter {
       }
       this.session?.sendPcm(buffer)
     } else {
-      this.pcmQueue.push(buffer)
-      if (this.pcmQueue.length > PCM_QUEUE_CAP) this.pcmQueue.shift()
+      this.queuePcm(buffer)
     }
   }
 
@@ -523,6 +588,7 @@ export class YoumiLiveAdapter {
         this.session = null
         setTimeout(() => dying?.destroy(), 0)
         this.abandonCurrentSegment('session_error')
+        this.noteRecordingReconnectFailure(reason)
         this.listener?.({ type: 'reconnecting', reason })
         this.scheduleIdleReconnectIfNeeded()
       },
@@ -537,6 +603,7 @@ export class YoumiLiveAdapter {
         this.session = null
         log('RECONNECT — session closed unexpectedly', { segId: this.currentSegId || '(none)' })
         this.abandonCurrentSegment('ws_closed')
+        this.noteRecordingReconnectFailure('ws_closed')
         this.listener?.({ type: 'reconnecting', reason: 'ws_closed' })
         this.scheduleIdleReconnectIfNeeded()
       },
@@ -546,7 +613,9 @@ export class YoumiLiveAdapter {
   }
 
   /** Legacy blob path — no-op in streaming mode. Kept for interface compatibility. */
-  async pushChunk(_blob: Blob, _mime: string): Promise<void> {
+  async pushChunk(blob: Blob, mime: string): Promise<void> {
+    void blob
+    void mime
     // Audio arrives via pushPcm; blob slices are disabled in streaming mode.
   }
 }

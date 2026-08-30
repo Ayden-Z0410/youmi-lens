@@ -6,7 +6,8 @@
  * portion). This model simply accumulates finals and displays the current
  * interim as-is.
  *
- * Committed en/zh are append-only (never replaced) to stay monotonic.
+ * Committed zh is append-only by segment, while repeated EN finals for the same
+ * segment replace the prior text because ASR providers can revise burst finals.
  */
 import { compactLiveZhSnapshot } from './liveCaptionCompaction'
 import {
@@ -182,15 +183,27 @@ export class LiveCaptionSessionModel {
     }
 
     // ── en_final ───────────────────────────────────────────────────────────
-    // Text is already de-overlapped novelText from the engine.
-    // Append-only to keep committed monotonic.
+    // Text is already de-overlapped for new segments. Repeated finals for the
+    // same segment are provider revisions and replace the previous committed line.
     if (ev.type === 'en_final') {
       const text = normalizeEnglishPrimaryPayloadOrReject(ev.text)
       if (!text) return projectView(this.s)
       if (open >= 0 && seq < open) return projectView(this.s)
 
       this.s.lastEnFinalSanitizedById.set(ev.segmentId, sanitizeEnglishForZhTranslate(text))
-      this.s.committedEn = [...this.s.committedEn, { id: ev.segmentId, text }]
+      const existingIdx = this.s.committedEn.findIndex((x) => x.id === ev.segmentId)
+      if (existingIdx >= 0) {
+        this.s.committedEn = this.s.committedEn.map((x, i) =>
+          i === existingIdx ? { id: ev.segmentId, text } : x,
+        )
+        this.s.finalizedZhIds.delete(ev.segmentId)
+        this.s.committedZh = this.s.committedZh.filter((x) => x.id !== ev.segmentId)
+        if (this.s.currentZh?.id === ev.segmentId) {
+          this.s.currentZh = null
+        }
+      } else {
+        this.s.committedEn = [...this.s.committedEn, { id: ev.segmentId, text }]
+      }
       if (this.s.currentEn?.id === ev.segmentId) {
         this.s.currentEn = null
         this.s.displayGrayEn = ''
