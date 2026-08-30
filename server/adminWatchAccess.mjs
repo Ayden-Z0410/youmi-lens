@@ -3,8 +3,8 @@
  *
  * The authorization pattern (reused from betaGate.mjs):
  *   1. Validate the Supabase JWT server-side (verifyJwt → getUser).
- *   2. Read the user's plan_type from user_quota (service-role client).
- *   3. Authorize only `admin` / `developer` tiers.
+ *   2. Read the user's plan_type/status from user_quota (service-role client).
+ *   3. Block suspended accounts, then authorize only `admin` / `developer` tiers.
  *
  * Decided here, server-side — never trusted from the client. Fails closed: any
  * missing/invalid token, DB error, or non-admin plan is unauthorized.
@@ -28,7 +28,7 @@ function extractBearer(req) {
 /**
  * Server-side admin verdict for a request. Never throws.
  * @returns {Promise<{ authorized: boolean, reason: string, user: {userId:string,email:string}|null }>}
- *   reason ∈ 'ok' | 'not_signed_in' | 'unavailable' | 'not_admin'
+ *   reason ∈ 'ok' | 'not_signed_in' | 'unavailable' | 'quota_suspended' | 'not_admin'
  */
 export async function checkWatchAdmin(req) {
   const token = extractBearer(req)
@@ -49,6 +49,10 @@ export async function checkWatchAdmin(req) {
     quota = null
   }
   if (!quota) return { authorized: false, reason: 'unavailable', user }
+
+  if (quota.status === 'suspended') {
+    return { authorized: false, reason: 'quota_suspended', user }
+  }
 
   const planType = quota.plan_type || 'public_trial'
   const authorized = ADMIN_PLAN_TYPES.has(planType)
