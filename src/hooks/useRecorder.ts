@@ -276,13 +276,26 @@ export function useRecorder(opts?: {
       const session = sessionId
       mr.ondataavailable = (e) => {
         const ev = e as BlobEvent & { timecode?: number }
-        const idx = mainDataChunkIndexRef.current++
         const tc = typeof ev.timecode === 'number' ? ev.timecode : undefined
-        if (e.data.size > 0) {
-          mainLastChunkAtRef.current = Date.now()
-          // Durable write — do not retain full session in component memory.
-          enqueuePersist(session, idx, e.data)
+        // Zero-byte `dataavailable` (common on WebKit after requestData) must NOT
+        // consume a durable chunk index. Indexing empty events creates gaps;
+        // appendRecordingChunk then rejects every later chunk → silent truncation.
+        if (e.data.size <= 0) {
+          mainRecLine('data', {
+            session: session.slice(-8),
+            chunkIndex: -1,
+            size: 0,
+            skippedEmpty: true,
+            timecodeMs: tc,
+            queueDepth: persistQueueRef.current.length,
+            audioBitsPerSecond: bitrate,
+          })
+          return
         }
+        const idx = mainDataChunkIndexRef.current++
+        mainLastChunkAtRef.current = Date.now()
+        // Durable write — do not retain full session in component memory.
+        enqueuePersist(session, idx, e.data)
         mainRecLine('data', {
           session: session.slice(-8),
           chunkIndex: idx,
